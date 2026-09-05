@@ -1,0 +1,22 @@
+## Xcode / Swift
+.DS_Store
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+.build/
+.swiftpm/
+
+## XcodeGen-generated project (regenerate via `xcodegen generate`)
+*.xcodeproj/
+
+## CocoaPods / Carthage / SPM (not used, but ignore if introduced later)
+Pods/
+Carthage/Build/
+
+## Misc
+*.log
+.vscode/

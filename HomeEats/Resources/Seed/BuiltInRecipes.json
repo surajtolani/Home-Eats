@@ -1,0 +1,254 @@
+[
+  {
+    "title": "Weeknight Spaghetti with Meat Sauce",
+    "summary": "A reliable, kid-friendly classic that comes together in about 30 minutes.",
+    "ingredientLines": [
+      "1 lb spaghetti",
+      "1 lb ground beef",
+      "1 onion, diced",
+      "2 cloves garlic, minced",
+      "1 jar marinara sauce",
+      "1 tsp dried oregano",
+      "1/2 tsp salt",
+      "1/4 tsp pepper flakes",
+      "grated parmesan, for serving"
+    ],
+    "instructions": [
+      "Bring a large pot of salted water to a boil and cook spaghetti according to package directions.",
+      "While pasta cooks, brown the ground beef with the onion and garlic in a large skillet over medium heat, about 8 minutes.",
+      "Drain excess fat, then stir in the marinara sauce, oregano, salt, and pepper flakes. Simmer 10 minutes.",
+      "Drain the pasta and toss with the sauce.",
+      "Serve topped with grated parmesan."
+    ],
+    "servings": 4,
+    "prepMinutes": 10,
+    "cookMinutes": 25,
+    "tags": ["weeknight", "kid-friendly", "pasta"]
+  },
+  {
+    "title": "Sheet Pan Chicken Fajitas",
+    "summary": "One pan, minimal cleanup, and endlessly customizable toppings.",
+    "ingredientLines": [
+      "1.5 lbs chicken breast, sliced into strips",
+      "2 bell peppers, sliced",
+      "1 onion, sliced",
+      "2 tbsp olive oil",
+      "1 tbsp chili powder",
+      "1 tsp cumin",
+      "1/2 tsp salt",
+      "8 flour tortillas",
+      "1 lime, cut into wedges",
+      "sour cream, for serving"
+    ],
+    "instructions": [
+      "Preheat oven to 425°F.",
+      "Toss chicken, peppers, and onion with olive oil, chili powder, cumin, and salt on a sheet pan.",
+      "Roast for 18-20 minutes, stirring halfway, until chicken is cooked through.",
+      "Warm the tortillas and serve everything family-style with lime wedges and sour cream."
+    ],
+    "servings": 4,
+    "prepMinutes": 15,
+    "cookMinutes": 20,
+    "tags": ["mexican", "sheet-pan", "gluten-free-option"]
+  },
+  {
+    "title": "Creamy Tomato Tortellini Soup",
+    "summary": "A cozy, one-pot dinner that's ready in half an hour.",
+    "ingredientLines": [
+      "1 tbsp olive oil",
+      "1 onion, diced",
+      "2 cloves garlic, minced",
+      "28 oz canned crushed tomatoes",
+      "4 cups vegetable broth",
+      "9 oz cheese tortellini",
+      "1/2 cup heavy cream",
+      "1 cup spinach",
+      "1/2 tsp salt",
+      "fresh basil, for serving"
+    ],
+    "instructions": [
+      "Heat olive oil in a large pot and sauté the onion and garlic until soft, about 5 minutes.",
+      "Add the crushed tomatoes and vegetable broth, then bring to a simmer.",
+      "Stir in the tortellini and cook according to package time.",
+      "Stir in the cream and spinach and cook until spinach wilts, about 2 minutes.",
+      "Season with salt and serve topped with fresh basil."
+    ],
+    "servings": 4,
+    "prepMinutes": 10,
+    "cookMinutes": 20,
+    "tags": ["vegetarian", "soup", "one-pot"]
+  },
+  {
+    "title": "Honey Garlic Salmon",
+    "summary": "A quick, high-protein dinner with a sweet-savory glaze.",
+    "ingredientLines": [
+      "4 salmon fillets",
+      "3 tbsp honey",
+      "3 tbsp soy sauce",
+      "2 cloves garlic, minced",
+      "1 tbsp rice vinegar",
+      "1 tsp sesame oil",
+      "2 cups cooked rice",
+      "1 bunch broccoli, steamed"
+    ],
+    "instructions": [
+      "Whisk honey, soy sauce, garlic, rice vinegar, and sesame oil in a small bowl.",
+      "Sear salmon in a hot skillet skin-side up for 3-4 minutes, then flip.",
+      "Pour the sauce over the salmon and simmer 2-3 minutes until glazed and cooked through.",
+      "Serve over rice with steamed broccoli."
+    ],
+    "servings": 4,
+    "prepMinutes": 10,
+    "cookMinutes": 15,
+    "tags": ["seafood", "quick", "gluten-free-option"]
+  },
+  {
+    "title": "Loaded Black Bean Tacos",
+    "summary": "A fast vegetarian night that still feels hearty.",
+    "ingredientLines": [
+      "2 cans black beans, drained",
+      "1 tsp cumin",
+      "1 tsp chili powder",
+      "1/2 tsp garlic powder",
+      "8 corn tortillas",
+      "1 avocado, sliced",
+      "1/2 cup shredded cheese",
+      "1/4 cup cilantro, chopped",
+      "1 lime, cut into wedges"
+    ],
+    "instructions": [
+      "Warm the black beans in a saucepan with cumin, chili powder, and garlic powder, mashing some for texture.",
+      "Warm the tortillas in a dry skillet or the oven.",
+      "Fill each tortilla with beans, avocado, cheese, and cilantro.",
+      "Serve with lime wedges."
+    ],
+    "servings": 4,
+    "prepMinutes": 10,
+    "cookMinutes": 10,
+    "tags": ["vegetarian", "quick", "mexican"]
+  },
+  {
+    "title": "Classic Turkey Chili",
+    "summary": "Makes great leftovers and freezes well for a busy week.",
+    "ingredientLines": [
+      "1 lb ground turkey",
+      "1 onion, diced",
+      "1 bell pepper, diced",
+      "2 cloves garlic, minced",
+      "1 can kidney beans, drained",
+      "1 can diced tomatoes",
+      "2 tbsp tomato paste",
+      "1 tbsp chili powder",
+      "1 tsp cumin",
+      "1/2 tsp salt",
+      "shredded cheese, for serving"
+    ],
+    "instructions": [
+      "Brown the turkey with onion, bell pepper, and garlic in a large pot over medium heat.",
+      "Stir in kidney beans, diced tomatoes, tomato paste, chili powder, cumin, and salt.",
+      "Simmer uncovered for 25-30 minutes, stirring occasionally.",
+      "Serve topped with shredded cheese."
+    ],
+    "servings": 6,
+    "prepMinutes": 10,
+    "cookMinutes": 35,
+    "tags": ["freezer-friendly", "make-ahead"]
+  },
+  {
+    "title": "Lemon Garlic Roast Chicken Thighs",
+    "summary": "Crispy skin, minimal ingredients, big flavor.",
+    "ingredientLines": [
+      "8 bone-in chicken thighs",
+      "3 tbsp olive oil",
+      "1 lemon, sliced",
+      "4 cloves garlic, smashed",
+      "1 tsp dried thyme",
+      "1 tsp salt",
+      "1/2 tsp pepper",
+      "1 lb baby potatoes, halved"
+    ],
+    "instructions": [
+      "Preheat oven to 425°F.",
+      "Toss potatoes with 1 tbsp olive oil and spread on a sheet pan.",
+      "Pat chicken thighs dry, rub with remaining olive oil, thyme, salt, and pepper.",
+      "Nestle chicken skin-side up among the potatoes with lemon slices and garlic.",
+      "Roast 35-40 minutes until chicken reaches 165°F and skin is crisp."
+    ],
+    "servings": 4,
+    "prepMinutes": 10,
+    "cookMinutes": 40,
+    "tags": ["sheet-pan", "gluten-free"]
+  },
+  {
+    "title": "Veggie Fried Rice",
+    "summary": "A great way to use up leftover rice and whatever vegetables are on hand.",
+    "ingredientLines": [
+      "3 cups cooked rice, cold",
+      "2 eggs, beaten",
+      "1 cup frozen peas and carrots",
+      "3 green onions, sliced",
+      "3 tbsp soy sauce",
+      "1 tbsp sesame oil",
+      "2 tbsp vegetable oil",
+      "2 cloves garlic, minced"
+    ],
+    "instructions": [
+      "Heat 1 tbsp vegetable oil in a large skillet or wok over high heat and scramble the eggs; set aside.",
+      "Add remaining oil, garlic, and peas and carrots, stir-frying 2 minutes.",
+      "Add the cold rice, breaking up clumps, and stir-fry 3-4 minutes.",
+      "Stir in the eggs, soy sauce, sesame oil, and green onions and toss to combine."
+    ],
+    "servings": 4,
+    "prepMinutes": 10,
+    "cookMinutes": 15,
+    "tags": ["vegetarian", "leftovers", "quick"]
+  },
+  {
+    "title": "Baked Ziti",
+    "summary": "A make-ahead-friendly baked pasta the whole family can agree on.",
+    "ingredientLines": [
+      "1 lb ziti",
+      "1 jar marinara sauce",
+      "15 oz ricotta cheese",
+      "2 cups shredded mozzarella",
+      "1/2 cup grated parmesan",
+      "1 egg",
+      "1 tsp Italian seasoning",
+      "1/2 tsp salt"
+    ],
+    "instructions": [
+      "Preheat oven to 375°F and cook ziti until just shy of al dente.",
+      "Mix ricotta, egg, half the parmesan, Italian seasoning, and salt in a bowl.",
+      "Toss the pasta with marinara sauce and the ricotta mixture.",
+      "Transfer to a baking dish, top with mozzarella and remaining parmesan.",
+      "Bake 25 minutes until bubbly and golden."
+    ],
+    "servings": 6,
+    "prepMinutes": 15,
+    "cookMinutes": 30,
+    "tags": ["make-ahead", "vegetarian", "pasta"]
+  },
+  {
+    "title": "Sheet Pan Sausage and Veggies",
+    "summary": "Toss it together, roast, done — great for busy weeknights.",
+    "ingredientLines": [
+      "1 lb sausage links, sliced",
+      "1 lb baby potatoes, halved",
+      "1 zucchini, sliced",
+      "1 bell pepper, chopped",
+      "2 tbsp olive oil",
+      "1 tsp paprika",
+      "1/2 tsp garlic powder",
+      "1/2 tsp salt"
+    ],
+    "instructions": [
+      "Preheat oven to 400°F.",
+      "Toss all ingredients together on a large sheet pan.",
+      "Roast 30-35 minutes, stirring halfway, until potatoes are tender and sausage is browned."
+    ],
+    "servings": 4,
+    "prepMinutes": 10,
+    "cookMinutes": 35,
+    "tags": ["sheet-pan", "gluten-free"]
+  }
+]
