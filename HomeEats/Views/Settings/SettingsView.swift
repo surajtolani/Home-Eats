@@ -9,11 +9,23 @@ struct SettingsView: View {
         from: DateComponents(hour: 18, minute: 0)
     ) ?? .now
 
+    // `settings` is read several times per `body` pass (the toggle, the day
+    // picker, the reminder-time handler...). Inserting a new row from inside
+    // it — as this used to do — mutates the model context, and therefore
+    // `@Query settingsRows`, in the middle of that same body evaluation:
+    // exactly the "modifying state during view update" pattern that's
+    // caused real bugs elsewhere in this app. `SampleDataSeeder` already
+    // guarantees this row exists at launch, so in practice `settingsRows`
+    // is never actually empty here — `ensureSettingsExist()` (run from
+    // `.task`, a safe point to mutate state) is just a backstop for the
+    // unlikely case that seeding failed; `settings` itself only ever reads.
     private var settings: AppSettings {
-        if let existing = settingsRows.first { return existing }
-        let created = AppSettings()
-        modelContext.insert(created)
-        return created
+        settingsRows.first ?? AppSettings()
+    }
+
+    private func ensureSettingsExist() {
+        guard settingsRows.isEmpty else { return }
+        modelContext.insert(AppSettings())
     }
 
     private let weekdaySymbols = Calendar.current.weekdaySymbols
@@ -32,7 +44,7 @@ struct SettingsView: View {
                     get: { settings.reminderEnabled },
                     set: { newValue in
                         settings.reminderEnabled = newValue
-                        Task { await NotificationScheduler.reschedule(using: settings) }
+                        Task { @MainActor in await NotificationScheduler.reschedule(using: settings) }
                     }
                 ))
 
@@ -41,7 +53,7 @@ struct SettingsView: View {
                         get: { settings.reminderWeekday },
                         set: { newValue in
                             settings.reminderWeekday = newValue
-                            Task { await NotificationScheduler.reschedule(using: settings) }
+                            Task { @MainActor in await NotificationScheduler.reschedule(using: settings) }
                         }
                     )) {
                         ForEach(1...7, id: \.self) { weekday in
@@ -58,7 +70,7 @@ struct SettingsView: View {
                         let comps = Calendar.current.dateComponents([.hour, .minute], from: newValue)
                         settings.reminderHour = comps.hour ?? 18
                         settings.reminderMinute = comps.minute ?? 0
-                        Task { await NotificationScheduler.reschedule(using: settings) }
+                        Task { @MainActor in await NotificationScheduler.reschedule(using: settings) }
                     }
                 }
             } header: {
@@ -78,7 +90,8 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
-        .onAppear {
+        .task {
+            ensureSettingsExist()
             reminderTime = Calendar.current.date(
                 from: DateComponents(hour: settings.reminderHour, minute: settings.reminderMinute)
             ) ?? .now

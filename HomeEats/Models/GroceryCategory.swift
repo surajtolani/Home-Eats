@@ -68,9 +68,21 @@ enum GroceryCategory: String, Codable, CaseIterable, Identifiable {
     /// This is intentionally simple per the spec's "start simple" guidance.
     static func guess(fromIngredientName name: String) -> GroceryCategory {
         let n = name.lowercased()
+        // Whole words only, e.g. so "dish" doesn't match inside "radishes"
+        // and "water" doesn't match inside "watermelon" — matching on a bare
+        // substring was catching those. Multi-word phrases ("paper towel",
+        // "ice cream") still use substring matching, since they're specific
+        // enough that a false hit inside another word isn't realistically
+        // going to happen. Both the ingredient's words and the candidate
+        // keyword are singularized before comparing, so a plural ingredient
+        // ("onions", "tomatoes") still matches a singular keyword and vice
+        // versa, regardless of which form happens to be listed below.
+        let tokens = Set(n.split(whereSeparator: { !$0.isLetter }).map { singularized(String($0)) })
 
         func has(_ words: String...) -> Bool {
-            words.contains { n.contains($0) }
+            words.contains { word in
+                word.contains(" ") ? n.contains(word) : tokens.contains(singularized(word))
+            }
         }
 
         if has("chicken", "beef", "pork", "turkey", "sausage", "bacon", "shrimp", "salmon", "fish", "steak", "ground meat", "tofu") {
@@ -94,19 +106,40 @@ enum GroceryCategory: String, Codable, CaseIterable, Identifiable {
         if has("paper towel", "napkin", "detergent", "foil", "trash bag", "soap", "dish", "sponge") {
             return .household
         }
-        if has(
-            "onion", "garlic", "tomato", "lettuce", "spinach", "pepper", "carrot", "potato",
-            "broccoli", "cucumber", "avocado", "lime", "lemon", "apple", "banana", "herb",
-            "cilantro", "parsley", "basil", "mushroom", "zucchini", "kale", "berries"
-        ) {
-            return .produce
-        }
+        // Checked before produce: "pepper flakes" is a specific pantry
+        // phrase, but produce's bare "pepper" keyword would otherwise catch
+        // it first (both match "pepper flakes"), misfiling a spice jar as a
+        // fresh vegetable.
         if has(
             "flour", "sugar", "rice", "pasta", "beans", "oil", "sauce", "spice", "salt",
             "pepper flakes", "broth", "stock", "canned", "cereal", "oats", "nut", "vinegar", "honey"
         ) {
             return .pantry
         }
+        if has(
+            "onion", "garlic", "tomato", "lettuce", "spinach", "pepper", "carrot", "potato",
+            "broccoli", "cucumber", "avocado", "lime", "lemon", "apple", "banana", "herb",
+            "cilantro", "parsley", "basil", "mushroom", "zucchini", "kale", "berries",
+            "radish", "melon", "watermelon", "cantaloupe", "grape", "orange", "peach", "pear", "celery"
+        ) {
+            return .produce
+        }
         return .other
+    }
+
+    /// Same simple pluralization rules as `GroceryListBuilder.canonicalKey`
+    /// (kept local rather than shared, since the two live in different
+    /// layers — this is a few lines, not worth a cross-layer dependency).
+    private static func singularized(_ word: String) -> String {
+        if word.hasSuffix("ies"), word.count > 4 {
+            return String(word.dropLast(3)) + "y"
+        } else if word.hasSuffix("oes"), word.count > 4 {
+            return String(word.dropLast(2))
+        } else if word.hasSuffix("es"), word.count > 4, word.hasSuffix("shes") || word.hasSuffix("ches") || word.hasSuffix("xes") {
+            return String(word.dropLast(2))
+        } else if word.hasSuffix("s"), !word.hasSuffix("ss"), word.count > 3 {
+            return String(word.dropLast())
+        }
+        return word
     }
 }

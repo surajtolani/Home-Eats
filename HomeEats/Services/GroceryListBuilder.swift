@@ -40,20 +40,21 @@ enum GroceryListBuilder {
         }
 
         // 2. Fetch existing items for this week so we can preserve user state.
-        let weekStartCopy = normalizedWeekStart
-        let descriptor = FetchDescriptor<GroceryItem>(
-            predicate: #Predicate { $0.weekStartDate == weekStartCopy }
+        // Filtered in Swift (via isSameDay) rather than a #Predicate on exact
+        // Date equality: the rest of the app compares weeks the same way
+        // (see GroceryListView), and comparing by exact instant instead would
+        // silently stop matching after a timezone change, since the stored
+        // "midnight" instant for a date no longer equals a freshly-computed
+        // one — see `dedupedByCanonicalKey` below for what that used to cause.
+        let allItems = (try? context.fetch(FetchDescriptor<GroceryItem>())) ?? []
+        let existingItems = allItems.filter { $0.weekStartDate.isSameDay(as: normalizedWeekStart) }
+        let existingThisWeek = dedupedByCanonicalKey(
+            existingItems.filter { $0.section == .thisWeek && !$0.isManuallyAdded },
+            in: context
         )
-        let existingItems = (try? context.fetch(descriptor)) ?? []
-        let existingThisWeek = Dictionary(
-            uniqueKeysWithValues: existingItems
-                .filter { $0.section == .thisWeek && !$0.isManuallyAdded }
-                .map { (canonicalKey(for: $0.name), $0) }
-        )
-        let existingStaples = Dictionary(
-            uniqueKeysWithValues: existingItems
-                .filter { $0.section == .staples }
-                .map { (canonicalKey(for: $0.name), $0) }
+        let existingStaples = dedupedByCanonicalKey(
+            existingItems.filter { $0.section == .staples },
+            in: context
         )
 
         // 3. Upsert "this week" lines.
@@ -86,7 +87,13 @@ enum GroceryListBuilder {
         for staple in staples where staple.isActive {
             let key = canonicalKey(for: staple.name)
             seenStapleKeys.insert(key)
-            if existingStaples[key] == nil {
+            if let existing = existingStaples[key] {
+                // Pick up edits made in StaplesManagerView since this list
+                // was last generated (category, usual amount) — checked
+                // state is left alone since that's the user's in-store progress.
+                existing.category = staple.category
+                existing.quantityText = staple.defaultQuantityText ?? ""
+            } else {
                 let item = GroceryItem(
                     name: staple.name,
                     category: staple.category,
@@ -102,6 +109,30 @@ enum GroceryListBuilder {
         for (key, item) in existingStaples where !seenStapleKeys.contains(key) && !item.isManuallyAdded {
             context.delete(item)
         }
+    }
+
+    /// Groups items by canonical key, keeping the first row for each key and
+    /// deleting the rest. Building `[key: item]` with a plain
+    /// `Dictionary(uniqueKeysWithValues:)` traps the whole app the moment two
+    /// existing rows canonicalize to the same key (e.g. a seeded staple
+    /// "Milk" plus a manually-added "milk", or two staples like "Eggs" and
+    /// "Egg" that both exist and are both active) — this both avoids that
+    /// crash and actually cleans up the duplicate rows that caused it, so it
+    /// doesn't just re-trap on the next regenerate.
+    private static func dedupedByCanonicalKey(
+        _ items: [GroceryItem],
+        in context: ModelContext
+    ) -> [String: GroceryItem] {
+        var result: [String: GroceryItem] = [:]
+        for item in items {
+            let key = canonicalKey(for: item.name)
+            if result[key] != nil {
+                context.delete(item)
+            } else {
+                result[key] = item
+            }
+        }
+        return result
     }
 
     /// Normalizes an ingredient/staple name so simple plurals and casing
@@ -133,7 +164,10 @@ enum GroceryListBuilder {
         mutating func add(_ ingredient: RecipeIngredientEntry, from recipeID: UUID) {
             recipeIDs.insert(recipeID)
             if let quantity = ingredient.quantity {
-                let unitKey = (ingredient.unit ?? "").lowercased()
+                // Canonicalize the unit before using it as a bucket key —
+                // otherwise "1 cup" and "2 cups" land in separate buckets
+                // ("cup" vs "cups") and never actually combine.
+                let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
                 totalsByUnit[unitKey, default: 0] += quantity
             } else if !ingredient.rawText.isEmpty {
                 freeTextParts.append(ingredient.rawText)

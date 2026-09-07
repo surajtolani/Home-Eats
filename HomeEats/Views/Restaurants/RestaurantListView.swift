@@ -49,7 +49,11 @@ struct RestaurantListView: View {
                         }
                     }
                     .onDelete { offsets in
-                        for index in offsets { modelContext.delete(restaurants[index]) }
+                        for index in offsets {
+                            let restaurant = restaurants[index]
+                            CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
+                            modelContext.delete(restaurant)
+                        }
                     }
                 } header: {
                     Text("Your Restaurants")

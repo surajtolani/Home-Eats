@@ -13,13 +13,20 @@ struct AddGroceryItemSheet: View {
     @State private var quantityText = ""
     @State private var category: GroceryCategory = .other
     @State private var section: GroceryListSection = .thisWeek
+    /// Once the user picks a category themselves, stop overwriting it as
+    /// they keep typing the name (e.g. fixing a typo would otherwise snap a
+    /// manually-chosen category back to the auto-guess).
+    @State private var categoryWasChosenManually = false
 
     var body: some View {
         NavigationStack {
             Form {
                 TextField("Item name", text: $name)
                 TextField("Amount (optional)", text: $quantityText)
-                Picker("Category", selection: $category) {
+                Picker("Category", selection: Binding(
+                    get: { category },
+                    set: { category = $0; categoryWasChosenManually = true }
+                )) {
                     ForEach(GroceryCategory.allCases) { category in
                         Label(category.displayName, systemImage: category.symbolName).tag(category)
                     }
@@ -42,6 +49,7 @@ struct AddGroceryItemSheet: View {
                 }
             }
             .onChange(of: name) { _, newValue in
+                guard !categoryWasChosenManually else { return }
                 category = GroceryCategory.guess(fromIngredientName: newValue)
             }
         }

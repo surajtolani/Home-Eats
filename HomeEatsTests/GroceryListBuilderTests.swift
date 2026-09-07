@@ -124,6 +124,56 @@ final class GroceryListBuilderTests: XCTestCase {
         XCTAssertFalse(items.contains { $0.name == "Milk" })
     }
 
+    /// Regression test for a real crash: two staples that canonicalize to
+    /// the same key (e.g. "Egg" and "Eggs") used to make `regenerate` build
+    /// its lookup dictionary with `Dictionary(uniqueKeysWithValues:)`, which
+    /// traps on a duplicate key. It shouldn't just avoid crashing — it
+    /// should also actually clean up the duplicate so the *next* regenerate
+    /// doesn't hit the same problem again.
+    func testDuplicateCanonicalStapleNamesDoNotCrash() throws {
+        let context = try makeInMemoryContext()
+        let egg = StapleItem(name: "Egg", category: .dairyAndEggs, isActive: true)
+        let eggs = StapleItem(name: "Eggs", category: .dairyAndEggs, isActive: true)
+        context.insert(egg)
+        context.insert(eggs)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        // Both staples are active on the very first regenerate, so the
+        // upsert loop itself creates the duplicate pair of GroceryItems
+        // that then collide the next time around.
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [egg, eggs], in: context)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [egg, eggs], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let eggItems = items.filter { GroceryListBuilder.canonicalKey(for: $0.name) == "egg" }
+        XCTAssertEqual(eggItems.count, 1, "Duplicate canonical-key rows should have been cleaned up to one")
+    }
+
+    /// Regression test: "1 cup" + "2 cups" used to land in separate
+    /// unit buckets ("cup" vs "cups") and never actually combine.
+    func testCombinesIngredientsWhoseUnitsAreSingularVsPlural() throws {
+        let context = try makeInMemoryContext()
+        let recipeA = Recipe(title: "A", ingredients: [
+            RecipeIngredientEntry(name: "onion", quantity: 1, unit: "cup")
+        ])
+        let recipeB = Recipe(title: "B", ingredients: [
+            RecipeIngredientEntry(name: "onion", quantity: 2, unit: "cups")
+        ])
+        context.insert(recipeA)
+        context.insert(recipeB)
+        let mealA = PlannedMeal(date: .now, slot: .dinner, recipe: recipeA)
+        let mealB = PlannedMeal(date: .now, slot: .lunch, recipe: recipeB)
+        context.insert(mealA)
+        context.insert(mealB)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [mealA, mealB], staples: [], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let onionItem = items.first { $0.name.lowercased().contains("onion") }
+        XCTAssertEqual(onionItem?.quantityText, "3 cups (from 2 recipes)")
+    }
+
     func testCanonicalKeyMergesSimplePlurals() {
         XCTAssertEqual(
             GroceryListBuilder.canonicalKey(for: "Onions"),

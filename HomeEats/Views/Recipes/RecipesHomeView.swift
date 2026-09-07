@@ -53,22 +53,35 @@ struct RecipesHomeView: View {
                         )
                     )
                 }
-                ForEach(displayedRecipes) { recipe in
-                    NavigationLink {
-                        RecipeDetailView(recipe: recipe)
-                    } label: {
-                        RecipeRow(recipe: recipe)
+                if section == .mine {
+                    // Swipe-to-delete only makes sense here — a Library
+                    // recipe the user hasn't saved isn't theirs to delete,
+                    // so the row wouldn't do anything if swiped there.
+                    ForEach(displayedRecipes) { recipe in
+                        NavigationLink {
+                            RecipeDetailView(recipe: recipe)
+                        } label: {
+                            RecipeRow(recipe: recipe)
+                        }
                     }
-                }
-                .onDelete { offsets in
-                    guard section == .mine else { return }
-                    for index in offsets {
-                        let recipe = displayedRecipes[index]
-                        if recipe.source == .library {
-                            // "Un-save" a library recipe instead of deleting the shared copy.
-                            recipe.isSavedToCollection = false
-                        } else {
-                            modelContext.delete(recipe)
+                    .onDelete { offsets in
+                        for index in offsets {
+                            let recipe = displayedRecipes[index]
+                            if recipe.source == .library {
+                                // "Un-save" a library recipe instead of deleting the shared copy.
+                                recipe.isSavedToCollection = false
+                            } else {
+                                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+                                modelContext.delete(recipe)
+                            }
+                        }
+                    }
+                } else {
+                    ForEach(displayedRecipes) { recipe in
+                        NavigationLink {
+                            RecipeDetailView(recipe: recipe)
+                        } label: {
+                            RecipeRow(recipe: recipe)
                         }
                     }
                 }

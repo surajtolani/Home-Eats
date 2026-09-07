@@ -32,7 +32,14 @@ struct FamilyMembersView: View {
                     }
                 }
                 .onDelete { offsets in
-                    for index in offsets { modelContext.delete(members[index]) }
+                    for index in offsets {
+                        let member = members[index]
+                        CascadeCleanup.removeVotes(fromMemberID: member.id, in: modelContext)
+                        if activeUserSession.activeMemberID == member.id {
+                            activeUserSession.setActive(members.first { $0.id != member.id })
+                        }
+                        modelContext.delete(member)
+                    }
                 }
             } footer: {
                 Text("Tap a person to edit them. The checkmark shows who's currently active on this device — switch it from the badge in any tab's toolbar.")

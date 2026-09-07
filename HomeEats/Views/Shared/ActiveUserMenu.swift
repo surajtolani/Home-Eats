@@ -14,7 +14,11 @@ struct ActiveUserMenu: View {
                 Button {
                     activeUserSession.setActive(member)
                 } label: {
-                    Label(member.name, systemImage: activeUserSession.activeMemberID == member.id ? "checkmark" : "")
+                    if activeUserSession.activeMemberID == member.id {
+                        Label(member.name, systemImage: "checkmark")
+                    } else {
+                        Text(member.name)
+                    }
                 }
             }
         } label: {

@@ -2,18 +2,24 @@ import SwiftUI
 import SwiftData
 
 /// The guided flow launched by the weekly planning notification (or the
-/// "Start Planning" button). Walks through each day in the upcoming week
-/// that doesn't have dinner sorted yet — dinner being the meal a weekly
-/// planning session is really about — one at a time, so planning takes a
-/// minute, not a browsing session. Breakfast/lunch/other stay reachable per
-/// day for anyone who wants to plan those too.
+/// "Start Planning" button — see `CalendarPlanView`'s toolbar). Walks through
+/// each day in the upcoming week that doesn't have dinner sorted yet —
+/// dinner being the meal a weekly planning session is really about — one at
+/// a time, so planning takes a minute, not a browsing session.
+/// Breakfast/lunch/other stay reachable per day for anyone who wants to plan
+/// those too.
 struct PlanningReminderFlowView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var activeUserSession: ActiveUserSession
     @Query private var allPlannedMeals: [PlannedMeal]
 
-    @State private var index = 0
+    /// Days the user tapped "Skip for now" on *this session* — kept
+    /// separately from "decided" so skipping doesn't require any index
+    /// bookkeeping. We always just show the first date that's neither
+    /// decided nor skipped; once a day gets a decided dinner it drops out of
+    /// `undecidedDinnerDates` on its own, no manual "advance" step needed.
+    @State private var skippedDates: Set<Date> = []
     @State private var showRecipePicker = false
     @State private var showRestaurantPicker = false
 
@@ -32,13 +38,15 @@ struct PlanningReminderFlowView: View {
         upcomingDates.filter { !dinnerIsDecided(on: $0) }
     }
 
+    private var remainingDates: [Date] {
+        undecidedDinnerDates.filter { date in !skippedDates.contains { $0.isSameDay(as: date) } }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
-                if undecidedDinnerDates.isEmpty {
-                    allSetView
-                } else if index < undecidedDinnerDates.count {
-                    dayCard(for: undecidedDinnerDates[index])
+                if let date = remainingDates.first {
+                    dayCard(for: date)
                 } else {
                     allSetView
                 }
@@ -63,8 +71,11 @@ struct PlanningReminderFlowView: View {
 
     private func dayCard(for date: Date) -> some View {
         VStack(spacing: 20) {
-            ProgressView(value: Double(index + 1), total: Double(max(undecidedDinnerDates.count, 1)))
-                .padding(.horizontal)
+            ProgressView(
+                value: Double(undecidedDinnerDates.count - remainingDates.count + 1),
+                total: Double(max(undecidedDinnerDates.count, 1))
+            )
+            .padding(.horizontal)
 
             VStack(spacing: 4) {
                 Text(date.formatted(Date.weekdayFull))
@@ -108,7 +119,7 @@ struct PlanningReminderFlowView: View {
                 .padding(.top, 4)
 
                 Button("Skip for now") {
-                    advance()
+                    skippedDates.insert(date)
                 }
                 .padding(.top, 4)
             }
@@ -118,13 +129,11 @@ struct PlanningReminderFlowView: View {
         .sheet(isPresented: $showRecipePicker) {
             RecipePickerSheet { recipe in
                 decideDinner(date: date, recipe: recipe)
-                advance()
             }
         }
         .sheet(isPresented: $showRestaurantPicker) {
             RestaurantPickerSheet { restaurant in
                 decideDinner(date: date, restaurant: restaurant)
-                advance()
             }
         }
     }
@@ -138,14 +147,5 @@ struct PlanningReminderFlowView: View {
             decidedByMemberID: activeUserSession.activeMemberID
         )
         modelContext.insert(meal)
-    }
-
-    private func advance() {
-        // Don't just increment `index` blindly: once a day's dinner is
-        // decided it drops out of `undecidedDinnerDates`, so the same index
-        // now points at the *next* remaining day already.
-        if index >= undecidedDinnerDates.count {
-            index = max(0, undecidedDinnerDates.count - 1)
-        }
     }
 }

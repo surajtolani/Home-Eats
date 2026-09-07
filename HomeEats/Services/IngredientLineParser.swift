@@ -14,6 +14,38 @@ enum IngredientLineParser {
         "quart", "quarts", "pint", "pints", "gallon", "gallons", "dash", "dashes"
     ]
 
+    /// Maps every singular/plural/abbreviated spelling of a unit to one
+    /// canonical display form, so "1 cup" from one recipe and "2 cups" from
+    /// another land in the same bucket when the grocery list combines them
+    /// instead of showing up as two separate, un-combined lines.
+    private static let unitCanonicalForm: [String: String] = [
+        "cup": "cups", "cups": "cups",
+        "tablespoon": "tbsp", "tablespoons": "tbsp", "tbsp": "tbsp",
+        "teaspoon": "tsp", "teaspoons": "tsp", "tsp": "tsp",
+        "ounce": "oz", "ounces": "oz", "oz": "oz",
+        "pound": "lbs", "pounds": "lbs", "lb": "lbs", "lbs": "lbs",
+        "gram": "g", "grams": "g", "g": "g",
+        "kilogram": "kg", "kilograms": "kg", "kg": "kg",
+        "milliliter": "ml", "milliliters": "ml", "ml": "ml",
+        "liter": "l", "liters": "l", "l": "l",
+        "clove": "cloves", "cloves": "cloves",
+        "can": "cans", "cans": "cans",
+        "package": "packages", "packages": "packages",
+        "pinch": "pinches", "pinches": "pinches",
+        "slice": "slices", "slices": "slices",
+        "piece": "pieces", "pieces": "pieces",
+        "bunch": "bunches", "bunches": "bunches",
+        "stick": "sticks", "sticks": "sticks",
+        "quart": "quarts", "quarts": "quarts",
+        "pint": "pints", "pints": "pints",
+        "gallon": "gallons", "gallons": "gallons",
+        "dash": "dashes", "dashes": "dashes"
+    ]
+
+    static func canonicalUnit(_ unit: String) -> String {
+        unitCanonicalForm[unit.lowercased()] ?? unit.lowercased()
+    }
+
     static func parse(_ rawLine: String) -> RecipeIngredientEntry {
         let trimmed = normalize(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -80,8 +112,9 @@ enum IngredientLineParser {
         let original = text
         text = text.drop { $0 == " " }
 
-        // Mixed number: "1 1/2"
-        if let mixed = matchPrefix(of: text, pattern: #"^(\d+)\s+(\d+)\/(\d+)\s*"#) {
+        // Mixed number: "1 1/2" (digit runs bounded for the same overflow
+        // reason as the decimal/integer case below).
+        if let mixed = matchPrefix(of: text, pattern: #"^(\d{1,6})\s+(\d{1,6})\/(\d{1,6})\s*"#) {
             let comps = mixed.components(separatedBy: CharacterSet(charactersIn: " /"))
                 .filter { !$0.isEmpty }
             if comps.count == 3, let whole = Double(comps[0]), let num = Double(comps[1]), let den = Double(comps[2]), den != 0 {
@@ -90,15 +123,21 @@ enum IngredientLineParser {
             }
         }
         // Simple fraction: "1/2"
-        if let fraction = matchPrefix(of: text, pattern: #"^(\d+)\/(\d+)\s*"#) {
+        if let fraction = matchPrefix(of: text, pattern: #"^(\d{1,6})\/(\d{1,6})\s*"#) {
             let comps = fraction.components(separatedBy: "/").map { $0.trimmingCharacters(in: .whitespaces) }
             if comps.count == 2, let num = Double(comps[0]), let den = Double(comps[1]), den != 0 {
                 text = text.dropFirst(fraction.count)
                 return num / den
             }
         }
-        // Decimal or integer: "2", "1.5"
-        if let number = matchPrefix(of: text, pattern: #"^(\d+(\.\d+)?)\s*"#) {
+        // Decimal or integer: "2", "1.5". Capped at 6 digits before the
+        // decimal point — no real recipe quantity needs more than that, and
+        // without a cap a stray run of digits (garbled source markup, a
+        // product code that landed in the ingredient text, ...) parses as a
+        // quantity in the billions/trillions, which later formatting code
+        // can't safely convert to an `Int`. Uncapped digits are left as text
+        // instead of becoming a bogus quantity.
+        if let number = matchPrefix(of: text, pattern: #"^(\d{1,6}(\.\d+)?)\s*"#) {
             let numeric = number.trimmingCharacters(in: .whitespaces)
             if let value = Double(numeric) {
                 text = text.dropFirst(number.count)

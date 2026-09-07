@@ -65,20 +65,44 @@ struct RecipeIngredientEntry: Codable, Hashable, Identifiable {
 
 enum IngredientQuantityFormatter {
     static func string(for value: Double) -> String {
+        // `Int(_: Double)` traps on a value that isn't finite or doesn't fit
+        // in an `Int` — possible here since this also formats *summed*
+        // quantities from GroceryListBuilder (several recipes' amounts added
+        // together), not just a single parsed line. Anything outside a sane
+        // range for a grocery quantity falls back to plain decimal text
+        // instead of risking a crash.
+        guard value.isFinite, abs(value) < 1_000_000_000 else {
+            return String(format: "%.2f", value.isFinite ? value : 0)
+        }
+
+        // Absorb floating-point summation noise (three 1/3-cup ingredients
+        // add up to 0.9999999999999999, not 1.0) before checking for a whole
+        // number or a fraction match below — otherwise that lands in neither
+        // and prints as the confusing "1.00" instead of "1".
+        let value = (value * 10_000).rounded() / 10_000
+
         if value == value.rounded() {
             return String(Int(value))
         }
         // Render common cooking fractions nicely (1.5 -> "1 1/2") since
-        // that's how recipes actually read, down to eighths (baking
-        // measurements routinely use 1/8 and 3/8).
+        // that's how recipes actually read. Every fraction here matches one
+        // `IngredientLineParser` can parse from a unicode glyph (½ ⅓ ⅔ ¼ ¾
+        // ⅕ ⅖ ⅗ ⅘ ⅙ ⅚ ⅛ ⅜ ⅝ ⅞) — computed the same way (as num/den) so a
+        // parsed value lands almost exactly on its table entry instead of
+        // needing the tolerance below to find it. A fraction missing from
+        // this table isn't just an ugly decimal fallback: it can match the
+        // *wrong* nearby entry within tolerance and silently show a
+        // different quantity than was parsed, which is worse.
         let whole = Int(value)
         let fraction = value - Double(whole)
         let fractionsTable: [(Double, String)] = [
-            (0.125, "1/8"), (0.25, "1/4"), (1.0 / 3.0, "1/3"), (0.375, "3/8"),
-            (0.5, "1/2"), (0.625, "5/8"), (2.0 / 3.0, "2/3"), (0.75, "3/4"), (0.875, "7/8")
+            (1.0 / 8, "1/8"), (1.0 / 6, "1/6"), (1.0 / 5, "1/5"), (1.0 / 4, "1/4"),
+            (1.0 / 3, "1/3"), (3.0 / 8, "3/8"), (2.0 / 5, "2/5"), (1.0 / 2, "1/2"),
+            (3.0 / 5, "3/5"), (5.0 / 8, "5/8"), (2.0 / 3, "2/3"), (3.0 / 4, "3/4"),
+            (4.0 / 5, "4/5"), (5.0 / 6, "5/6"), (7.0 / 8, "7/8")
         ]
         if let match = fractionsTable.min(by: { abs($0.0 - fraction) < abs($1.0 - fraction) }),
-           abs(match.0 - fraction) < 0.03 {
+           abs(match.0 - fraction) < 0.01 {
             return whole > 0 ? "\(whole) \(match.1)" : match.1
         }
         return String(format: "%.2f", value)

@@ -48,8 +48,8 @@ struct RecipeDetailView: View {
                     }
                 }
 
-                if let sourceURL = recipe.sourceURL {
-                    Link(destination: URL(string: sourceURL) ?? URL(string: "https://example.com")!) {
+                if let sourceURL = recipe.sourceURL, let url = URL(string: sourceURL) {
+                    Link(destination: url) {
                         Label("View Original Recipe", systemImage: "arrow.up.right.square")
                     }
                 }

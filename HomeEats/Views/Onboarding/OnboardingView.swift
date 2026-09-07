@@ -8,7 +8,18 @@ struct OnboardingView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var activeUserSession: ActiveUserSession
 
-    @State private var names: [String] = [""]
+    @State private var entries: [NameEntry] = [NameEntry()]
+
+    /// A stable identity per row, independent of position. Indexing into
+    /// `names[index]` directly (the obvious first version of this screen)
+    /// is a classic SwiftUI crash: removing a row can leave a `TextField`
+    /// binding pointing at an index that's already out of range by the time
+    /// SwiftUI re-diffs. Giving each row its own `UUID` and removing by that
+    /// id sidesteps the whole class of bug.
+    private struct NameEntry: Identifiable {
+        let id = UUID()
+        var text: String = ""
+    }
 
     var body: some View {
         NavigationStack {
@@ -27,14 +38,14 @@ struct OnboardingView: View {
                 .padding(.top, 32)
 
                 VStack(spacing: 12) {
-                    ForEach(names.indices, id: \.self) { index in
+                    ForEach($entries) { $entry in
                         HStack {
-                            TextField("Name", text: $names[index])
+                            TextField("Name", text: $entry.text)
                                 .textFieldStyle(.roundedBorder)
                                 .textInputAutocapitalization(.words)
-                            if names.count > 1 {
+                            if entries.count > 1 {
                                 Button(role: .destructive) {
-                                    names.remove(at: index)
+                                    entries.removeAll { $0.id == entry.id }
                                 } label: {
                                     Image(systemName: "minus.circle.fill")
                                         .foregroundStyle(.red)
@@ -43,7 +54,7 @@ struct OnboardingView: View {
                         }
                     }
                     Button {
-                        names.append("")
+                        entries.append(NameEntry())
                     } label: {
                         Label("Add another person", systemImage: "plus.circle")
                     }
@@ -60,7 +71,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(names.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+                .disabled(entries.allSatisfy { $0.text.trimmingCharacters(in: .whitespaces).isEmpty })
                 .padding(.horizontal)
                 .padding(.bottom, 24)
             }
@@ -71,8 +82,8 @@ struct OnboardingView: View {
     private func createFamilyMembers() {
         let palette = ["4E9F3D", "2E86AB", "E4572E", "9B5DE5", "F4A259", "168AAD"]
         var created: [FamilyMember] = []
-        for (index, name) in names.enumerated() {
-            let trimmed = name.trimmingCharacters(in: .whitespaces)
+        for (index, entry) in entries.enumerated() {
+            let trimmed = entry.text.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty else { continue }
             let member = FamilyMember(name: trimmed, colorHex: palette[index % palette.count])
             modelContext.insert(member)

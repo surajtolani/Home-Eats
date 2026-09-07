@@ -56,6 +56,16 @@ struct CalendarPlanView: View {
             ToolbarItem(placement: .topBarLeading) {
                 ActiveUserMenu()
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                // The weekly notification also opens this flow, but that
+                // depends on the reminder actually firing — this button is
+                // the flow's only guaranteed-reachable entry point.
+                Button {
+                    showPlanningFlow = true
+                } label: {
+                    Label("Start Planning", systemImage: "wand.and.stars")
+                }
+            }
             if viewMode == .calendar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Today") { goToToday() }

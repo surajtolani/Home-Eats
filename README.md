@@ -136,7 +136,8 @@ stay visibly attributed even on a single shared phone.
    (`StaplesManagerView`), and per-item brand/product selection with a photo
    (`ProductOptionPickerView`, backed by `PhotosPicker`). A segmented control
    switches the list between "By Category" and **"My Grocery Layout"**
-   (`AislesManagerView` + drag-and-drop via `.draggable`/`.dropDestination`),
+   (`AislesManagerView` + drag-and-drop via the classic `NSItemProvider`-based
+   `.onDrag`/`.onDrop`),
    which lays items out by the household's own store aisles instead — drag an
    item from "Unsorted" onto an aisle to place it there for good
    (`ItemAisleAssignment`, keyed by canonical item name so it persists across
@@ -160,6 +161,26 @@ stay visibly attributed even on a single shared phone.
 
 This is a first build-out, scoped per the spec's own phasing notes:
 
+- **⚠️ Local storage resets on this update.** This round changed the SwiftData
+  schema (`DayPlan` → `PlannedMeal`/`MealSlot`) in a way lightweight migration
+  can't bridge, and also moved the on-disk store to an explicit path so a
+  failed-migration launch can recover instead of crashing forever
+  (`HomeEatsApp.swift`). Net effect: on-device data from before this commit —
+  family members, saved recipes, everything — is gone, and onboarding runs
+  again. Acceptable now (no real users yet); shipping a schema change like
+  this for real would need an actual `SchemaMigrationPlan`, not a reset.
+- **Two independent review passes found and fixed real bugs after the
+  meal-slot refactor** (double-check + red-team agents, `27ccd3f1..HEAD`):
+  two crashes (`Dictionary(uniqueKeysWithValues:)` trapping on duplicate
+  staple names, `Int(Double)` trapping on a garbled/huge parsed quantity),
+  the weekly-planning wizard's "Skip" button being dead code and the
+  reminder notification never actually being scheduled, deleting a
+  Recipe/Restaurant/FamilyMember orphaning `PlannedMeal`/`MealSuggestion`
+  references, an index-out-of-bounds risk on the onboarding screen, a unit
+  (cup vs. cups) that silently failed to combine in the grocery list, and a
+  fraction (⅖, ⅗, ...) that displayed as the *wrong* nearby fraction. See
+  the commit for the full list — this is the kind of review worth repeating
+  after any large refactor.
 - **Cloud sync is not implemented.** The settings screen has a disabled
   placeholder toggle; wiring it up means switching
   `ModelConfiguration(cloudKitDatabase:)` to `.automatic`, enabling the
