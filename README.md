@@ -65,7 +65,7 @@ account, per the spec. The models:
 | `FamilyMember` | A person in the household; every suggestion/decision is attributed to one. |
 | `Recipe` | Manual, imported, or built-in-library recipe: title, ingredients, step-by-step instructions. |
 | `RecipeIngredientEntry` | A parsed ingredient line (qty/unit/name/category) — a value type embedded on `Recipe`, not its own table. |
-| `Restaurant` | An eating-out option, assignable to a day like a recipe. |
+| `Restaurant` | An eating-out option, assignable to a day like a recipe. Carries an address for the map + Google Maps link. |
 | `DayPlan` | One per calendar day: either a decided recipe, a decided restaurant, or still-open suggestions. |
 | `MealSuggestion` | A family member's proposal for a day, with a lightweight up-vote list. |
 | `GroceryItem` | A generated (or manually added) shopping list line for a given week, with checked state and chosen product. |
@@ -73,6 +73,9 @@ account, per the spec. The models:
 | `StapleItem` | The household's standing "regular items" list (the notepad-on-the-fridge replacement). |
 | `MealHistoryEntry` | A record that a meal actually happened (separate from planning), feeding the recommendation engine. |
 | `AppSettings` | Singleton row: reminder day/time, household name, sync toggle placeholder. |
+| `StoreAisle` | A user-defined aisle in the household's actual grocery store, in walking order. |
+| `ItemAisleAssignment` | Which aisle a canonical item name belongs in — persists across weeks. |
+| `HistoricalGroceryItem` | The "past groceries" catalog (populated by pasting an old list) for one-tap re-adding. |
 
 **Services** worth knowing about:
 - `GroceryListBuilder` aggregates ingredients across a week's home-cooked
@@ -104,10 +107,15 @@ stay visibly attributed even on a single shared phone.
 2. **Recipe library** — `RecipesHomeView`'s "Library" tab, seeded from
    `BuiltInRecipes.json`; "Save" copies a library recipe into "My Recipes"
    without duplicating data (`Recipe.isSavedToCollection`).
-3. **Day-by-day planning** — `WeekPlanView` / `DayPlanDetailView`, one
-   `DayPlan` per date, independently assignable to a recipe or a restaurant.
-4. **Restaurant planning** — `RestaurantListView` / `RestaurantEditorView`;
-   restaurants are first-class, assignable to a `DayPlan` exactly like a recipe.
+3. **Day-by-day planning** — `CalendarPlanView` (a real month calendar you
+   can page through, past days dimmed, a "Today" button) / `DayPlanDetailView`,
+   one `DayPlan` per date, independently assignable to a recipe or a restaurant.
+4. **Restaurant planning** — `RestaurantListView` / `RestaurantEditorView` /
+   `RestaurantDetailView`; restaurants are first-class, assignable to a
+   `DayPlan` exactly like a recipe. The detail view geocodes the restaurant's
+   address into an embedded MapKit map (no API key needed) and a button opens
+   the same place in Google Maps for reviews/photos, which Apple's free maps
+   APIs don't expose.
 5. **Planning notifications** — `SettingsView` configures day/time;
    `NotificationScheduler` schedules it; tapping it opens
    `PlanningReminderFlowView`, a day-by-day wizard over the upcoming week's
@@ -115,7 +123,16 @@ stay visibly attributed even on a single shared phone.
 6. **Grocery list generation** — `GroceryListView` + `GroceryListBuilder`;
    category grouping, duplicate merging, a staples section
    (`StaplesManagerView`), and per-item brand/product selection with a photo
-   (`ProductOptionPickerView`, backed by `PhotosPicker`).
+   (`ProductOptionPickerView`, backed by `PhotosPicker`). A segmented control
+   switches the list between "By Category" and **"My Grocery Layout"**
+   (`AislesManagerView` + drag-and-drop via `.draggable`/`.dropDestination`),
+   which lays items out by the household's own store aisles instead — drag an
+   item from "Unsorted" onto an aisle to place it there for good
+   (`ItemAisleAssignment`, keyed by canonical item name so it persists across
+   weeks). A **"From Your Past Groceries"** section at the bottom
+   (`HistoricalGroceryItem`) lists everything you've bought before, grouped by
+   category, with a one-tap **+** to add it to this week's list; populate it in
+   bulk by pasting an old list (`GroceryHistoryImportSheet`).
 7. **Cooking guidance** — `RecipeDetailView` shows numbered step-by-step
    instructions.
 8. **Meal history & recommendations** — `MealHistoryView` logs what was
@@ -148,6 +165,21 @@ This is a first build-out, scoped per the spec's own phasing notes:
   `PhotosPicker` when creating a `ProductOption` — no brand imagery ships in
   the app.
 - **No app icon artwork** is included (see the placeholder note above).
+- **Cross-section drag-and-drop in "My Grocery Layout"** uses SwiftUI's
+  `.draggable`/`.dropDestination` (iOS 17+), which is untested on a real
+  device as of this writing — the drop target for an empty aisle Section is
+  just its header/footer row, which may need a more generous hit area once
+  tried on hardware.
+- **The Google Maps button builds a plain search-URL deep link** (no API
+  key, no cost) — it opens the real Google Maps app/site for reviews and
+  photos rather than showing them natively in Home Eats. True in-app Google
+  reviews would require a paid Google Places API key.
+- **AI-assisted recipe import (ChatGPT/Claude) is not built yet.** A
+  consumer ChatGPT Plus/Claude Pro subscription can't be "connected" to a
+  third-party app — that access is a separate, usage-billed developer API
+  key. The intended design is a Settings field for the user's own
+  OpenAI/Anthropic API key, used to reformat a pasted recipe/link into the
+  standardized layout while preserving the original source link.
 - The project file is generated (`xcodegen generate`) rather than checked
   in, to avoid `.pbxproj` merge conflicts; regenerate it after pulling
   changes that add/remove/move source files.

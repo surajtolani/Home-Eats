@@ -6,7 +6,6 @@ struct RestaurantListView: View {
     @Query(sort: \Restaurant.name) private var restaurants: [Restaurant]
 
     @State private var showEditor = false
-    @State private var editingRestaurant: Restaurant?
 
     var body: some View {
         List {
@@ -18,8 +17,8 @@ struct RestaurantListView: View {
                 )
             }
             ForEach(restaurants) { restaurant in
-                Button {
-                    editingRestaurant = restaurant
+                NavigationLink {
+                    RestaurantDetailView(restaurant: restaurant)
                 } label: {
                     HStack {
                         VStack(alignment: .leading) {
@@ -53,9 +52,6 @@ struct RestaurantListView: View {
         }
         .sheet(isPresented: $showEditor) {
             RestaurantEditorView()
-        }
-        .sheet(item: $editingRestaurant) { restaurant in
-            RestaurantEditorView(existing: restaurant)
         }
     }
 }

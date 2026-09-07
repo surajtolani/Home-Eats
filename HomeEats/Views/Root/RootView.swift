@@ -20,7 +20,7 @@ struct RootView: View {
             } else {
                 TabView(selection: $selectedTab) {
                     NavigationStack {
-                        WeekPlanView(showPlanningFlow: $showPlanningFlow)
+                        CalendarPlanView(showPlanningFlow: $showPlanningFlow)
                     }
                     .tabItem { Label("Plan", systemImage: "calendar") }
                     .tag(Tab.plan)

@@ -18,7 +18,10 @@ struct HomeEatsApp: App {
             ProductOption.self,
             StapleItem.self,
             MealHistoryEntry.self,
-            AppSettings.self
+            AppSettings.self,
+            StoreAisle.self,
+            ItemAisleAssignment.self,
+            HistoricalGroceryItem.self
         ])
         // Local-first storage per spec: everything lives on-device by
         // default. `cloudKitDatabase: .none` keeps that explicit; flipping

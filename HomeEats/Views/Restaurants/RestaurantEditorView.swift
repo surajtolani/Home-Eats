@@ -15,6 +15,7 @@ struct RestaurantEditorView: View {
     @State private var cuisine: String = ""
     @State private var notes: String = ""
     @State private var websiteURL: String = ""
+    @State private var address: String = ""
     @State private var isFavorite: Bool = false
 
     init(existing: Restaurant? = nil, onSave: @escaping (Restaurant) -> Void = { _ in }) {
@@ -24,6 +25,7 @@ struct RestaurantEditorView: View {
         _cuisine = State(initialValue: existing?.cuisine ?? "")
         _notes = State(initialValue: existing?.notes ?? "")
         _websiteURL = State(initialValue: existing?.websiteURL ?? "")
+        _address = State(initialValue: existing?.address ?? "")
         _isFavorite = State(initialValue: existing?.isFavorite ?? false)
     }
 
@@ -33,10 +35,14 @@ struct RestaurantEditorView: View {
                 Section("Restaurant") {
                     TextField("Name", text: $name)
                     TextField("Cuisine (optional)", text: $cuisine)
+                    TextField("Address (optional)", text: $address)
+                        .textInputAutocapitalization(.words)
                     TextField("Website (optional)", text: $websiteURL)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                     Toggle("Favorite", isOn: $isFavorite)
+                } footer: {
+                    Text("Adding an address shows a map and lets you open the spot directly in Google Maps for reviews and photos.")
                 }
                 Section("Notes") {
                     TextEditor(text: $notes)
@@ -63,6 +69,7 @@ struct RestaurantEditorView: View {
         restaurant.cuisine = cuisine.isEmpty ? nil : cuisine
         restaurant.notes = notes.isEmpty ? nil : notes
         restaurant.websiteURL = websiteURL.isEmpty ? nil : websiteURL
+        restaurant.address = address.isEmpty ? nil : address
         restaurant.isFavorite = isFavorite
         if existing == nil {
             modelContext.insert(restaurant)

@@ -10,6 +10,9 @@ final class Restaurant {
     var cuisine: String?
     var notes: String?
     var websiteURL: String?
+    /// Free-text address, used to look the place up on a map and to build
+    /// the "open in Google Maps" link.
+    var address: String?
     var isFavorite: Bool
     var createdAt: Date
 
@@ -19,6 +22,7 @@ final class Restaurant {
         cuisine: String? = nil,
         notes: String? = nil,
         websiteURL: String? = nil,
+        address: String? = nil,
         isFavorite: Bool = false,
         createdAt: Date = .now
     ) {
@@ -27,6 +31,7 @@ final class Restaurant {
         self.cuisine = cuisine
         self.notes = notes
         self.websiteURL = websiteURL
+        self.address = address
         self.isFavorite = isFavorite
         self.createdAt = createdAt
     }
