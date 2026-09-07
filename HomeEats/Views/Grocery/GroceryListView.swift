@@ -252,21 +252,14 @@ struct GroceryListView: View {
     private var quickAddFromHistorySection: some View {
         if !historicalItems.isEmpty {
             Section {
-                ForEach(historicalCategoriesGrouped, id: \.0) { category, categoryItems in
-                    DisclosureGroup(category.displayName) {
-                        ForEach(categoryItems) { historyItem in
-                            HStack {
-                                Text(historyItem.name)
-                                Spacer()
-                                Button {
-                                    quickAdd(historyItem)
-                                } label: {
-                                    Image(systemName: alreadyInList(historyItem) ? "checkmark.circle.fill" : "plus.circle")
-                                        .foregroundStyle(alreadyInList(historyItem) ? .brandForest : .accentColor)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(alreadyInList(historyItem))
-                            }
+                ForEach(historicalCategoriesGrouped) { group in
+                    DisclosureGroup(group.category.displayName) {
+                        ForEach(group.items) { historyItem in
+                            HistoryQuickAddRow(
+                                name: historyItem.name,
+                                isInList: alreadyInList(historyItem),
+                                onAdd: { quickAdd(historyItem) }
+                            )
                         }
                     }
                 }
@@ -278,10 +271,23 @@ struct GroceryListView: View {
         }
     }
 
-    private var historicalCategoriesGrouped: [(GroceryCategory, [HistoricalGroceryItem])] {
+    /// A small `Identifiable` wrapper around the grouping result, rather than
+    /// a raw `(GroceryCategory, [HistoricalGroceryItem])` tuple — `ForEach`
+    /// over a tuple array (`id: \.0`) nested this deeply (Section > ForEach >
+    /// DisclosureGroup > ForEach) is a known SwiftUI type-checker trap: it
+    /// can fail with misleading "generic parameter could not be inferred" /
+    /// "expected argument type Binding<...>" errors that have nothing to do
+    /// with the actual code. A named, `Identifiable` element sidesteps it.
+    private struct HistoricalCategoryGroup: Identifiable {
+        let category: GroceryCategory
+        let items: [HistoricalGroceryItem]
+        var id: String { category.rawValue }
+    }
+
+    private var historicalCategoriesGrouped: [HistoricalCategoryGroup] {
         Dictionary(grouping: historicalItems, by: \.category)
             .sorted { $0.key.sortIndex < $1.key.sortIndex }
-            .map { ($0.key, $0.value.sorted { $0.name < $1.name }) }
+            .map { HistoricalCategoryGroup(category: $0.key, items: $0.value.sorted { $0.name < $1.name }) }
     }
 
     private func alreadyInList(_ historyItem: HistoricalGroceryItem) -> Bool {
@@ -345,6 +351,34 @@ struct GroceryListView: View {
 
     private func delete(_ items: [GroceryItem], at offsets: IndexSet) {
         for index in offsets { modelContext.delete(items[index]) }
+    }
+}
+
+/// One row of `quickAddFromHistorySection`, pulled out to its own `View`
+/// rather than inlined — see the comment on `HistoricalCategoryGroup` above.
+private struct HistoryQuickAddRow: View {
+    let name: String
+    let isInList: Bool
+    let onAdd: () -> Void
+
+    private var iconName: String {
+        isInList ? "checkmark.circle.fill" : "plus.circle"
+    }
+    private var iconColor: Color {
+        isInList ? .brandForest : .accentColor
+    }
+
+    var body: some View {
+        HStack {
+            Text(name)
+            Spacer()
+            Button(action: onAdd) {
+                Image(systemName: iconName)
+                    .foregroundStyle(iconColor)
+            }
+            .buttonStyle(.plain)
+            .disabled(isInList)
+        }
     }
 }
 
