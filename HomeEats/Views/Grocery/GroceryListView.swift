@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import UniformTypeIdentifiers
 
 private enum GroceryViewMode: String, CaseIterable, Identifiable {
     case byCategory = "By Category"
@@ -171,7 +172,7 @@ struct GroceryListView: View {
                 Text("Everything's sorted into an aisle.").foregroundStyle(.secondary)
             }
             ForEach(unassigned) { item in
-                row(for: item).draggable(item.name)
+                row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
             }
         } header: {
             Text("Unsorted")
@@ -180,7 +181,9 @@ struct GroceryListView: View {
                  ? "Add your store's aisles from the toolbar, then drag items onto them."
                  : "Drag an item onto an aisle below to place it there for good.")
         }
-        .dropDestination(for: String.self) { names, _ in unassign(names) }
+        .onDrop(of: [.plainText], isTargeted: nil) { providers in
+            handleDrop(providers, assigningTo: nil)
+        }
 
         ForEach(aisles) { aisle in
             let aisleItems = items.filter { aisleID(for: $0) == aisle.id }
@@ -189,11 +192,33 @@ struct GroceryListView: View {
                     Text("Drop items here").font(.caption).foregroundStyle(.tertiary)
                 }
                 ForEach(aisleItems) { item in
-                    row(for: item).draggable(item.name)
+                    row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
                 }
             }
-            .dropDestination(for: String.self) { names, _ in assign(names, to: aisle) }
+            .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                handleDrop(providers, assigningTo: aisle)
+            }
         }
+    }
+
+    /// Reads the dragged item's name back out of the drop payload and
+    /// (re)assigns its aisle. `NSItemProvider` loading is callback-based and
+    /// not guaranteed to land on the main thread, so the actual model
+    /// mutation is dispatched back to the main actor.
+    private func handleDrop(_ providers: [NSItemProvider], assigningTo aisle: StoreAisle?) -> Bool {
+        guard let provider = providers.first else { return false }
+        guard provider.canLoadObject(ofClass: NSString.self) else { return false }
+        provider.loadObject(ofClass: NSString.self) { reading, _ in
+            guard let name = reading as? String else { return }
+            Task { @MainActor in
+                if let aisle {
+                    assign([name], to: aisle)
+                } else {
+                    unassign([name])
+                }
+            }
+        }
+        return true
     }
 
     private func aisleID(for item: GroceryItem) -> UUID? {

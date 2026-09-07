@@ -165,11 +165,13 @@ This is a first build-out, scoped per the spec's own phasing notes:
   `PhotosPicker` when creating a `ProductOption` — no brand imagery ships in
   the app.
 - **No app icon artwork** is included (see the placeholder note above).
-- **Cross-section drag-and-drop in "My Grocery Layout"** uses SwiftUI's
-  `.draggable`/`.dropDestination` (iOS 17+), which is untested on a real
-  device as of this writing — the drop target for an empty aisle Section is
-  just its header/footer row, which may need a more generous hit area once
-  tried on hardware.
+- **Cross-section drag-and-drop in "My Grocery Layout"** uses the classic
+  `NSItemProvider`-based `.onDrag`/`.onDrop` (stable since early iOS, no SDK
+  surprises) rather than SwiftUI's newer `.draggable`/`.dropDestination` —
+  that pair turned out to need a newer iOS than this app targets. Untested on
+  a real device as of this writing — the drop target for an empty aisle
+  Section is just its header/footer row, which may need a more generous hit
+  area once tried on hardware.
 - **The Google Maps button builds a plain search-URL deep link** (no API
   key, no cost) — it opens the real Google Maps app/site for reviews and
   photos rather than showing them natively in Home Eats. True in-app Google
