@@ -186,7 +186,11 @@ private enum SheetAction: Identifiable {
 /// One of the three single-tap "decide now" buttons in a slot section.
 /// Deliberately small and quiet — this is the "add" affordance, not the
 /// content, and shouldn't visually compete with an actual planned meal
-/// (`PlannedMealRow`'s icon+pill shape, below) once one exists.
+/// (`PlannedMealRow`'s icon+pill shape, below) once one exists. Explicitly
+/// NOT `.buttonStyle(.bordered)`: that style draws its own background with
+/// its own fixed minimum padding/height, which doesn't actually shrink just
+/// because the font inside it does — `.plain` plus a hand-drawn outline is
+/// what makes this genuinely smaller than the pill above, not just the text.
 private struct SlotAddButton: View {
     let title: String
     let systemImage: String
@@ -194,20 +198,24 @@ private struct SlotAddButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 Image(systemName: systemImage)
-                    .font(.brandFootnote)
+                    .font(.system(size: 10))
                 Text(title)
-                    .font(.brandCaption2)
+                    .font(.system(size: 9))
                     .multilineTextAlignment(.center)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.7)
             }
+            .foregroundStyle(Color.accentColor)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 5)
+            .padding(.vertical, 2)
+            .background {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1)
+            }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(.plain)
     }
 }
 
