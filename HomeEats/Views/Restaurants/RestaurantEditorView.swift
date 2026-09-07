@@ -32,7 +32,7 @@ struct RestaurantEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Restaurant") {
+                Section {
                     TextField("Name", text: $name)
                     TextField("Cuisine (optional)", text: $cuisine)
                     TextField("Address (optional)", text: $address)
@@ -41,6 +41,8 @@ struct RestaurantEditorView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                     Toggle("Favorite", isOn: $isFavorite)
+                } header: {
+                    Text("Restaurant")
                 } footer: {
                     Text("Adding an address shows a map and lets you open the spot directly in Google Maps for reviews and photos.")
                 }
