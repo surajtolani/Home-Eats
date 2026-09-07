@@ -1,12 +1,14 @@
 import SwiftUI
 import SwiftData
 
-/// The Plan tab. Two ways to look at the same data:
+/// The Plan tab. Two ways to look at the same data, switchable from the
+/// segmented control up top; the "Today" button in the toolbar stays visible
+/// in both:
 /// - **Calendar**: a month grid up top (past days dimmed, today highlighted);
 ///   tapping a date anchors an agenda list below it showing that date and
 ///   everything after, so you can page months out and still see what's ahead.
-/// - **This Week**: a flat agenda of just the current 7 days, for a quick
-///   glance without the grid.
+/// - **Weekly**: a flat agenda of just the current 7 days (past days dimmed,
+///   same as the calendar grid), for a quick glance without the grid.
 struct CalendarPlanView: View {
     @Binding var showPlanningFlow: Bool
 
@@ -19,7 +21,7 @@ struct CalendarPlanView: View {
 
     private enum PlanViewMode: String, CaseIterable, Identifiable {
         case calendar = "Calendar"
-        case thisWeek = "This Week"
+        case thisWeek = "Weekly"
         var id: String { rawValue }
     }
 
@@ -66,11 +68,14 @@ struct CalendarPlanView: View {
                     Label("Start Planning", systemImage: "wand.and.stars")
                 }
             }
-            if viewMode == .calendar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Today") { goToToday() }
-                        .disabled(isShowingCurrentMonth)
-                }
+            // Visible in both view modes — not just Calendar — so switching
+            // to Weekly never hides the way back to "now": it also resets
+            // Calendar's own position (month + selected date) in the
+            // background, so Calendar is back on the current month whenever
+            // you next switch to it, even if you never revisit it directly.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Today") { goToToday() }
+                    .disabled(isShowingCurrentMonth)
             }
         }
         .fullScreenCover(isPresented: $showPlanningFlow) {
@@ -102,7 +107,12 @@ struct CalendarPlanView: View {
                         AgendaDayRow(
                             date: day,
                             meals: meals(on: day),
-                            suggestionCount: suggestionCount(on: day)
+                            suggestionCount: suggestionCount(on: day),
+                            // This agenda only ever lists selectedDate and
+                            // days after it, so it never actually contains a
+                            // past day — explicit false rather than computing
+                            // it, since it'd always evaluate to false anyway.
+                            isPast: false
                         )
                     }
                 }
@@ -193,6 +203,7 @@ struct CalendarPlanView: View {
     // MARK: - This Week mode
 
     private var thisWeekAgenda: some View {
+        let today = calendar.startOfDay(for: .now)
         let weekDays = calendar.daysOfWeek(containing: .now)
         return List {
             Section {
@@ -203,7 +214,8 @@ struct CalendarPlanView: View {
                         AgendaDayRow(
                             date: day,
                             meals: meals(on: day),
-                            suggestionCount: suggestionCount(on: day)
+                            suggestionCount: suggestionCount(on: day),
+                            isPast: day < today
                         )
                     }
                 }
@@ -293,6 +305,7 @@ private struct AgendaDayRow: View {
     let date: Date
     let meals: [PlannedMeal]
     let suggestionCount: Int
+    let isPast: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -331,5 +344,6 @@ private struct AgendaDayRow: View {
             }
         }
         .padding(.vertical, 4)
+        .opacity(isPast ? 0.45 : 1)
     }
 }
