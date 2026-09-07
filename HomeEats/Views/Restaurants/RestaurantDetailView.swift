@@ -51,8 +51,8 @@ struct RestaurantDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
-                    Text(cuisine)
+                if let descriptorLine = restaurant.descriptorLine {
+                    Text(descriptorLine)
                         .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
                 }

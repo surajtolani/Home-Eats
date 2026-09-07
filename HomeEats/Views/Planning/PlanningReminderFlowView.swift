@@ -22,6 +22,7 @@ struct PlanningReminderFlowView: View {
     @State private var skippedDates: Set<Date> = []
     @State private var showRecipePicker = false
     @State private var showRestaurantPicker = false
+    @State private var showOrderInPicker = false
 
     private var calendar: Calendar { Calendar.current }
 
@@ -111,6 +112,15 @@ struct PlanningReminderFlowView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
+                Button {
+                    showOrderInPicker = true
+                } label: {
+                    Label("Order In", systemImage: "bag")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
                 NavigationLink {
                     DayDetailView(date: date)
                 } label: {
@@ -137,14 +147,20 @@ struct PlanningReminderFlowView: View {
                 decideDinner(date: date, restaurant: restaurant)
             }
         }
+        .sheet(isPresented: $showOrderInPicker) {
+            RestaurantPickerSheet { restaurant in
+                decideDinner(date: date, restaurant: restaurant, isOrderIn: true)
+            }
+        }
     }
 
-    private func decideDinner(date: Date, recipe: Recipe? = nil, restaurant: Restaurant? = nil) {
+    private func decideDinner(date: Date, recipe: Recipe? = nil, restaurant: Restaurant? = nil, isOrderIn: Bool = false) {
         let meal = PlannedMeal(
             date: date,
             slot: .dinner,
             recipe: recipe,
             restaurant: restaurant,
+            isOrderIn: isOrderIn,
             decidedByMemberID: activeUserSession.activeMemberID
         )
         modelContext.insert(meal)

@@ -40,8 +40,8 @@ struct RestaurantListView: View {
                                             Image(systemName: "star.fill").foregroundStyle(.yellow).font(.brandCaption)
                                         }
                                     }
-                                    if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
-                                        Text(cuisine).font(.brandCaption).foregroundStyle(.secondary)
+                                    if let descriptorLine = restaurant.descriptorLine {
+                                        Text(descriptorLine).font(.brandCaption).foregroundStyle(.secondary)
                                     }
                                 }
                                 Spacer()

@@ -2,13 +2,14 @@ import SwiftUI
 import SwiftData
 
 /// The Plan tab. Two ways to look at the same data, switchable from the
-/// segmented control up top; the "Today" button in the toolbar stays visible
-/// in both:
+/// segmented control up top; the "Go to This Week" button in the toolbar
+/// stays visible in both:
 /// - **Calendar**: a month grid up top (past days dimmed, today highlighted);
 ///   tapping a date anchors an agenda list below it showing that date and
 ///   everything after, so you can page months out and still see what's ahead.
-/// - **Weekly**: a flat agenda of just the current 7 days (past days dimmed,
-///   same as the calendar grid), for a quick glance without the grid.
+/// - **Weekly**: a flat agenda of just one week at a time (past days
+///   dimmed, same as the calendar grid), with its own prev/next-week
+///   navigation, for a quick glance without the grid.
 struct CalendarPlanView: View {
     @Binding var showPlanningFlow: Bool
 
@@ -18,6 +19,10 @@ struct CalendarPlanView: View {
     @State private var displayedMonth: Date = Calendar.current.startOfMonth(for: .now)
     @State private var selectedDate: Date = Calendar.current.startOfDay(for: .now)
     @State private var viewMode: PlanViewMode = .calendar
+    /// Weeks away from the current week, for the Weekly agenda's own
+    /// prev/next navigation — independent of Calendar mode's month/date
+    /// state, since the two views page through time on different units.
+    @State private var weekOffset: Int = 0
 
     private enum PlanViewMode: String, CaseIterable, Identifiable {
         case calendar = "Calendar"
@@ -33,6 +38,18 @@ struct CalendarPlanView: View {
 
     private var isShowingCurrentMonth: Bool {
         calendar.isDate(displayedMonth, equalTo: .now, toGranularity: .month)
+    }
+
+    /// Whether the currently-active view mode is already showing "now", so
+    /// the "Go to This Week" button can disable itself instead of sitting
+    /// there as a no-op.
+    private var isAtDefaultPosition: Bool {
+        switch viewMode {
+        case .calendar:
+            return isShowingCurrentMonth && calendar.isDateInToday(selectedDate)
+        case .thisWeek:
+            return weekOffset == 0
+        }
     }
 
     var body: some View {
@@ -74,8 +91,8 @@ struct CalendarPlanView: View {
             // background, so Calendar is back on the current month whenever
             // you next switch to it, even if you never revisit it directly.
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Today") { goToToday() }
-                    .disabled(isShowingCurrentMonth)
+                Button("Go to This Week") { goToThisWeek() }
+                    .disabled(isAtDefaultPosition)
             }
         }
         .fullScreenCover(isPresented: $showPlanningFlow) {
@@ -100,6 +117,16 @@ struct CalendarPlanView: View {
             }
 
             Section {
+                // Deliberately not a `header:` — `List`/`Section` headers
+                // pin to the top while their section scrolls underneath,
+                // which here meant this title stayed fixed in place while
+                // the calendar grid above scrolled up behind it. As a plain
+                // row instead, it scrolls away with everything else.
+                Text(agendaHeaderTitle)
+                    .font(.brandHeadline)
+                    .foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
+
                 ForEach(agendaDates, id: \.self) { day in
                     NavigationLink {
                         DayDetailView(date: day)
@@ -116,8 +143,6 @@ struct CalendarPlanView: View {
                         )
                     }
                 }
-            } header: {
-                Text(agendaHeaderTitle)
             }
         }
         .listStyle(.plain)
@@ -150,9 +175,10 @@ struct CalendarPlanView: View {
 
     private var legend: some View {
         HStack(spacing: 16) {
-            legendItem(color: .green, label: "Cooking")
-            legendItem(color: .orange, label: "Eating out")
-            legendItem(color: .gray, label: "Suggested")
+            legendItem(color: .brandForest, label: "Cooking")
+            legendItem(color: .brandTerracotta, label: "Eating out")
+            legendItem(color: .brandHoney, label: "Order in")
+            legendItem(color: .brandSage, label: "Suggested")
         }
         .font(.brandCaption)
         .foregroundStyle(.secondary)
@@ -200,14 +226,39 @@ struct CalendarPlanView: View {
         .padding(.horizontal)
     }
 
-    // MARK: - This Week mode
+    // MARK: - Weekly mode
+
+    private var weekDays: [Date] {
+        let base = calendar.date(byAdding: .weekOfYear, value: weekOffset, to: .now) ?? .now
+        return calendar.daysOfWeek(containing: base)
+    }
+
+    private var weekRangeText: String {
+        guard let first = weekDays.first, let last = weekDays.last else { return "" }
+        return "\(first.formatted(Date.monthDay)) – \(last.formatted(Date.monthDay))"
+    }
+
+    private var weekHeader: some View {
+        HStack {
+            Button { weekOffset -= 1 } label: { Image(systemName: "chevron.left") }
+            Spacer()
+            Text(weekRangeText)
+                .font(.brandTitle2.bold())
+            Spacer()
+            Button { weekOffset += 1 } label: { Image(systemName: "chevron.right") }
+        }
+        .buttonStyle(.borderless)
+    }
 
     private var thisWeekAgenda: some View {
         let today = calendar.startOfDay(for: .now)
-        let weekDays = calendar.daysOfWeek(containing: .now)
+        let days = weekDays
         return List {
             Section {
-                ForEach(weekDays, id: \.self) { day in
+                weekHeader
+                    .listRowSeparator(.hidden)
+
+                ForEach(days, id: \.self) { day in
                     NavigationLink {
                         DayDetailView(date: day)
                     } label: {
@@ -219,8 +270,6 @@ struct CalendarPlanView: View {
                         )
                     }
                 }
-            } header: {
-                Text("\(weekDays.first?.formatted(Date.monthDay) ?? "") – \(weekDays.last?.formatted(Date.monthDay) ?? "")")
             }
         }
         .listStyle(.plain)
@@ -242,9 +291,10 @@ struct CalendarPlanView: View {
         }
     }
 
-    private func goToToday() {
+    private func goToThisWeek() {
         displayedMonth = calendar.startOfMonth(for: .now)
         selectedDate = calendar.startOfDay(for: .now)
+        weekOffset = 0
     }
 }
 
@@ -293,6 +343,8 @@ private struct DayCell: View {
             Circle().fill(Color.brandForest).frame(width: 6, height: 6)
         } else if meals.contains(where: { $0.isEatingOut }) {
             Circle().fill(Color.brandTerracotta).frame(width: 6, height: 6)
+        } else if meals.contains(where: { $0.isOrderingIn }) {
+            Circle().fill(Color.brandHoney).frame(width: 6, height: 6)
         } else if hasSuggestions {
             Circle().fill(Color.brandSage).frame(width: 6, height: 6)
         } else {

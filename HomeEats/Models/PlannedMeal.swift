@@ -14,6 +14,13 @@ final class PlannedMeal {
 
     var recipe: Recipe?
     var restaurant: Restaurant?
+    /// Distinguishes "eating at" a restaurant from "ordering delivery/
+    /// takeout from" one — same `restaurant` reference either way, so the
+    /// household's restaurant list doesn't need two separate entries per
+    /// place. Defaults to `false` (and has a default here, not just in the
+    /// initializer) so adding this attribute to existing `PlannedMeal` rows
+    /// stays a lightweight SwiftData migration.
+    var isOrderIn: Bool = false
     var decidedByMemberID: UUID?
     var decidedAt: Date
     var notes: String?
@@ -24,6 +31,7 @@ final class PlannedMeal {
         slot: MealSlot,
         recipe: Recipe? = nil,
         restaurant: Restaurant? = nil,
+        isOrderIn: Bool = false,
         decidedByMemberID: UUID? = nil,
         decidedAt: Date = .now,
         notes: String? = nil
@@ -33,6 +41,7 @@ final class PlannedMeal {
         self.slot = slot
         self.recipe = recipe
         self.restaurant = restaurant
+        self.isOrderIn = isOrderIn
         self.decidedByMemberID = decidedByMemberID
         self.decidedAt = decidedAt
         self.notes = notes
@@ -43,7 +52,9 @@ final class PlannedMeal {
     }
 
     var isHomeCooked: Bool { recipe != nil }
-    var isEatingOut: Bool { restaurant != nil }
+    /// Dining at the restaurant, as opposed to ordering in from it.
+    var isEatingOut: Bool { restaurant != nil && !isOrderIn }
+    var isOrderingIn: Bool { restaurant != nil && isOrderIn }
 
     var displayTitle: String {
         recipe?.title ?? restaurant?.name ?? "Planned"

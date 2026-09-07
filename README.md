@@ -65,9 +65,9 @@ account, per the spec. The models:
 | `FamilyMember` | A person in the household; every suggestion/decision is attributed to one. |
 | `Recipe` | Manual, imported, or built-in-library recipe: title, ingredients, step-by-step instructions. |
 | `RecipeIngredientEntry` | A parsed ingredient line (qty/unit/name/category) — a value type embedded on `Recipe`, not its own table. |
-| `Restaurant` | An eating-out option, assignable to a meal slot like a recipe. Carries an address for the map + Google Maps link. |
+| `Restaurant` | An eating-out *or* order-in option, assignable to a meal slot like a recipe. Carries an address for the map + Google Maps link, plus the household's own price range/rating (not pulled from Google — see below). |
 | `MealSlot` | Not a table — an enum (breakfast/lunch/dinner/other) that scopes `PlannedMeal` and `MealSuggestion` to a specific meal within a day. |
-| `PlannedMeal` | One decided meal for a (date, slot) — a recipe or a restaurant. A slot can hold more than one (a dinner plan *and* a separate ice-cream-run entry both fit). |
+| `PlannedMeal` | One decided meal for a (date, slot) — a recipe, or a restaurant either dined at (`isOrderIn: false`) or ordered from (`isOrderIn: true`). A slot can hold more than one (a dinner plan *and* a separate ice-cream-run entry both fit). |
 | `MealSuggestion` | A family member's proposal for a (date, slot), with a lightweight up-vote list. |
 | `GroceryItem` | A generated (or manually added) shopping list line for a given week, with checked state and chosen product. |
 | `ProductOption` | A specific brand/product for a generic grocery item, with a photo, so the shopper can match it on sight. |

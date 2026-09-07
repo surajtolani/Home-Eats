@@ -45,11 +45,7 @@ struct DayDetailView: View {
     @ViewBuilder
     private func slotSection(_ slot: MealSlot) -> some View {
         Section {
-            let decided = meals(for: slot)
-            if decided.isEmpty && suggestions(for: slot).isEmpty {
-                Text("Nothing planned yet.").foregroundStyle(.secondary)
-            }
-            ForEach(decided) { meal in
+            ForEach(meals(for: slot)) { meal in
                 PlannedMealRow(
                     meal: meal,
                     member: members.first(where: { $0.id == meal.decidedByMemberID }),
@@ -66,14 +62,26 @@ struct DayDetailView: View {
                 )
             }
 
+            // Three single-tap buttons instead of a two-tap "Add" menu — the
+            // three things you're actually deciding between for any given
+            // meal. Suggesting-for-a-vote is a less common path, so it stays
+            // reachable but out of the way, as a small menu below rather
+            // than a fourth equally-weighted button.
+            HStack(spacing: 8) {
+                SlotAddButton(title: "Add a Recipe", systemImage: "frying.pan") {
+                    activeSheet = .addRecipe(slot)
+                }
+                SlotAddButton(title: "Eat Out", systemImage: "fork.knife") {
+                    activeSheet = .addRestaurant(slot)
+                }
+                SlotAddButton(title: "Order In", systemImage: "bag") {
+                    activeSheet = .orderIn(slot)
+                }
+            }
+            .padding(.vertical, 4)
+            .listRowSeparator(.hidden)
+
             Menu {
-                Button { activeSheet = .addRecipe(slot) } label: {
-                    Label("Cook a Recipe", systemImage: "frying.pan")
-                }
-                Button { activeSheet = .addRestaurant(slot) } label: {
-                    Label("Eat Out", systemImage: "fork.knife")
-                }
-                Divider()
                 Button { activeSheet = .suggestRecipe(slot) } label: {
                     Label("Suggest a Recipe", systemImage: "bubble.left")
                 }
@@ -81,8 +89,9 @@ struct DayDetailView: View {
                     Label("Suggest a Restaurant", systemImage: "bubble.left")
                 }
             } label: {
-                Label("Add to \(slot.displayName)", systemImage: "plus")
+                Text("Suggest something instead (for a vote)")
             }
+            .font(.brandCaption)
         } header: {
             Label(slot.displayName, systemImage: slot.symbolName)
         }
@@ -99,6 +108,10 @@ struct DayDetailView: View {
             RestaurantPickerSheet { restaurant in
                 decide(slot: slot, restaurant: restaurant)
             }
+        case .orderIn(let slot):
+            RestaurantPickerSheet { restaurant in
+                decide(slot: slot, restaurant: restaurant, isOrderIn: true)
+            }
         case .suggestRecipe(let slot):
             RecipePickerSheet { recipe in
                 addSuggestion(slot: slot, recipe: recipe)
@@ -112,12 +125,13 @@ struct DayDetailView: View {
         }
     }
 
-    private func decide(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil) {
+    private func decide(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil, isOrderIn: Bool = false) {
         let meal = PlannedMeal(
             date: normalizedDate,
             slot: slot,
             recipe: recipe,
             restaurant: restaurant,
+            isOrderIn: isOrderIn,
             decidedByMemberID: activeUserSession.activeMemberID
         )
         modelContext.insert(meal)
@@ -152,6 +166,7 @@ struct DayDetailView: View {
 private enum SheetAction: Identifiable {
     case addRecipe(MealSlot)
     case addRestaurant(MealSlot)
+    case orderIn(MealSlot)
     case suggestRecipe(MealSlot)
     case suggestRestaurant(MealSlot)
     case logMeal(PlannedMeal)
@@ -160,10 +175,34 @@ private enum SheetAction: Identifiable {
         switch self {
         case .addRecipe(let slot): return "addRecipe-\(slot.rawValue)"
         case .addRestaurant(let slot): return "addRestaurant-\(slot.rawValue)"
+        case .orderIn(let slot): return "orderIn-\(slot.rawValue)"
         case .suggestRecipe(let slot): return "suggestRecipe-\(slot.rawValue)"
         case .suggestRestaurant(let slot): return "suggestRestaurant-\(slot.rawValue)"
         case .logMeal(let meal): return "logMeal-\(meal.id.uuidString)"
         }
+    }
+}
+
+/// One of the three single-tap "decide now" buttons in a slot section.
+private struct SlotAddButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                Text(title)
+                    .font(.brandCaption)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.bordered)
     }
 }
 
@@ -180,7 +219,12 @@ private struct PlannedMealRow: View {
                     RecipeDetailView(recipe: recipe)
                 }
             } else {
-                Text(meal.displayTitle)
+                HStack(spacing: 4) {
+                    if meal.isOrderingIn {
+                        Image(systemName: "bag").foregroundStyle(.secondary)
+                    }
+                    Text(meal.displayTitle)
+                }
             }
             Spacer()
             if let member {

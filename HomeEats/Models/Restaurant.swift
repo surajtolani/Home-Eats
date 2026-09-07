@@ -8,6 +8,14 @@ final class Restaurant {
     @Attribute(.unique) var id: UUID
     var name: String
     var cuisine: String?
+    /// "$" through "$$$$" — the household's own call, not pulled from
+    /// anywhere: Apple's free local-search API (what this app uses instead
+    /// of the paid Google Places API — see `RestaurantSearchModel`) doesn't
+    /// expose price level or ratings, so there's no real "Google rating" to
+    /// fetch here without a billed API key.
+    var priceRange: String?
+    /// The household's own 1–5 rating, same reason as `priceRange`.
+    var rating: Int?
     var notes: String?
     var websiteURL: String?
     /// Free-text address, used to look the place up on a map and to build
@@ -20,6 +28,8 @@ final class Restaurant {
         id: UUID = UUID(),
         name: String,
         cuisine: String? = nil,
+        priceRange: String? = nil,
+        rating: Int? = nil,
         notes: String? = nil,
         websiteURL: String? = nil,
         address: String? = nil,
@@ -29,10 +39,24 @@ final class Restaurant {
         self.id = id
         self.name = name
         self.cuisine = cuisine
+        self.priceRange = priceRange
+        self.rating = rating
         self.notes = notes
         self.websiteURL = websiteURL
         self.address = address
         self.isFavorite = isFavorite
         self.createdAt = createdAt
+    }
+
+    /// A single "Italian · $$ · ★★★★☆" line for list/detail display, Google
+    /// Maps info-card style — only the pieces that are actually set.
+    var descriptorLine: String? {
+        var parts: [String] = []
+        if let cuisine, !cuisine.isEmpty { parts.append(cuisine) }
+        if let priceRange, !priceRange.isEmpty { parts.append(priceRange) }
+        if let rating, rating > 0 {
+            parts.append(String(repeating: "★", count: rating) + String(repeating: "☆", count: 5 - rating))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

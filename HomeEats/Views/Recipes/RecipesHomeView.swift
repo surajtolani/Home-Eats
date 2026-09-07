@@ -10,6 +10,7 @@ struct RecipesHomeView: View {
     @State private var searchText = ""
     @State private var showImportSheet = false
     @State private var showManualEditor = false
+    @State private var quickAddRecipe: Recipe?
 
     enum Section: String, CaseIterable, Identifiable {
         case mine = "My Recipes"
@@ -58,11 +59,7 @@ struct RecipesHomeView: View {
                     // recipe the user hasn't saved isn't theirs to delete,
                     // so the row wouldn't do anything if swiped there.
                     ForEach(displayedRecipes) { recipe in
-                        NavigationLink {
-                            RecipeDetailView(recipe: recipe)
-                        } label: {
-                            RecipeRow(recipe: recipe)
-                        }
+                        recipeRow(recipe)
                     }
                     .onDelete { offsets in
                         for index in offsets {
@@ -78,11 +75,7 @@ struct RecipesHomeView: View {
                     }
                 } else {
                     ForEach(displayedRecipes) { recipe in
-                        NavigationLink {
-                            RecipeDetailView(recipe: recipe)
-                        } label: {
-                            RecipeRow(recipe: recipe)
-                        }
+                        recipeRow(recipe)
                     }
                 }
             }
@@ -113,6 +106,34 @@ struct RecipesHomeView: View {
         }
         .sheet(isPresented: $showImportSheet) {
             RecipeImportView()
+        }
+        .sheet(item: $quickAddRecipe) { recipe in
+            QuickAddToPlanSheet(recipe: recipe)
+        }
+    }
+
+    /// A "+" to jump straight to `QuickAddToPlanSheet`, plus the row itself.
+    /// The "+" sits outside the `NavigationLink` (as a sibling, not nested
+    /// inside its label) so tapping it adds to the plan instead of opening
+    /// the recipe — a button nested inside a NavigationLink's label fires
+    /// both gestures at once.
+    @ViewBuilder
+    private func recipeRow(_ recipe: Recipe) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                quickAddRecipe = recipe
+            } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(.brandTitle2)
+                    .foregroundStyle(.accentColor)
+            }
+            .buttonStyle(.plain)
+
+            NavigationLink {
+                RecipeDetailView(recipe: recipe)
+            } label: {
+                RecipeRow(recipe: recipe)
+            }
         }
     }
 }
