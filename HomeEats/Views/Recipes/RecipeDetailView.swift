@@ -78,7 +78,7 @@ struct RecipeDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             if !recipe.tags.isEmpty {
                 HStack {
-                    ForEach(recipe.tags, id: \.self) { tag in
+                    ForEach(Array(recipe.tags.enumerated()), id: \.offset) { _, tag in
                         Text(tag)
                             .font(.caption2.bold())
                             .padding(.horizontal, 8)

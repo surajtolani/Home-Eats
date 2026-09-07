@@ -84,8 +84,12 @@ struct CalendarPlanView: View {
     }
 
     private var weekdayHeaderRow: some View {
+        // Index the 7 fixed slots rather than using the letter as the ID —
+        // "very short" weekday symbols repeat (e.g. Sunday and Saturday are
+        // both "S" in English), which would otherwise give SwiftUI duplicate
+        // IDs in the same ForEach.
         HStack {
-            ForEach(calendar.orderedVeryShortWeekdaySymbols, id: \.self) { symbol in
+            ForEach(Array(calendar.orderedVeryShortWeekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                 Text(symbol)
                     .font(.caption2.bold())
                     .foregroundStyle(.secondary)
