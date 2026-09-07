@@ -37,6 +37,12 @@ targets:
           NSAllowsArbitraryLoads: true
         CFBundleDisplayName: Home Eats
         ITSAppUsesNonExemptEncryption: false
+        UIAppFonts:
+          - Nunito-Light.ttf
+          - Nunito-Regular.ttf
+          - Nunito-Medium.ttf
+          - Nunito-SemiBold.ttf
+          - Nunito-Bold.ttf
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: family.homeeats.app

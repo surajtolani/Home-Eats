@@ -48,7 +48,7 @@ struct ProductOptionPickerView: View {
                                 VStack(alignment: .leading) {
                                     Text(option.brandName).foregroundStyle(.primary)
                                     if let details = option.details, !details.isEmpty {
-                                        Text(details).font(.caption).foregroundStyle(.secondary)
+                                        Text(details).font(.brandCaption).foregroundStyle(.secondary)
                                     }
                                 }
                             }

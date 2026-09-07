@@ -8,6 +8,11 @@ struct HomeEatsApp: App {
     @StateObject private var activeUserSession = ActiveUserSession()
 
     init() {
+        // Nav bar / tab bar chrome is drawn by UIKit, which SwiftUI's
+        // `.font`/`.tint` modifiers on `RootView` below don't reach — this
+        // is the one-time hook that applies the Nunito/brand-color look to it.
+        BrandAppearance.apply()
+
         let schema = Schema([
             FamilyMember.self,
             Recipe.self,
@@ -63,6 +68,8 @@ struct HomeEatsApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .tint(.brandOlive)
+                .environment(\.font, .brandBody)
                 .environmentObject(reminderRouter)
                 .environmentObject(activeUserSession)
                 .task {

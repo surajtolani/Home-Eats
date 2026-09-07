@@ -20,7 +20,7 @@ struct RecipeDetailView: View {
                 metaRow
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Ingredients").font(.title3.bold())
+                    Text("Ingredients").font(.brandTitle3.bold())
                     ForEach(recipe.ingredients) { ingredient in
                         HStack(alignment: .top) {
                             Image(systemName: ingredient.category.symbolName)
@@ -32,11 +32,11 @@ struct RecipeDetailView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Instructions").font(.title3.bold())
+                    Text("Instructions").font(.brandTitle3.bold())
                     ForEach(Array(recipe.instructions.enumerated()), id: \.offset) { index, step in
                         HStack(alignment: .top, spacing: 12) {
                             Text("\(index + 1)")
-                                .font(.headline)
+                                .font(.brandHeadline)
                                 .foregroundStyle(.white)
                                 .frame(width: 26, height: 26)
                                 .background(Circle().fill(Color.accentColor))
@@ -80,7 +80,7 @@ struct RecipeDetailView: View {
                 HStack {
                     ForEach(Array(recipe.tags.enumerated()), id: \.offset) { _, tag in
                         Text(tag)
-                            .font(.caption2.bold())
+                            .font(.brandCaption2.bold())
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(Capsule().fill(Color.accentColor.opacity(0.15)))
@@ -100,7 +100,7 @@ struct RecipeDetailView: View {
                 Label("\(recipe.cookMinutes)m cook", systemImage: "flame")
             }
         }
-        .font(.subheadline)
+        .font(.brandSubheadline)
         .foregroundStyle(.secondary)
     }
 }

@@ -29,9 +29,9 @@ struct OnboardingView: View {
                         .font(.system(size: 56))
                         .foregroundStyle(.tint)
                     Text("Welcome to Home Eats")
-                        .font(.title2.bold())
+                        .font(.brandTitle2.bold())
                     Text("Add everyone who'll be planning or eating meals. You can add more people any time from Settings.")
-                        .font(.subheadline)
+                        .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
@@ -75,6 +75,7 @@ struct OnboardingView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 24)
             }
+            .background(Color.brandCream.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
         }
     }

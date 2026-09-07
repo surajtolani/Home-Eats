@@ -122,7 +122,7 @@ private struct RecipeRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(recipe.title).font(.headline)
+            Text(recipe.title).font(.brandHeadline)
             HStack(spacing: 8) {
                 if recipe.totalMinutes > 0 {
                     Label("\(recipe.totalMinutes) min", systemImage: "clock")
@@ -132,7 +132,7 @@ private struct RecipeRow: View {
                     Label("imported", systemImage: "link")
                 }
             }
-            .font(.caption)
+            .font(.brandCaption)
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)

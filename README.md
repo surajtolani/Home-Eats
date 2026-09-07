@@ -101,6 +101,37 @@ switchable from a badge in the toolbar. Every suggestion, vote, and decision
 records that person's ID, so a weekend preference and a weekday preference
 stay visibly attributed even on a single shared phone.
 
+## Branding
+
+The app icon, color palette, and typography match the Home Eats brand
+guidelines sheet:
+
+- **App icon** — `Resources/Assets.xcassets/AppIcon.appiconset` (single
+  1024×1024 universal image; Xcode/iOS generate every other size and apply
+  corner rounding themselves — never add a pre-rounded icon).
+- **Colors** — `Resources/Assets.xcassets` has one color asset per palette
+  color (`BrandOlive`, `BrandForest`, `BrandSage`, `BrandCream`,
+  `BrandTerracotta`, `BrandHoney`, `BrandBlush`, `BrandSand`), exposed as
+  `Color.brandOlive` etc. via `Theme/BrandTheme.swift`. `AccentColor` is set
+  to the same value as `BrandOlive`, which is what makes tab selection,
+  links, and default button/control tint all pick up the brand green with no
+  per-view code. These are fixed brand colors (not light/dark adaptive) —
+  intentional, since the guidelines define one palette, not two.
+- **Typography** — Nunito (`Resources/Fonts/*.ttf`, registered via
+  `UIAppFonts` in `project.yml`), exposed as a `Font.brand*` scale
+  (`brandLargeTitle` … `brandCaption2`) in `Theme/BrandTheme.swift` that
+  mirrors the system Dynamic Type styles it replaces, `relativeTo:` included,
+  so Dynamic Type/accessibility sizing still works. `HomeEatsApp` sets
+  `.environment(\.font, .brandBody)` as the app-wide default, and every
+  `.font(.headline)`-style call site in `Views/` was switched to its
+  `.brand*` equivalent. `Theme/BrandAppearance.apply()` (called once from
+  `HomeEatsApp.init()`) applies the same look to UIKit-drawn chrome
+  (nav bar, tab bar, list background) that SwiftUI's `.font`/`.tint`
+  modifiers can't reach.
+- The Nunito `.ttf` files are static instances repackaged from
+  [`@fontsource/nunito`](https://www.npmjs.com/package/@fontsource/nunito)
+  (SIL Open Font License) — free to bundle in the app.
+
 ## Feature → spec mapping
 
 1. **Recipe input** — `RecipeEditorView` (manual) and `RecipeImportView` +

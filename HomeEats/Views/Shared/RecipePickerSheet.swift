@@ -69,7 +69,7 @@ struct RecipePickerSheet: View {
                 Text(recipe.title).foregroundStyle(.primary)
                 if recipe.totalMinutes > 0 {
                     Text("\(recipe.totalMinutes) min • serves \(recipe.servings)")
-                        .font(.caption)
+                        .font(.brandCaption)
                         .foregroundStyle(.secondary)
                 }
             }

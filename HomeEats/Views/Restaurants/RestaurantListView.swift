@@ -37,11 +37,11 @@ struct RestaurantListView: View {
                                     HStack {
                                         Text(restaurant.name).foregroundStyle(.primary)
                                         if restaurant.isFavorite {
-                                            Image(systemName: "star.fill").foregroundStyle(.yellow).font(.caption)
+                                            Image(systemName: "star.fill").foregroundStyle(.yellow).font(.brandCaption)
                                         }
                                     }
                                     if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
-                                        Text(cuisine).font(.caption).foregroundStyle(.secondary)
+                                        Text(cuisine).font(.brandCaption).foregroundStyle(.secondary)
                                     }
                                 }
                                 Spacer()
@@ -144,7 +144,7 @@ private struct SearchResultRow: View {
                 Text(item.name ?? "Unknown")
                 if let address = item.placemark.title {
                     Text(address)
-                        .font(.caption)
+                        .font(.brandCaption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -152,7 +152,7 @@ private struct SearchResultRow: View {
             Spacer()
             Button(action: onAdd) {
                 Image(systemName: "plus.circle.fill")
-                    .font(.title2)
+                    .font(.brandTitle2)
             }
             .buttonStyle(.plain)
         }

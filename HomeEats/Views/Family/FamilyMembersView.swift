@@ -21,7 +21,7 @@ struct FamilyMembersView: View {
                             VStack(alignment: .leading) {
                                 Text(member.name).foregroundStyle(.primary)
                                 if member.isChild {
-                                    Text("Kid").font(.caption).foregroundStyle(.secondary)
+                                    Text("Kid").font(.brandCaption).foregroundStyle(.secondary)
                                 }
                             }
                             Spacer()

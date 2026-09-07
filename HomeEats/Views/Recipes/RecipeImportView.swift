@@ -31,9 +31,9 @@ struct RecipeImportView: View {
 
                 if let importedRecipe {
                     Section("Preview") {
-                        Text(importedRecipe.title).font(.headline)
+                        Text(importedRecipe.title).font(.brandHeadline)
                         Text("\(importedRecipe.ingredients.count) ingredients • \(importedRecipe.instructions.count) steps")
-                            .font(.caption)
+                            .font(.brandCaption)
                             .foregroundStyle(.secondary)
                     }
                 }

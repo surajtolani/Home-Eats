@@ -189,7 +189,7 @@ struct GroceryListView: View {
             let aisleItems = items.filter { aisleID(for: $0) == aisle.id }
             Section(aisle.name) {
                 if aisleItems.isEmpty {
-                    Text("Drop items here").font(.caption).foregroundStyle(.tertiary)
+                    Text("Drop items here").font(.brandCaption).foregroundStyle(.tertiary)
                 }
                 ForEach(aisleItems) { item in
                     row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
@@ -262,7 +262,7 @@ struct GroceryListView: View {
                                     quickAdd(historyItem)
                                 } label: {
                                     Image(systemName: alreadyInList(historyItem) ? "checkmark.circle.fill" : "plus.circle")
-                                        .foregroundStyle(alreadyInList(historyItem) ? .green : .accentColor)
+                                        .foregroundStyle(alreadyInList(historyItem) ? .brandForest : .accentColor)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(alreadyInList(historyItem))
@@ -316,8 +316,8 @@ struct GroceryListView: View {
             Button { weekOffset -= 1 } label: { Image(systemName: "chevron.left") }
             Spacer()
             VStack {
-                Text("Week of").font(.caption).foregroundStyle(.secondary)
-                Text(weekStart.formatted(Date.monthDay)).font(.headline)
+                Text("Week of").font(.brandCaption).foregroundStyle(.secondary)
+                Text(weekStart.formatted(Date.monthDay)).font(.brandHeadline)
             }
             Spacer()
             Button { weekOffset += 1 } label: { Image(systemName: "chevron.right") }
@@ -369,7 +369,7 @@ private struct GroceryItemRow: View {
                     .foregroundStyle(item.isChecked ? .secondary : .primary)
                 if !item.quantityText.isEmpty {
                     Text(item.quantityText)
-                        .font(.caption)
+                        .font(.brandCaption)
                         .foregroundStyle(.secondary)
                 }
             }

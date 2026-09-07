@@ -35,7 +35,7 @@ struct RestaurantPickerSheet: View {
                         VStack(alignment: .leading) {
                             Text(restaurant.name).foregroundStyle(.primary)
                             if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
-                                Text(cuisine).font(.caption).foregroundStyle(.secondary)
+                                Text(cuisine).font(.brandCaption).foregroundStyle(.secondary)
                             }
                         }
                     }

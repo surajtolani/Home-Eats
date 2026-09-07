@@ -8,7 +8,7 @@ struct MemberBadgeView: View {
 
     var body: some View {
         Text(initials)
-            .font(.system(size: size * 0.42, weight: .semibold))
+            .font(.custom("Nunito-SemiBold", size: size * 0.42))
             .foregroundStyle(.white)
             .frame(width: size, height: size)
             .background(Circle().fill(Color(hex: member.colorHex)))

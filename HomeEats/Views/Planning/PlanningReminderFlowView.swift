@@ -51,6 +51,7 @@ struct PlanningReminderFlowView: View {
                     allSetView
                 }
             }
+            .background(Color.brandCream.ignoresSafeArea())
             .navigationTitle("Plan the Week")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -79,11 +80,11 @@ struct PlanningReminderFlowView: View {
 
             VStack(spacing: 4) {
                 Text(date.formatted(Date.weekdayFull))
-                    .font(.largeTitle.bold())
+                    .font(.brandLargeTitle.bold())
                 Text(date.formatted(Date.monthDay))
                     .foregroundStyle(.secondary)
                 Text("What's for dinner?")
-                    .font(.subheadline)
+                    .font(.brandSubheadline)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
             }
@@ -115,7 +116,7 @@ struct PlanningReminderFlowView: View {
                 } label: {
                     Text("Plan breakfast, lunch & more for this day")
                 }
-                .font(.footnote)
+                .font(.brandFootnote)
                 .padding(.top, 4)
 
                 Button("Skip for now") {

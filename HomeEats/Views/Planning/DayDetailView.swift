@@ -195,7 +195,7 @@ private struct PlannedMealRow: View {
                 Button(action: onLog) {
                     Label("Log", systemImage: "checkmark.seal")
                 }
-                .tint(.green)
+                .tint(.brandForest)
             }
         }
         .contextMenu {
@@ -229,7 +229,7 @@ private struct SuggestionRow: View {
             VStack(alignment: .leading) {
                 Text(suggestion.displayTitle)
                 if let note = suggestion.note, !note.isEmpty {
-                    Text(note).font(.caption).foregroundStyle(.secondary)
+                    Text(note).font(.brandCaption).foregroundStyle(.secondary)
                 }
             }
             Spacer()

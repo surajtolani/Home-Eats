@@ -19,7 +19,7 @@ struct LogMealSheet: View {
             Form {
                 Section {
                     Text(meal.displayTitle)
-                        .font(.headline)
+                        .font(.brandHeadline)
                 }
                 Section("How was it?") {
                     Picker("Rating", selection: $rating) {

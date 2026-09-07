@@ -30,7 +30,7 @@ struct StaplesManagerView: View {
                         VStack(alignment: .leading) {
                             Text(staple.name)
                             Text(staple.category.displayName)
-                                .font(.caption)
+                                .font(.brandCaption)
                                 .foregroundStyle(.secondary)
                         }
                     }

@@ -26,7 +26,7 @@ struct RestaurantDetailView: View {
 
                 if let notes = restaurant.notes, !notes.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Notes").font(.headline)
+                        Text("Notes").font(.brandHeadline)
                         Text(notes)
                     }
                 }
@@ -53,18 +53,18 @@ struct RestaurantDetailView: View {
             HStack(spacing: 8) {
                 if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
                     Text(cuisine)
-                        .font(.subheadline)
+                        .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
                 }
                 if restaurant.isFavorite {
                     Image(systemName: "star.fill")
                         .foregroundStyle(.yellow)
-                        .font(.caption)
+                        .font(.brandCaption)
                 }
             }
             if let address = restaurant.address, !address.isEmpty {
                 Text(address)
-                    .font(.subheadline)
+                    .font(.brandSubheadline)
                     .foregroundStyle(.secondary)
             }
         }
@@ -87,7 +87,7 @@ struct RestaurantDetailView: View {
                 .overlay {
                     if geocodingFailed {
                         Text("Couldn't find this address on the map.")
-                            .font(.caption)
+                            .font(.brandCaption)
                             .foregroundStyle(.secondary)
                     } else {
                         ProgressView("Finding on map…")

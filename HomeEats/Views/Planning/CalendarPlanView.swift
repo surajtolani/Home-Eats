@@ -130,7 +130,7 @@ struct CalendarPlanView: View {
             Button { changeMonth(by: -1) } label: { Image(systemName: "chevron.left") }
             Spacer()
             Text(displayedMonth.formatted(.dateTime.month(.wide).year()))
-                .font(.title2.bold())
+                .font(.brandTitle2.bold())
             Spacer()
             Button { changeMonth(by: 1) } label: { Image(systemName: "chevron.right") }
         }
@@ -144,7 +144,7 @@ struct CalendarPlanView: View {
             legendItem(color: .orange, label: "Eating out")
             legendItem(color: .gray, label: "Suggested")
         }
-        .font(.caption)
+        .font(.brandCaption)
         .foregroundStyle(.secondary)
     }
 
@@ -159,7 +159,7 @@ struct CalendarPlanView: View {
         HStack {
             ForEach(Array(calendar.orderedVeryShortWeekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                 Text(symbol)
-                    .font(.caption2.bold())
+                    .font(.brandCaption2.bold())
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
             }
@@ -252,7 +252,7 @@ private struct DayCell: View {
     var body: some View {
         VStack(spacing: 4) {
             Text(dayNumber)
-                .font(.subheadline.weight(isToday ? .bold : .regular))
+                .font(.brandSubheadline.weight(isToday ? .bold : .regular))
                 .frame(width: 30, height: 30)
                 .background {
                     if isToday {
@@ -278,11 +278,11 @@ private struct DayCell: View {
     @ViewBuilder
     private var statusDot: some View {
         if meals.contains(where: { $0.isHomeCooked }) {
-            Circle().fill(Color.green).frame(width: 6, height: 6)
+            Circle().fill(Color.brandForest).frame(width: 6, height: 6)
         } else if meals.contains(where: { $0.isEatingOut }) {
-            Circle().fill(Color.orange).frame(width: 6, height: 6)
+            Circle().fill(Color.brandTerracotta).frame(width: 6, height: 6)
         } else if hasSuggestions {
-            Circle().fill(Color.gray).frame(width: 6, height: 6)
+            Circle().fill(Color.brandSage).frame(width: 6, height: 6)
         } else {
             Color.clear.frame(width: 6, height: 6)
         }
@@ -297,11 +297,11 @@ private struct AgendaDayRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Text(date.formatted(Date.weekdayFull)).font(.headline)
-                Text(date.formatted(Date.monthDay)).font(.caption).foregroundStyle(.secondary)
+                Text(date.formatted(Date.weekdayFull)).font(.brandHeadline)
+                Text(date.formatted(Date.monthDay)).font(.brandCaption).foregroundStyle(.secondary)
                 if Calendar.current.isDateInToday(date) {
                     Text("Today")
-                        .font(.caption2.bold())
+                        .font(.brandCaption2.bold())
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Capsule().fill(Color.accentColor.opacity(0.15)))
@@ -309,23 +309,23 @@ private struct AgendaDayRow: View {
             }
 
             if meals.isEmpty && suggestionCount == 0 {
-                Text("Not planned").font(.subheadline).foregroundStyle(.secondary)
+                Text("Not planned").font(.brandSubheadline).foregroundStyle(.secondary)
             } else {
                 ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
                     let slotMeals = meals.filter { $0.slot == slot }
                     if !slotMeals.isEmpty {
                         HStack(spacing: 4) {
                             Image(systemName: slot.symbolName)
-                                .font(.caption2)
+                                .font(.brandCaption2)
                                 .foregroundStyle(.secondary)
                             Text(slotMeals.map(\.displayTitle).joined(separator: ", "))
-                                .font(.subheadline)
+                                .font(.brandSubheadline)
                         }
                     }
                 }
                 if suggestionCount > 0 {
                     Text("\(suggestionCount) suggestion(s) pending")
-                        .font(.caption)
+                        .font(.brandCaption)
                         .foregroundStyle(.secondary)
                 }
             }

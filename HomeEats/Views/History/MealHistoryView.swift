@@ -22,9 +22,9 @@ struct MealHistoryView: View {
             ForEach(history) { entry in
                 HStack {
                     VStack(alignment: .leading) {
-                        Text(title(for: entry)).font(.headline)
+                        Text(title(for: entry)).font(.brandHeadline)
                         Text(entry.date.formatted(date: .abbreviated, time: .omitted))
-                            .font(.caption)
+                            .font(.brandCaption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
