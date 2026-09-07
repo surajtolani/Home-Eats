@@ -11,7 +11,7 @@ private enum GroceryViewMode: String, CaseIterable, Identifiable {
 
 struct GroceryListView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \DayPlan.date) private var allDayPlans: [DayPlan]
+    @Query(sort: \PlannedMeal.date) private var allPlannedMeals: [PlannedMeal]
     @Query private var staples: [StapleItem]
     @Query private var allProductOptions: [ProductOption]
     @Query private var allGroceryItems: [GroceryItem]
@@ -332,12 +332,12 @@ struct GroceryListView: View {
 
     private func regenerate() {
         let weekDays = calendar.daysOfWeek(containing: weekStart)
-        let plansThisWeek = weekDays.compactMap { day in
-            allDayPlans.first { $0.date.isSameDay(as: day) }
+        let mealsThisWeek = allPlannedMeals.filter { meal in
+            weekDays.contains { $0.isSameDay(as: meal.date) }
         }
         GroceryListBuilder.regenerate(
             weekStart: weekStart,
-            dayPlans: plansThisWeek,
+            plannedMeals: mealsThisWeek,
             staples: staples,
             in: modelContext
         )

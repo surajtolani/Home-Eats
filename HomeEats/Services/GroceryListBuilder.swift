@@ -16,16 +16,15 @@ enum GroceryListBuilder {
     @MainActor
     static func regenerate(
         weekStart: Date,
-        dayPlans: [DayPlan],
+        plannedMeals: [PlannedMeal],
         staples: [StapleItem],
         in context: ModelContext
     ) {
         let normalizedWeekStart = Calendar.current.startOfDay(for: weekStart)
 
-        // 1. Aggregate ingredients across every home-cooked day this week.
-        let recipes = dayPlans
-            .filter { $0.kind == .homeCookedRecipe }
-            .compactMap(\.decidedRecipe)
+        // 1. Aggregate ingredients across every home-cooked meal this week
+        // (any slot — breakfast, lunch, dinner, or other all count).
+        let recipes = plannedMeals.compactMap(\.recipe)
 
         var aggregates: [String: IngredientAggregate] = [:]
         for recipe in recipes {

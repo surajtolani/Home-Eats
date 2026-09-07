@@ -1,13 +1,16 @@
 import Foundation
 import SwiftData
 
-/// A proposal from one family member for what a given day's meal should be,
-/// plus a lightweight up-vote list so other members can weigh in without
-/// building a full poll/comment system.
+/// A proposal from one family member for what a given day's *specific meal
+/// slot* should be, plus a lightweight up-vote list so other members can
+/// weigh in without building a full poll/comment system. Scoped by
+/// (date, slot) rather than a relationship, since a day is just a date —
+/// there's no separate "day" row to hang off of.
 @Model
 final class MealSuggestion {
     @Attribute(.unique) var id: UUID
-    var dayPlan: DayPlan?
+    var date: Date
+    var slot: MealSlot
     var proposedByMemberID: UUID
     var recipe: Recipe?
     var restaurant: Restaurant?
@@ -18,6 +21,8 @@ final class MealSuggestion {
 
     init(
         id: UUID = UUID(),
+        date: Date,
+        slot: MealSlot,
         proposedByMemberID: UUID,
         recipe: Recipe? = nil,
         restaurant: Restaurant? = nil,
@@ -26,6 +31,8 @@ final class MealSuggestion {
         votedMemberIDs: [UUID]? = nil
     ) {
         self.id = id
+        self.date = PlannedMeal.normalize(date)
+        self.slot = slot
         self.proposedByMemberID = proposedByMemberID
         self.recipe = recipe
         self.restaurant = restaurant

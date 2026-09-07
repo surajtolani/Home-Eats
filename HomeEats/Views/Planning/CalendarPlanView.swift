@@ -1,56 +1,117 @@
 import SwiftUI
 import SwiftData
 
-/// The Plan tab: a real month calendar (not a single week at a time), so the
-/// household can plan several weeks out at a glance. Past days are dimmed
-/// since they're done and gone; today is highlighted; tapping any day opens
-/// its plan.
+/// The Plan tab. Two ways to look at the same data:
+/// - **Calendar**: a month grid up top (past days dimmed, today highlighted);
+///   tapping a date anchors an agenda list below it showing that date and
+///   everything after, so you can page months out and still see what's ahead.
+/// - **This Week**: a flat agenda of just the current 7 days, for a quick
+///   glance without the grid.
 struct CalendarPlanView: View {
     @Binding var showPlanningFlow: Bool
 
-    @Environment(\.modelContext) private var modelContext
-    @Query(sort: \DayPlan.date) private var allDayPlans: [DayPlan]
+    @Query(sort: \PlannedMeal.date) private var allPlannedMeals: [PlannedMeal]
+    @Query(sort: \MealSuggestion.createdAt) private var allSuggestions: [MealSuggestion]
 
     @State private var displayedMonth: Date = Calendar.current.startOfMonth(for: .now)
+    @State private var selectedDate: Date = Calendar.current.startOfDay(for: .now)
+    @State private var viewMode: PlanViewMode = .calendar
+
+    private enum PlanViewMode: String, CaseIterable, Identifiable {
+        case calendar = "Calendar"
+        case thisWeek = "This Week"
+        var id: String { rawValue }
+    }
 
     private var calendar: Calendar { Calendar.current }
 
-    private var gridDays: [Date] {
-        calendar.gridDays(forMonthContaining: displayedMonth)
-    }
+    /// How many upcoming days the "X onward" agenda shows below the calendar —
+    /// enough to actually be useful without querying/rendering an unbounded list.
+    private static let agendaWindowInDays = 21
 
     private var isShowingCurrentMonth: Bool {
         calendar.isDate(displayedMonth, equalTo: .now, toGranularity: .month)
     }
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 7)
-
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                monthHeader
-                legend
-                weekdayHeaderRow
-                monthGrid
+        VStack(spacing: 0) {
+            Picker("View", selection: $viewMode) {
+                ForEach(PlanViewMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
             }
+            .pickerStyle(.segmented)
             .padding(.horizontal)
-            .padding(.bottom, 24)
+            .padding(.top, 8)
+
+            switch viewMode {
+            case .calendar:
+                calendarWithAgenda
+            case .thisWeek:
+                thisWeekAgenda
+            }
         }
         .navigationTitle("Plan")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 ActiveUserMenu()
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Today") { goToToday() }
-                    .disabled(isShowingCurrentMonth)
+            if viewMode == .calendar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Today") { goToToday() }
+                        .disabled(isShowingCurrentMonth)
+                }
             }
-        }
-        .task(id: displayedMonth) {
-            ensureDayPlansExist(for: gridDays)
         }
         .fullScreenCover(isPresented: $showPlanningFlow) {
             PlanningReminderFlowView()
+        }
+    }
+
+    // MARK: - Calendar mode
+
+    private var calendarWithAgenda: some View {
+        List {
+            Section {
+                VStack(spacing: 16) {
+                    monthHeader
+                    legend
+                    weekdayHeaderRow
+                    monthGrid
+                }
+                .padding(.vertical, 8)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                .listRowSeparator(.hidden)
+            }
+
+            Section {
+                ForEach(agendaDates, id: \.self) { day in
+                    NavigationLink {
+                        DayDetailView(date: day)
+                    } label: {
+                        AgendaDayRow(
+                            date: day,
+                            meals: meals(on: day),
+                            suggestionCount: suggestionCount(on: day)
+                        )
+                    }
+                }
+            } header: {
+                Text(agendaHeaderTitle)
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    private var agendaHeaderTitle: String {
+        calendar.isDateInToday(selectedDate)
+            ? "Today Onward"
+            : "\(selectedDate.formatted(Date.weekdayFull)), \(selectedDate.formatted(Date.monthDay)) Onward"
+    }
+
+    private var agendaDates: [Date] {
+        (0..<Self.agendaWindowInDays).compactMap {
+            calendar.date(byAdding: .day, value: $0, to: selectedDate)
         }
     }
 
@@ -64,6 +125,7 @@ struct CalendarPlanView: View {
             Button { changeMonth(by: 1) } label: { Image(systemName: "chevron.right") }
         }
         .buttonStyle(.borderless)
+        .padding(.horizontal)
     }
 
     private var legend: some View {
@@ -84,10 +146,6 @@ struct CalendarPlanView: View {
     }
 
     private var weekdayHeaderRow: some View {
-        // Index the 7 fixed slots rather than using the letter as the ID —
-        // "very short" weekday symbols repeat (e.g. Sunday and Saturday are
-        // both "S" in English), which would otherwise give SwiftUI duplicate
-        // IDs in the same ForEach.
         HStack {
             ForEach(Array(calendar.orderedVeryShortWeekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                 Text(symbol)
@@ -96,25 +154,64 @@ struct CalendarPlanView: View {
                     .frame(maxWidth: .infinity)
             }
         }
+        .padding(.horizontal)
     }
 
     private var monthGrid: some View {
-        LazyVGrid(columns: columns, spacing: 6) {
-            ForEach(gridDays, id: \.self) { day in
-                NavigationLink {
-                    DayPlanDetailView(dayPlan: dayPlan(for: day))
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 7)
+        return LazyVGrid(columns: columns, spacing: 6) {
+            ForEach(calendar.gridDays(forMonthContaining: displayedMonth), id: \.self) { day in
+                Button {
+                    selectedDate = calendar.startOfDay(for: day)
                 } label: {
                     DayCell(
                         date: day,
                         isCurrentMonth: calendar.isDate(day, equalTo: displayedMonth, toGranularity: .month),
                         isToday: calendar.isDateInToday(day),
+                        isSelected: day.isSameDay(as: selectedDate),
                         isPast: day < calendar.startOfDay(for: .now),
-                        dayPlan: dayPlan(for: day)
+                        meals: meals(on: day),
+                        hasSuggestions: suggestionCount(on: day) > 0
                     )
                 }
                 .buttonStyle(.plain)
             }
         }
+        .padding(.horizontal)
+    }
+
+    // MARK: - This Week mode
+
+    private var thisWeekAgenda: some View {
+        let weekDays = calendar.daysOfWeek(containing: .now)
+        return List {
+            Section {
+                ForEach(weekDays, id: \.self) { day in
+                    NavigationLink {
+                        DayDetailView(date: day)
+                    } label: {
+                        AgendaDayRow(
+                            date: day,
+                            meals: meals(on: day),
+                            suggestionCount: suggestionCount(on: day)
+                        )
+                    }
+                }
+            } header: {
+                Text("\(weekDays.first?.formatted(Date.monthDay) ?? "") – \(weekDays.last?.formatted(Date.monthDay) ?? "")")
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    // MARK: - Shared helpers
+
+    private func meals(on date: Date) -> [PlannedMeal] {
+        allPlannedMeals.filter { $0.date.isSameDay(as: date) }
+    }
+
+    private func suggestionCount(on date: Date) -> Int {
+        allSuggestions.filter { $0.date.isSameDay(as: date) }.count
     }
 
     private func changeMonth(by value: Int) {
@@ -125,24 +222,7 @@ struct CalendarPlanView: View {
 
     private func goToToday() {
         displayedMonth = calendar.startOfMonth(for: .now)
-    }
-
-    /// Finds the persisted DayPlan for a date. `ensureDayPlansExist(for:)`
-    /// (run from `.task`) guarantees this exists for any date currently on
-    /// screen; the freshly-constructed fallback only covers the brief first
-    /// frame before that task has run.
-    private func dayPlan(for date: Date) -> DayPlan {
-        let normalized = DayPlan.normalize(date)
-        return allDayPlans.first { $0.date.isSameDay(as: normalized) } ?? DayPlan(date: normalized)
-    }
-
-    private func ensureDayPlansExist(for dates: [Date]) {
-        for date in dates {
-            let normalized = DayPlan.normalize(date)
-            if !allDayPlans.contains(where: { $0.date.isSameDay(as: normalized) }) {
-                modelContext.insert(DayPlan(date: normalized))
-            }
-        }
+        selectedDate = calendar.startOfDay(for: .now)
     }
 }
 
@@ -150,8 +230,10 @@ private struct DayCell: View {
     let date: Date
     let isCurrentMonth: Bool
     let isToday: Bool
+    let isSelected: Bool
     let isPast: Bool
-    let dayPlan: DayPlan
+    let meals: [PlannedMeal]
+    let hasSuggestions: Bool
 
     private var dayNumber: String {
         String(Calendar.current.component(.day, from: date))
@@ -165,6 +247,8 @@ private struct DayCell: View {
                 .background {
                     if isToday {
                         Circle().fill(Color.accentColor)
+                    } else if isSelected {
+                        Circle().stroke(Color.accentColor, lineWidth: 1.5)
                     }
                 }
                 .foregroundStyle(isToday ? Color.white : (isPast ? Color.secondary : Color.primary))
@@ -183,17 +267,59 @@ private struct DayCell: View {
 
     @ViewBuilder
     private var statusDot: some View {
-        switch dayPlan.kind {
-        case .homeCookedRecipe:
+        if meals.contains(where: { $0.isHomeCooked }) {
             Circle().fill(Color.green).frame(width: 6, height: 6)
-        case .eatingOut:
+        } else if meals.contains(where: { $0.isEatingOut }) {
             Circle().fill(Color.orange).frame(width: 6, height: 6)
-        case .unplanned:
-            if dayPlan.suggestions.isEmpty {
-                Color.clear.frame(width: 6, height: 6)
+        } else if hasSuggestions {
+            Circle().fill(Color.gray).frame(width: 6, height: 6)
+        } else {
+            Color.clear.frame(width: 6, height: 6)
+        }
+    }
+}
+
+private struct AgendaDayRow: View {
+    let date: Date
+    let meals: [PlannedMeal]
+    let suggestionCount: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(date.formatted(Date.weekdayFull)).font(.headline)
+                Text(date.formatted(Date.monthDay)).font(.caption).foregroundStyle(.secondary)
+                if Calendar.current.isDateInToday(date) {
+                    Text("Today")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                }
+            }
+
+            if meals.isEmpty && suggestionCount == 0 {
+                Text("Not planned").font(.subheadline).foregroundStyle(.secondary)
             } else {
-                Circle().fill(Color.gray).frame(width: 6, height: 6)
+                ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
+                    let slotMeals = meals.filter { $0.slot == slot }
+                    if !slotMeals.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: slot.symbolName)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(slotMeals.map(\.displayTitle).joined(separator: ", "))
+                                .font(.subheadline)
+                        }
+                    }
+                }
+                if suggestionCount > 0 {
+                    Text("\(suggestionCount) suggestion(s) pending")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+        .padding(.vertical, 4)
     }
 }

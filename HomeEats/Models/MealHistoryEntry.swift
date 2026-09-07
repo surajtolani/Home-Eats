@@ -9,9 +9,9 @@ enum MealRating: Int, Codable {
 
 /// A record that a recipe or restaurant meal actually happened, as opposed
 /// to just being planned. This is what powers the "made before / liked
-/// before" recommendation signal, and is separate from `DayPlan` because a
-/// planned day can slip (travel changed, took out food instead) and we only
-/// want to learn from what really happened.
+/// before" recommendation signal, and is separate from `PlannedMeal` because
+/// a planned meal can slip (travel changed, took out food instead) and we
+/// only want to learn from what really happened.
 @Model
 final class MealHistoryEntry {
     @Attribute(.unique) var id: UUID

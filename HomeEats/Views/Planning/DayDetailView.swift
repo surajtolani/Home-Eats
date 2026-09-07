@@ -1,0 +1,245 @@
+import SwiftUI
+import SwiftData
+
+/// One day's plan, broken into Breakfast / Lunch / Dinner / Other. Each slot
+/// can hold more than one decided meal (a dinner plan *and* an ice-cream run
+/// afterward both live in the same day, different slots — or even the same
+/// slot, if the family genuinely can't decide between two options), plus its
+/// own suggestions and votes.
+struct DayDetailView: View {
+    let date: Date
+
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var activeUserSession: ActiveUserSession
+    @Query(sort: \PlannedMeal.decidedAt) private var allPlannedMeals: [PlannedMeal]
+    @Query(sort: \MealSuggestion.createdAt) private var allSuggestions: [MealSuggestion]
+    @Query(sort: \FamilyMember.createdAt) private var members: [FamilyMember]
+
+    @State private var activeSheet: SheetAction?
+
+    private var normalizedDate: Date { PlannedMeal.normalize(date) }
+
+    private func meals(for slot: MealSlot) -> [PlannedMeal] {
+        allPlannedMeals.filter { $0.date.isSameDay(as: normalizedDate) && $0.slot == slot }
+    }
+
+    private func suggestions(for slot: MealSlot) -> [MealSuggestion] {
+        allSuggestions
+            .filter { $0.date.isSameDay(as: normalizedDate) && $0.slot == slot }
+            .sorted { $0.voteCount > $1.voteCount }
+    }
+
+    var body: some View {
+        Form {
+            ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
+                slotSection(slot)
+            }
+        }
+        .navigationTitle(date.formatted(Date.weekdayFull))
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $activeSheet) { action in
+            sheetContent(for: action)
+        }
+    }
+
+    @ViewBuilder
+    private func slotSection(_ slot: MealSlot) -> some View {
+        Section {
+            let decided = meals(for: slot)
+            if decided.isEmpty && suggestions(for: slot).isEmpty {
+                Text("Nothing planned yet.").foregroundStyle(.secondary)
+            }
+            ForEach(decided) { meal in
+                PlannedMealRow(
+                    meal: meal,
+                    member: members.first(where: { $0.id == meal.decidedByMemberID }),
+                    onLog: { activeSheet = .logMeal(meal) },
+                    onRemove: { modelContext.delete(meal) }
+                )
+            }
+            ForEach(suggestions(for: slot)) { suggestion in
+                SuggestionRow(
+                    suggestion: suggestion,
+                    members: members,
+                    onVote: { toggleVote(on: suggestion) },
+                    onAdopt: { adopt(suggestion) }
+                )
+            }
+
+            Menu {
+                Button { activeSheet = .addRecipe(slot) } label: {
+                    Label("Cook a Recipe", systemImage: "frying.pan")
+                }
+                Button { activeSheet = .addRestaurant(slot) } label: {
+                    Label("Eat Out", systemImage: "fork.knife")
+                }
+                Divider()
+                Button { activeSheet = .suggestRecipe(slot) } label: {
+                    Label("Suggest a Recipe", systemImage: "bubble.left")
+                }
+                Button { activeSheet = .suggestRestaurant(slot) } label: {
+                    Label("Suggest a Restaurant", systemImage: "bubble.left")
+                }
+            } label: {
+                Label("Add to \(slot.displayName)", systemImage: "plus")
+            }
+        } header: {
+            Label(slot.displayName, systemImage: slot.symbolName)
+        }
+    }
+
+    @ViewBuilder
+    private func sheetContent(for action: SheetAction) -> some View {
+        switch action {
+        case .addRecipe(let slot):
+            RecipePickerSheet { recipe in
+                decide(slot: slot, recipe: recipe)
+            }
+        case .addRestaurant(let slot):
+            RestaurantPickerSheet { restaurant in
+                decide(slot: slot, restaurant: restaurant)
+            }
+        case .suggestRecipe(let slot):
+            RecipePickerSheet { recipe in
+                addSuggestion(slot: slot, recipe: recipe)
+            }
+        case .suggestRestaurant(let slot):
+            RestaurantPickerSheet { restaurant in
+                addSuggestion(slot: slot, restaurant: restaurant)
+            }
+        case .logMeal(let meal):
+            LogMealSheet(meal: meal)
+        }
+    }
+
+    private func decide(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil) {
+        let meal = PlannedMeal(
+            date: normalizedDate,
+            slot: slot,
+            recipe: recipe,
+            restaurant: restaurant,
+            decidedByMemberID: activeUserSession.activeMemberID
+        )
+        modelContext.insert(meal)
+    }
+
+    private func addSuggestion(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil) {
+        guard let memberID = activeUserSession.activeMemberID ?? members.first?.id else { return }
+        let suggestion = MealSuggestion(
+            date: normalizedDate,
+            slot: slot,
+            proposedByMemberID: memberID,
+            recipe: recipe,
+            restaurant: restaurant
+        )
+        modelContext.insert(suggestion)
+    }
+
+    private func toggleVote(on suggestion: MealSuggestion) {
+        guard let memberID = activeUserSession.activeMemberID else { return }
+        suggestion.toggleVote(for: memberID)
+    }
+
+    private func adopt(_ suggestion: MealSuggestion) {
+        decide(slot: suggestion.slot, recipe: suggestion.recipe, restaurant: suggestion.restaurant)
+        modelContext.delete(suggestion)
+    }
+}
+
+/// Identifies which sheet is presented, and with what context, from a single
+/// `@State` var rather than a pile of booleans (each day has 4 slots × 4
+/// possible add/suggest actions, plus per-meal logging).
+private enum SheetAction: Identifiable {
+    case addRecipe(MealSlot)
+    case addRestaurant(MealSlot)
+    case suggestRecipe(MealSlot)
+    case suggestRestaurant(MealSlot)
+    case logMeal(PlannedMeal)
+
+    var id: String {
+        switch self {
+        case .addRecipe(let slot): return "addRecipe-\(slot.rawValue)"
+        case .addRestaurant(let slot): return "addRestaurant-\(slot.rawValue)"
+        case .suggestRecipe(let slot): return "suggestRecipe-\(slot.rawValue)"
+        case .suggestRestaurant(let slot): return "suggestRestaurant-\(slot.rawValue)"
+        case .logMeal(let meal): return "logMeal-\(meal.id.uuidString)"
+        }
+    }
+}
+
+private struct PlannedMealRow: View {
+    let meal: PlannedMeal
+    let member: FamilyMember?
+    let onLog: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack {
+            if let recipe = meal.recipe {
+                NavigationLink(recipe.title) {
+                    RecipeDetailView(recipe: recipe)
+                }
+            } else {
+                Text(meal.displayTitle)
+            }
+            Spacer()
+            if let member {
+                MemberBadgeView(member: member, size: 20)
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove", systemImage: "trash")
+            }
+            if meal.date <= .now {
+                Button(action: onLog) {
+                    Label("Log", systemImage: "checkmark.seal")
+                }
+                .tint(.green)
+            }
+        }
+        .contextMenu {
+            if meal.date <= .now {
+                Button(action: onLog) {
+                    Label("Log This Meal in History", systemImage: "checkmark.seal")
+                }
+            }
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove", systemImage: "trash")
+            }
+        }
+    }
+}
+
+private struct SuggestionRow: View {
+    let suggestion: MealSuggestion
+    let members: [FamilyMember]
+    let onVote: () -> Void
+    let onAdopt: () -> Void
+
+    private var proposer: FamilyMember? {
+        members.first(where: { $0.id == suggestion.proposedByMemberID })
+    }
+
+    var body: some View {
+        HStack {
+            if let proposer {
+                MemberBadgeView(member: proposer, size: 22)
+            }
+            VStack(alignment: .leading) {
+                Text(suggestion.displayTitle)
+                if let note = suggestion.note, !note.isEmpty {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button(action: onVote) {
+                Label("\(suggestion.voteCount)", systemImage: "hand.thumbsup")
+            }
+            .buttonStyle(.bordered)
+            Button("Use This", action: onAdopt)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+    }
+}

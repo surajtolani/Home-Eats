@@ -2,14 +2,16 @@ import SwiftUI
 import SwiftData
 
 /// The guided flow launched by the weekly planning notification (or the
-/// "Start Planning" button). Walks through each not-yet-decided day in the
-/// upcoming week one at a time so planning takes a minute, not a browsing
-/// session.
+/// "Start Planning" button). Walks through each day in the upcoming week
+/// that doesn't have dinner sorted yet — dinner being the meal a weekly
+/// planning session is really about — one at a time, so planning takes a
+/// minute, not a browsing session. Breakfast/lunch/other stay reachable per
+/// day for anyone who wants to plan those too.
 struct PlanningReminderFlowView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var activeUserSession: ActiveUserSession
-    @Query(sort: \DayPlan.date) private var allDayPlans: [DayPlan]
+    @Query private var allPlannedMeals: [PlannedMeal]
 
     @State private var index = 0
     @State private var showRecipePicker = false
@@ -22,34 +24,21 @@ struct PlanningReminderFlowView: View {
         return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: today) }
     }
 
-    /// The next 7 days. Guaranteed to have a persisted DayPlan once
-    /// `ensureDayPlansExist()` (run from `.task` on appear) has completed.
-    private var upcomingDayPlans: [DayPlan] {
-        upcomingDates.map { date in
-            allDayPlans.first { $0.date.isSameDay(as: date) } ?? DayPlan(date: date)
-        }
+    private func dinnerIsDecided(on date: Date) -> Bool {
+        allPlannedMeals.contains { $0.date.isSameDay(as: date) && $0.slot == .dinner }
     }
 
-    private func ensureDayPlansExist() {
-        for date in upcomingDates {
-            let normalized = DayPlan.normalize(date)
-            if !allDayPlans.contains(where: { $0.date.isSameDay(as: normalized) }) {
-                modelContext.insert(DayPlan(date: normalized))
-            }
-        }
-    }
-
-    private var undecidedDayPlans: [DayPlan] {
-        upcomingDayPlans.filter { !$0.isDecided }
+    private var undecidedDinnerDates: [Date] {
+        upcomingDates.filter { !dinnerIsDecided(on: $0) }
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if undecidedDayPlans.isEmpty {
+                if undecidedDinnerDates.isEmpty {
                     allSetView
-                } else if index < undecidedDayPlans.count {
-                    dayCard(for: undecidedDayPlans[index])
+                } else if index < undecidedDinnerDates.count {
+                    dayCard(for: undecidedDinnerDates[index])
                 } else {
                     allSetView
                 }
@@ -61,9 +50,6 @@ struct PlanningReminderFlowView: View {
                     Button("Close") { dismiss() }
                 }
             }
-            .task {
-                ensureDayPlansExist()
-            }
         }
     }
 
@@ -71,34 +57,26 @@ struct PlanningReminderFlowView: View {
         ContentUnavailableView(
             "You're All Set!",
             systemImage: "checkmark.circle.fill",
-            description: Text("Every day this week has a plan. Nice work.")
+            description: Text("Every day this week has dinner planned. Nice work.")
         )
     }
 
-    private func dayCard(for dayPlan: DayPlan) -> some View {
+    private func dayCard(for date: Date) -> some View {
         VStack(spacing: 20) {
-            ProgressView(value: Double(index + 1), total: Double(max(undecidedDayPlans.count, 1)))
+            ProgressView(value: Double(index + 1), total: Double(max(undecidedDinnerDates.count, 1)))
                 .padding(.horizontal)
 
             VStack(spacing: 4) {
-                Text(dayPlan.date.formatted(Date.weekdayFull))
+                Text(date.formatted(Date.weekdayFull))
                     .font(.largeTitle.bold())
-                Text(dayPlan.date.formatted(Date.monthDay))
+                Text(date.formatted(Date.monthDay))
                     .foregroundStyle(.secondary)
+                Text("What's for dinner?")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
             }
             .padding(.top, 24)
-
-            if !dayPlan.suggestions.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Suggestions so far").font(.subheadline.bold())
-                    ForEach(dayPlan.suggestions) { suggestion in
-                        Text("• \(suggestion.displayTitle) (\(suggestion.voteCount) vote(s))")
-                            .font(.subheadline)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
-            }
 
             Spacer()
 
@@ -121,6 +99,14 @@ struct PlanningReminderFlowView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
+                NavigationLink {
+                    DayDetailView(date: date)
+                } label: {
+                    Text("Plan breakfast, lunch & more for this day")
+                }
+                .font(.footnote)
+                .padding(.top, 4)
+
                 Button("Skip for now") {
                     advance()
                 }
@@ -131,24 +117,35 @@ struct PlanningReminderFlowView: View {
         }
         .sheet(isPresented: $showRecipePicker) {
             RecipePickerSheet { recipe in
-                dayPlan.finalize(recipe: recipe, by: activeUserSession.activeMemberID)
+                decideDinner(date: date, recipe: recipe)
                 advance()
             }
         }
         .sheet(isPresented: $showRestaurantPicker) {
             RestaurantPickerSheet { restaurant in
-                dayPlan.finalize(restaurant: restaurant, by: activeUserSession.activeMemberID)
+                decideDinner(date: date, restaurant: restaurant)
                 advance()
             }
         }
     }
 
+    private func decideDinner(date: Date, recipe: Recipe? = nil, restaurant: Restaurant? = nil) {
+        let meal = PlannedMeal(
+            date: date,
+            slot: .dinner,
+            recipe: recipe,
+            restaurant: restaurant,
+            decidedByMemberID: activeUserSession.activeMemberID
+        )
+        modelContext.insert(meal)
+    }
+
     private func advance() {
-        // Don't just increment `index` blindly: once a day is decided it
-        // drops out of `undecidedDayPlans`, so the same index now points at
-        // the *next* remaining day already.
-        if index >= undecidedDayPlans.count {
-            index = max(0, undecidedDayPlans.count - 1)
+        // Don't just increment `index` blindly: once a day's dinner is
+        // decided it drops out of `undecidedDinnerDates`, so the same index
+        // now points at the *next* remaining day already.
+        if index >= undecidedDinnerDates.count {
+            index = max(0, undecidedDinnerDates.count - 1)
         }
     }
 }

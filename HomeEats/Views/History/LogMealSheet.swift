@@ -2,10 +2,10 @@ import SwiftUI
 import SwiftData
 
 /// Confirms that a planned meal actually happened and records how it went.
-/// This is the bridge between "planned" (`DayPlan`) and "actually made"
+/// This is the bridge between "planned" (`PlannedMeal`) and "actually made"
 /// (`MealHistoryEntry`), which is what the recommendation engine learns from.
 struct LogMealSheet: View {
-    let dayPlan: DayPlan
+    let meal: PlannedMeal
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -18,7 +18,7 @@ struct LogMealSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Text(dayPlan.decidedRecipe?.title ?? dayPlan.decidedRestaurant?.name ?? "This meal")
+                    Text(meal.displayTitle)
                         .font(.headline)
                 }
                 Section("How was it?") {
@@ -49,9 +49,9 @@ struct LogMealSheet: View {
 
     private func save() {
         let entry = MealHistoryEntry(
-            date: dayPlan.date,
-            recipeID: dayPlan.decidedRecipe?.id,
-            restaurantID: dayPlan.decidedRestaurant?.id,
+            date: meal.date,
+            recipeID: meal.recipe?.id,
+            restaurantID: meal.restaurant?.id,
             rating: rating,
             madeByMemberID: activeUserSession.activeMemberID,
             notes: notes.isEmpty ? nil : notes

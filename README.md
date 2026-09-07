@@ -65,9 +65,10 @@ account, per the spec. The models:
 | `FamilyMember` | A person in the household; every suggestion/decision is attributed to one. |
 | `Recipe` | Manual, imported, or built-in-library recipe: title, ingredients, step-by-step instructions. |
 | `RecipeIngredientEntry` | A parsed ingredient line (qty/unit/name/category) — a value type embedded on `Recipe`, not its own table. |
-| `Restaurant` | An eating-out option, assignable to a day like a recipe. Carries an address for the map + Google Maps link. |
-| `DayPlan` | One per calendar day: either a decided recipe, a decided restaurant, or still-open suggestions. |
-| `MealSuggestion` | A family member's proposal for a day, with a lightweight up-vote list. |
+| `Restaurant` | An eating-out option, assignable to a meal slot like a recipe. Carries an address for the map + Google Maps link. |
+| `MealSlot` | Not a table — an enum (breakfast/lunch/dinner/other) that scopes `PlannedMeal` and `MealSuggestion` to a specific meal within a day. |
+| `PlannedMeal` | One decided meal for a (date, slot) — a recipe or a restaurant. A slot can hold more than one (a dinner plan *and* a separate ice-cream-run entry both fit). |
+| `MealSuggestion` | A family member's proposal for a (date, slot), with a lightweight up-vote list. |
 | `GroceryItem` | A generated (or manually added) shopping list line for a given week, with checked state and chosen product. |
 | `ProductOption` | A specific brand/product for a generic grocery item, with a photo, so the shopper can match it on sight. |
 | `StapleItem` | The household's standing "regular items" list (the notepad-on-the-fridge replacement). |
@@ -79,7 +80,7 @@ account, per the spec. The models:
 
 **Services** worth knowing about:
 - `GroceryListBuilder` aggregates ingredients across a week's home-cooked
-  recipes, merges duplicates (simple plural-insensitive name matching),
+  meals (any slot), merges duplicates (simple plural-insensitive name matching),
   splits into a "this week" section and a "staples" section, and sorts by
   store category.
 - `RecipeImportService` / `SchemaOrgRecipeParser` fetch a pasted URL and read
@@ -107,19 +108,29 @@ stay visibly attributed even on a single shared phone.
 2. **Recipe library** — `RecipesHomeView`'s "Library" tab, seeded from
    `BuiltInRecipes.json`; "Save" copies a library recipe into "My Recipes"
    without duplicating data (`Recipe.isSavedToCollection`).
-3. **Day-by-day planning** — `CalendarPlanView` (a real month calendar you
-   can page through, past days dimmed, a "Today" button) / `DayPlanDetailView`,
-   one `DayPlan` per date, independently assignable to a recipe or a restaurant.
-4. **Restaurant planning** — `RestaurantListView` / `RestaurantEditorView` /
-   `RestaurantDetailView`; restaurants are first-class, assignable to a
-   `DayPlan` exactly like a recipe. The detail view geocodes the restaurant's
-   address into an embedded MapKit map (no API key needed) and a button opens
-   the same place in Google Maps for reviews/photos, which Apple's free maps
-   APIs don't expose.
+3. **Day-by-day, meal-by-meal planning** — `CalendarPlanView` offers two
+   ways to look at the plan: **Calendar** (a month grid, past days dimmed,
+   tap a date to anchor an agenda list below showing that date and every day
+   after it) and **This Week** (a flat agenda of just the current 7 days).
+   Tapping into a day opens `DayDetailView`, broken into Breakfast / Lunch /
+   Dinner / Other — each slot holds any number of `PlannedMeal`s, so "Dinner:
+   Tacos" and a separate "Other: Ice cream run" both fit on the same day,
+   and multiple undecided options can sit side by side before the family
+   settles on one.
+4. **Restaurant planning** — `RestaurantListView` has a search bar up top
+   (Apple's free `MKLocalSearch`, no API key) that looks up real places by
+   name; tap **+** on a result to add it straight to the restaurant list with
+   its address filled in, or add one manually via the toolbar.
+   `RestaurantEditorView` / `RestaurantDetailView` round it out — restaurants
+   are first-class, assignable to a meal slot exactly like a recipe. The
+   detail view geocodes the address into an embedded MapKit map and a button
+   opens the same place in Google Maps for reviews/photos, which Apple's free
+   maps APIs don't expose.
 5. **Planning notifications** — `SettingsView` configures day/time;
    `NotificationScheduler` schedules it; tapping it opens
    `PlanningReminderFlowView`, a day-by-day wizard over the upcoming week's
-   undecided days.
+   still-undecided *dinners* (the meal a weekly planning session is really
+   about), with a link out to the full day view for breakfast/lunch/other.
 6. **Grocery list generation** — `GroceryListView` + `GroceryListBuilder`;
    category grouping, duplicate merging, a staples section
    (`StaplesManagerView`), and per-item brand/product selection with a photo
@@ -134,7 +145,12 @@ stay visibly attributed even on a single shared phone.
    category, with a one-tap **+** to add it to this week's list; populate it in
    bulk by pasting an old list (`GroceryHistoryImportSheet`).
 7. **Cooking guidance** — `RecipeDetailView` shows numbered step-by-step
-   instructions.
+   instructions. Imported ingredient lines are reformatted consistently
+   (`RecipeIngredientEntry.displayText`, `IngredientLineParser`) rather than
+   shown verbatim from the source site — unicode fraction glyphs ("½"),
+   non-breaking spaces, and double-spacing all normalize to a single clean
+   "1 1/2 cups flour" style line, since raw source formatting was hard to
+   read at a glance (was it a half, a one, or a two?).
 8. **Meal history & recommendations** — `MealHistoryView` logs what was
    actually made (from a day's plan via `LogMealSheet`, or manually);
    `RecommendationEngine` surfaces frequency/recency favorites when picking a
@@ -176,6 +192,10 @@ This is a first build-out, scoped per the spec's own phasing notes:
   key, no cost) — it opens the real Google Maps app/site for reviews and
   photos rather than showing them natively in Home Eats. True in-app Google
   reviews would require a paid Google Places API key.
+- **Restaurant search uses Apple's `MKLocalSearch`, not literally Google
+  search** — same reasoning as the Maps button: it's free and needs no API
+  key, where a real Google Places-backed search would need a paid,
+  billed key. Untested on a real device as of this writing.
 - **AI-assisted recipe import (ChatGPT/Claude) is not built yet.** A
   consumer ChatGPT Plus/Claude Pro subscription can't be "connected" to a
   third-party app — that access is a separate, usage-billed developer API

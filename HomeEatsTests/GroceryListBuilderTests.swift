@@ -7,7 +7,7 @@ final class GroceryListBuilderTests: XCTestCase {
 
     private func makeInMemoryContext() throws -> ModelContext {
         let schema = Schema([
-            FamilyMember.self, Recipe.self, Restaurant.self, DayPlan.self,
+            FamilyMember.self, Recipe.self, Restaurant.self, PlannedMeal.self,
             MealSuggestion.self, GroceryItem.self, ProductOption.self,
             StapleItem.self, MealHistoryEntry.self, AppSettings.self
         ])
@@ -36,17 +36,19 @@ final class GroceryListBuilderTests: XCTestCase {
         context.insert(tacoNight)
         context.insert(chiliNight)
 
-        let monday = DayPlan(date: .now)
-        monday.finalize(recipe: tacoNight, by: nil)
-        let tuesday = DayPlan(date: Calendar.current.date(byAdding: .day, value: 1, to: .now)!)
-        tuesday.finalize(recipe: chiliNight, by: nil)
+        let monday = PlannedMeal(date: .now, slot: .dinner, recipe: tacoNight)
+        let tuesday = PlannedMeal(
+            date: Calendar.current.date(byAdding: .day, value: 1, to: .now)!,
+            slot: .dinner,
+            recipe: chiliNight
+        )
         context.insert(monday)
         context.insert(tuesday)
 
         let weekStart = Calendar.current.startOfWeek(containing: .now)
         GroceryListBuilder.regenerate(
             weekStart: weekStart,
-            dayPlans: [monday, tuesday],
+            plannedMeals: [monday, tuesday],
             staples: [],
             in: context
         )
@@ -62,19 +64,47 @@ final class GroceryListBuilderTests: XCTestCase {
         XCTAssertEqual(beefItem?.category, .meatAndSeafood)
     }
 
-    func testRestaurantDaysContributeNoIngredients() throws {
+    func testRestaurantMealsContributeNoIngredients() throws {
         let context = try makeInMemoryContext()
         let restaurant = Restaurant(name: "Local Diner")
         context.insert(restaurant)
-        let dayPlan = DayPlan(date: .now)
-        dayPlan.finalize(restaurant: restaurant, by: nil)
-        context.insert(dayPlan)
+        let meal = PlannedMeal(date: .now, slot: .dinner, restaurant: restaurant)
+        context.insert(meal)
 
         let weekStart = Calendar.current.startOfWeek(containing: .now)
-        GroceryListBuilder.regenerate(weekStart: weekStart, dayPlans: [dayPlan], staples: [], in: context)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
 
         let items = try context.fetch(FetchDescriptor<GroceryItem>())
         XCTAssertTrue(items.filter { $0.section == .thisWeek }.isEmpty)
+    }
+
+    func testMultipleSlotsOnSameDayAllContributeIngredients() throws {
+        let context = try makeInMemoryContext()
+        let pancakes = Recipe(title: "Pancakes", ingredients: [
+            RecipeIngredientEntry(name: "flour", quantity: 2, unit: "cups")
+        ])
+        let tacos = Recipe(title: "Tacos", ingredients: [
+            RecipeIngredientEntry(name: "tortillas", quantity: 8, unit: nil)
+        ])
+        context.insert(pancakes)
+        context.insert(tacos)
+
+        let breakfast = PlannedMeal(date: .now, slot: .breakfast, recipe: pancakes)
+        let dinner = PlannedMeal(date: .now, slot: .dinner, recipe: tacos)
+        context.insert(breakfast)
+        context.insert(dinner)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(
+            weekStart: weekStart,
+            plannedMeals: [breakfast, dinner],
+            staples: [],
+            in: context
+        )
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        XCTAssertTrue(items.contains { $0.name.lowercased().contains("flour") })
+        XCTAssertTrue(items.contains { $0.name.lowercased().contains("tortilla") })
     }
 
     func testActiveStaplesAreIncludedAndInactiveAreRemoved() throws {
@@ -83,13 +113,13 @@ final class GroceryListBuilderTests: XCTestCase {
         context.insert(milk)
 
         let weekStart = Calendar.current.startOfWeek(containing: .now)
-        GroceryListBuilder.regenerate(weekStart: weekStart, dayPlans: [], staples: [milk], in: context)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
 
         var items = try context.fetch(FetchDescriptor<GroceryItem>())
         XCTAssertTrue(items.contains { $0.name == "Milk" && $0.section == .staples })
 
         milk.isActive = false
-        GroceryListBuilder.regenerate(weekStart: weekStart, dayPlans: [], staples: [milk], in: context)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
         items = try context.fetch(FetchDescriptor<GroceryItem>())
         XCTAssertFalse(items.contains { $0.name == "Milk" })
     }

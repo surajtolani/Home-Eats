@@ -12,7 +12,7 @@ struct HomeEatsApp: App {
             FamilyMember.self,
             Recipe.self,
             Restaurant.self,
-            DayPlan.self,
+            PlannedMeal.self,
             MealSuggestion.self,
             GroceryItem.self,
             ProductOption.self,

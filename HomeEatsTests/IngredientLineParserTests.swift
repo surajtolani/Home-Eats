@@ -46,4 +46,46 @@ final class IngredientLineParserTests: XCTestCase {
         let entry = IngredientLineParser.parse("   ")
         XCTAssertEqual(entry.name, "")
     }
+
+    // MARK: - Formatting cleanup (unicode fractions, spacing)
+
+    func testParsesUnicodeMixedFraction() {
+        let entry = IngredientLineParser.parse("1½ cups flour")
+        XCTAssertEqual(entry.quantity, 1.5)
+        XCTAssertEqual(entry.unit, "cups")
+        XCTAssertEqual(entry.name, "flour")
+        XCTAssertEqual(entry.displayText, "1 1/2 cups flour")
+    }
+
+    func testParsesBareUnicodeFraction() {
+        let entry = IngredientLineParser.parse("½ cup sugar")
+        XCTAssertEqual(entry.quantity, 0.5)
+        XCTAssertEqual(entry.displayText, "1/2 cup sugar")
+    }
+
+    func testParsesUnicodeEighthFraction() {
+        let entry = IngredientLineParser.parse("⅛ tsp cinnamon")
+        XCTAssertEqual(entry.quantity, 0.125)
+        XCTAssertEqual(entry.displayText, "1/8 tsp cinnamon")
+    }
+
+    func testCollapsesRepeatedWhitespace() {
+        let entry = IngredientLineParser.parse("2   cups    flour")
+        XCTAssertEqual(entry.quantity, 2)
+        XCTAssertEqual(entry.name, "flour")
+        XCTAssertEqual(entry.displayText, "2 cups flour")
+    }
+
+    func testCollapsesNonBreakingSpaces() {
+        let entry = IngredientLineParser.parse("2\u{00A0}cups\u{00A0}flour")
+        XCTAssertEqual(entry.quantity, 2)
+        XCTAssertEqual(entry.unit, "cups")
+        XCTAssertEqual(entry.name, "flour")
+    }
+
+    func testDisplayTextFallsBackToRawTextWhenNoQuantityParsed() {
+        let entry = IngredientLineParser.parse("Salt to taste")
+        XCTAssertNil(entry.quantity)
+        XCTAssertEqual(entry.displayText, "Salt to taste")
+    }
 }

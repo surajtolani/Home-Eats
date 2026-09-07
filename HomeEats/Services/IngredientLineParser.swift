@@ -15,7 +15,7 @@ enum IngredientLineParser {
     ]
 
     static func parse(_ rawLine: String) -> RecipeIngredientEntry {
-        let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = normalize(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return RecipeIngredientEntry(name: "", rawText: "")
         }
@@ -35,6 +35,43 @@ enum IngredientLineParser {
             unit: unit,
             rawText: trimmed
         )
+    }
+
+    private static let unicodeFractions: [Character: String] = [
+        "½": "1/2", "⅓": "1/3", "⅔": "2/3", "¼": "1/4", "¾": "3/4",
+        "⅕": "1/5", "⅖": "2/5", "⅗": "3/5", "⅘": "4/5",
+        "⅙": "1/6", "⅚": "5/6", "⅛": "1/8", "⅜": "3/8", "⅝": "5/8", "⅞": "7/8"
+    ]
+
+    /// Cleans up the messy formatting real recipe sites produce before
+    /// quantity parsing ever sees the line: unicode fraction glyphs like "½"
+    /// (which the quantity parser below can't read at all — they'd otherwise
+    /// get stuck at the front of the ingredient *name*, which is exactly
+    /// what made amounts hard to read), non-breaking spaces, and runs of
+    /// repeated whitespace.
+    private static func normalize(_ text: String) -> String {
+        var result = ""
+        result.reserveCapacity(text.count + 8)
+        var previousWasDigit = false
+        for character in text {
+            if let ascii = unicodeFractions[character] {
+                // "1½" -> "1 1/2" (a mixed number needs a space between the
+                // whole part and the fraction for the parser below to treat
+                // it as one quantity); a bare "½" just becomes "1/2".
+                if previousWasDigit {
+                    result.append(" ")
+                }
+                result.append(ascii)
+                result.append(" ")
+                previousWasDigit = false
+            } else {
+                result.append(character)
+                previousWasDigit = character.isNumber
+            }
+        }
+        return result
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
     }
 
     /// Consumes a leading quantity like "2", "1.5", "1/2", or "1 1/2" from the
