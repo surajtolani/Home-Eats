@@ -184,6 +184,9 @@ private enum SheetAction: Identifiable {
 }
 
 /// One of the three single-tap "decide now" buttons in a slot section.
+/// Deliberately small and quiet — this is the "add" affordance, not the
+/// content, and shouldn't visually compete with an actual planned meal
+/// (`PlannedMealRow`'s icon+pill shape, below) once one exists.
 private struct SlotAddButton: View {
     let title: String
     let systemImage: String
@@ -191,18 +194,20 @@ private struct SlotAddButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 Image(systemName: systemImage)
+                    .font(.brandFootnote)
                 Text(title)
-                    .font(.brandCaption)
+                    .font(.brandCaption2)
                     .multilineTextAlignment(.center)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, 5)
         }
         .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 }
 
@@ -212,20 +217,38 @@ private struct PlannedMealRow: View {
     let onLog: () -> Void
     let onRemove: () -> Void
 
+    /// A distinct icon+color per kind, so the pill below reads at a glance —
+    /// same three colors as the calendar's own legend/status dots.
+    private var iconName: String {
+        if meal.recipe != nil { return "frying.pan" }
+        return meal.isOrderingIn ? "bag" : "fork.knife"
+    }
+    private var iconColor: Color {
+        if meal.recipe != nil { return .brandForest }
+        return meal.isOrderingIn ? .brandHoney : .brandTerracotta
+    }
+
     var body: some View {
         HStack {
-            if let recipe = meal.recipe {
-                NavigationLink(recipe.title) {
-                    RecipeDetailView(recipe: recipe)
-                }
-            } else {
-                HStack(spacing: 4) {
-                    if meal.isOrderingIn {
-                        Image(systemName: "bag").foregroundStyle(.secondary)
+            // Its own pill shape — smaller icons elsewhere (the three add
+            // buttons) shouldn't visually compete with an actual decided
+            // meal, so this one gets a background and a bigger icon than
+            // either of those use.
+            HStack(spacing: 6) {
+                Image(systemName: iconName)
+                    .foregroundStyle(iconColor)
+                if let recipe = meal.recipe {
+                    NavigationLink(recipe.title) {
+                        RecipeDetailView(recipe: recipe)
                     }
+                } else {
                     Text(meal.displayTitle)
                 }
             }
+            .font(.brandHeadline)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(iconColor.opacity(0.12), in: Capsule())
             Spacer()
             if let member {
                 MemberBadgeView(member: member, size: 20)
