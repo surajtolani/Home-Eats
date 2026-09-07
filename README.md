@@ -116,7 +116,13 @@ guidelines sheet:
   to the same value as `BrandOlive`, which is what makes tab selection,
   links, and default button/control tint all pick up the brand green with no
   per-view code. These are fixed brand colors (not light/dark adaptive) —
-  intentional, since the guidelines define one palette, not two.
+  intentional, since the guidelines define one palette, not two. Because of
+  that, `HomeEatsApp` also pins the whole app to `.preferredColorScheme(.light)`
+  — without it, system-drawn chrome that isn't ours to theme (the search bar,
+  the keyboard, sheets) still follows the device's Dark Mode setting on its
+  own, producing a visible seam against the fixed-light nav bar/tab bar/list
+  background right next to it. Revisit both together if the brand ever gets
+  a real dark variant.
 - **Typography** — Nunito (`Resources/Fonts/*.ttf`, registered via
   `UIAppFonts` in `project.yml`), exposed as a `Font.brand*` scale
   (`brandLargeTitle` … `brandCaption2`) in `Theme/BrandTheme.swift` that

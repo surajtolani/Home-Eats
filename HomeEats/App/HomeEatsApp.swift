@@ -70,6 +70,19 @@ struct HomeEatsApp: App {
             RootView()
                 .tint(.brandOlive)
                 .environment(\.font, .brandBody)
+                // The brand palette (BrandTheme.swift) is a single fixed set
+                // of colors, not a light+dark pair — Cream nav bars, Cream
+                // table backgrounds, etc. are pinned to one literal color
+                // regardless of appearance. Without this, the *rest* of the
+                // system chrome (the search bar under a nav bar, the
+                // keyboard, sheets, anything using default system colors)
+                // still follows the device's Dark Mode setting independently
+                // — which is exactly the seam/glitch reported "above Your
+                // Restaurants": a light Cream nav bar sitting right next to
+                // a dark-mode search bar. Pinning the whole app to light
+                // keeps everything consistent. Revisit if the brand ever
+                // gets a real dark variant.
+                .preferredColorScheme(.light)
                 .environmentObject(reminderRouter)
                 .environmentObject(activeUserSession)
                 .task {
