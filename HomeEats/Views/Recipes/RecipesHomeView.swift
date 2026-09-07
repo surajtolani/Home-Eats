@@ -125,7 +125,7 @@ struct RecipesHomeView: View {
             } label: {
                 Image(systemName: "plus.circle.fill")
                     .font(.brandTitle2)
-                    .foregroundStyle(.accentColor)
+                    .foregroundStyle(Color.accentColor)
             }
             .buttonStyle(.plain)
 
