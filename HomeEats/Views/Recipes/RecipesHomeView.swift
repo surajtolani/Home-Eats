@@ -8,7 +8,6 @@ struct RecipesHomeView: View {
 
     @State private var section: Section = .mine
     @State private var searchText = ""
-    @State private var showFavoritesOnly = false
     @State private var showImportSheet = false
     @State private var showManualEditor = false
     @State private var showAIImportSheet = false
@@ -17,6 +16,7 @@ struct RecipesHomeView: View {
 
     enum Section: String, CaseIterable, Identifiable {
         case mine = "My Recipes"
+        case favorites = "Favorites"
         case library = "Library"
         var id: String { rawValue }
     }
@@ -29,14 +29,19 @@ struct RecipesHomeView: View {
     }
 
     private var displayedRecipes: [Recipe] {
-        var base = section == .mine ? myRecipes : libraryRecipes
+        var base: [Recipe]
+        switch section {
+        case .mine: base = myRecipes
+        case .favorites: base = myRecipes.filter { $0.isFavorite }
+        case .library: base = libraryRecipes
+        }
         if !searchText.isEmpty {
             base = base.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
         }
-        if showFavoritesOnly {
-            base = base.filter { $0.isFavorite }
-        }
-        return section == .mine ? RecommendationEngine.rank(recipes: base, history: history) : base
+        // Library stays alphabetical (its own @Query sort); "mine" and
+        // "favorites" are both really views onto the same recipes, so both
+        // get the same recency-weighted ranking.
+        return section == .library ? base : RecommendationEngine.rank(recipes: base, history: history)
     }
 
     var body: some View {
@@ -52,14 +57,19 @@ struct RecipesHomeView: View {
                 if displayedRecipes.isEmpty {
                     ContentUnavailableView(
                         emptyStateTitle,
-                        systemImage: showFavoritesOnly ? "heart" : "book.closed",
+                        systemImage: section == .favorites ? "heart" : "book.closed",
                         description: Text(emptyStateDescription)
                     )
                 }
-                if section == .mine {
-                    // Swipe-to-delete only makes sense here — a Library
-                    // recipe the user hasn't saved isn't theirs to delete,
-                    // so the row wouldn't do anything if swiped there.
+                if section == .library {
+                    ForEach(displayedRecipes) { recipe in
+                        recipeCard(recipe)
+                    }
+                } else {
+                    // Swipe-to-delete only makes sense for "mine"/"favorites"
+                    // — a Library recipe the user hasn't saved isn't theirs
+                    // to delete, so the row wouldn't do anything if swiped
+                    // there.
                     ForEach(displayedRecipes) { recipe in
                         recipeCard(recipe)
                     }
@@ -75,10 +85,6 @@ struct RecipesHomeView: View {
                             }
                         }
                     }
-                } else {
-                    ForEach(displayedRecipes) { recipe in
-                        recipeCard(recipe)
-                    }
                 }
             }
             .listStyle(.plain)
@@ -89,14 +95,6 @@ struct RecipesHomeView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showFavoritesOnly.toggle()
-                } label: {
-                    Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
-                }
-                .tint(.brandTerracotta)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -144,50 +142,65 @@ struct RecipesHomeView: View {
     }
 
     private var emptyStateTitle: String {
-        if showFavoritesOnly { return "No Favorites Yet" }
-        return section == .mine ? "No Recipes Yet" : "Library is Empty"
+        switch section {
+        case .mine: return "No Recipes Yet"
+        case .favorites: return "No Favorites Yet"
+        case .library: return "Library is Empty"
+        }
     }
 
     private var emptyStateDescription: String {
-        if showFavoritesOnly { return "Tap the heart on a recipe to save it here." }
-        return section == .mine
-            ? "Add your own recipe or import one from a link."
-            : "Check back soon for more built-in recipes."
+        switch section {
+        case .mine: return "Add your own recipe or import one from a link."
+        case .favorites: return "Tap the heart on a recipe to save it here."
+        case .library: return "Check back soon for more built-in recipes."
+        }
     }
 
-    /// A photo card (image on top, title + details below), a `NavigationLink`
-    /// to the recipe, with two floating buttons over the image: a heart to
-    /// favorite, a "+" to jump straight to `QuickAddToPlanSheet`. Both are
-    /// applied as `.overlay`s on the *outside* of the `NavigationLink`, not
-    /// nested inside its `label:` — a `Button` inside a `NavigationLink`'s
-    /// label fires both the button's action and the navigation on the same
-    /// tap, so `RecipeCardContent` itself carries no interactive controls at
-    /// all, only the image/title/meta visuals.
+    /// A photo card (image on top, title + details below) with two floating
+    /// buttons over the image: a heart to favorite, a "+" to jump straight
+    /// to `QuickAddToPlanSheet`. Tapping the rest of the card opens the
+    /// recipe — via a `NavigationLink` hidden in the background rather than
+    /// wrapping the visible content directly, which is also what keeps
+    /// List from drawing its usual chevron disclosure indicator on the row
+    /// (that indicator is tied to the row's top-level content literally
+    /// being a `NavigationLink`, not to whether tapping it navigates).
+    /// The two buttons are separate `.overlay`s on the *outside* of this
+    /// whole stack, not nested inside the link's label — a `Button` nested
+    /// inside a `NavigationLink`'s label fires both the button's action and
+    /// the navigation on the same tap.
     @ViewBuilder
     private func recipeCard(_ recipe: Recipe) -> some View {
-        NavigationLink {
-            RecipeDetailView(recipe: recipe)
-        } label: {
-            RecipeCardContent(recipe: recipe)
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .topLeading) {
-            CircularIconButton(systemImage: "plus", tint: .white) {
-                quickAddRecipe = recipe
+        RecipeCardContent(recipe: recipe)
+            .background {
+                // `.background` proposes the primary view's size to this
+                // content, but a NavigationLink only *accepts* that size if
+                // asked to be flexible — without the explicit frame here it
+                // shrinks to fit its own empty label, leaving only a sliver
+                // of the card actually tappable.
+                NavigationLink("") {
+                    RecipeDetailView(recipe: recipe)
+                }
+                .opacity(0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(8)
-        }
-        .overlay(alignment: .topTrailing) {
-            CircularIconButton(
-                systemImage: recipe.isFavorite ? "heart.fill" : "heart",
-                tint: recipe.isFavorite ? .brandTerracotta : .white
-            ) {
-                recipe.isFavorite.toggle()
+            .overlay(alignment: .topLeading) {
+                CircularIconButton(systemImage: "plus", tint: .white) {
+                    quickAddRecipe = recipe
+                }
+                .padding(8)
             }
-            .padding(8)
-        }
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-        .listRowSeparator(.hidden)
+            .overlay(alignment: .topTrailing) {
+                CircularIconButton(
+                    systemImage: recipe.isFavorite ? "heart.fill" : "heart",
+                    tint: recipe.isFavorite ? .brandTerracotta : .white
+                ) {
+                    recipe.isFavorite.toggle()
+                }
+                .padding(8)
+            }
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .listRowSeparator(.hidden)
     }
 }
 
