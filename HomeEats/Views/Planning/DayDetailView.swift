@@ -44,6 +44,13 @@ struct DayDetailView: View {
 
     @ViewBuilder
     private func slotSection(_ slot: MealSlot) -> some View {
+        // With nothing decided or suggested yet, the buttons would otherwise
+        // sit flush against the section header — fine once there's a meal
+        // pill to separate them from it, but cramped-looking against a
+        // header with nothing in between. Only that empty case gets the
+        // extra breathing room back.
+        let isEmpty = meals(for: slot).isEmpty && suggestions(for: slot).isEmpty
+
         Section {
             ForEach(meals(for: slot)) { meal in
                 PlannedMealRow(
@@ -98,7 +105,7 @@ struct DayDetailView: View {
                 }
                 .font(.brandCaption)
             }
-            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+            .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 0, leading: 16, bottom: 0, trailing: 16))
             .listRowSeparator(.hidden)
         } header: {
             Label(slot.displayName, systemImage: slot.symbolName)
