@@ -30,8 +30,19 @@ final class Recipe {
     /// True once the user has saved a *library* recipe into their own
     /// collection (per spec: library recipes are separate until saved).
     var isSavedToCollection: Bool
-    /// Name of an image asset (bundled) or a cached remote URL string.
+    /// Name of a bundled image asset (library recipes), or the remote photo
+    /// URL a page's schema.org data pointed at (imported recipes).
+    /// Distinguished at render time by whether it looks like a URL — see
+    /// `RecipeThumbnail`.
     var imageName: String?
+    /// A photo the user picked/took themselves, for manually-entered
+    /// recipes. Takes priority over `imageName` when both are set. Optional
+    /// with no default needed for migration (unlike a `Bool`, `Data?`
+    /// already defaults to nil).
+    var photoData: Data?
+    /// Defaulted (not just in the initializer) so adding this to existing
+    /// `Recipe` rows stays a lightweight SwiftData migration.
+    var isFavorite: Bool = false
     var createdAt: Date
     /// The family member who added/imported this recipe, if known.
     var createdByMemberID: UUID?
@@ -50,6 +61,8 @@ final class Recipe {
         tags: [String] = [],
         isSavedToCollection: Bool = true,
         imageName: String? = nil,
+        photoData: Data? = nil,
+        isFavorite: Bool = false,
         createdAt: Date = .now,
         createdByMemberID: UUID? = nil
     ) {
@@ -66,6 +79,8 @@ final class Recipe {
         self.tags = tags
         self.isSavedToCollection = isSavedToCollection
         self.imageName = imageName
+        self.photoData = photoData
+        self.isFavorite = isFavorite
         self.createdAt = createdAt
         self.createdByMemberID = createdByMemberID
     }

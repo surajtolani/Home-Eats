@@ -10,6 +10,12 @@ struct RecipeDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                RecipeThumbnail(recipe: recipe)
+                    .frame(height: 200)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+
                 header
 
                 if let summary = recipe.summary, !summary.isEmpty {
@@ -59,6 +65,14 @@ struct RecipeDetailView: View {
         .navigationTitle(recipe.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    recipe.isFavorite.toggle()
+                } label: {
+                    Image(systemName: recipe.isFavorite ? "heart.fill" : "heart")
+                }
+                .tint(.brandTerracotta)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 if recipe.source == .library && !recipe.isSavedToCollection {
                     Button("Save") {

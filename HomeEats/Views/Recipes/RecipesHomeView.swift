@@ -8,6 +8,7 @@ struct RecipesHomeView: View {
 
     @State private var section: Section = .mine
     @State private var searchText = ""
+    @State private var showFavoritesOnly = false
     @State private var showImportSheet = false
     @State private var showManualEditor = false
     @State private var quickAddRecipe: Recipe?
@@ -26,11 +27,14 @@ struct RecipesHomeView: View {
     }
 
     private var displayedRecipes: [Recipe] {
-        let base = section == .mine ? myRecipes : libraryRecipes
-        let filtered = searchText.isEmpty
-            ? base
-            : base.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
-        return section == .mine ? RecommendationEngine.rank(recipes: filtered, history: history) : filtered
+        var base = section == .mine ? myRecipes : libraryRecipes
+        if !searchText.isEmpty {
+            base = base.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+        }
+        if showFavoritesOnly {
+            base = base.filter { $0.isFavorite }
+        }
+        return section == .mine ? RecommendationEngine.rank(recipes: base, history: history) : base
     }
 
     var body: some View {
@@ -45,13 +49,9 @@ struct RecipesHomeView: View {
             List {
                 if displayedRecipes.isEmpty {
                     ContentUnavailableView(
-                        section == .mine ? "No Recipes Yet" : "Library is Empty",
-                        systemImage: "book.closed",
-                        description: Text(
-                            section == .mine
-                                ? "Add your own recipe or import one from a link."
-                                : "Check back soon for more built-in recipes."
-                        )
+                        emptyStateTitle,
+                        systemImage: showFavoritesOnly ? "heart" : "book.closed",
+                        description: Text(emptyStateDescription)
                     )
                 }
                 if section == .mine {
@@ -59,7 +59,7 @@ struct RecipesHomeView: View {
                     // recipe the user hasn't saved isn't theirs to delete,
                     // so the row wouldn't do anything if swiped there.
                     ForEach(displayedRecipes) { recipe in
-                        recipeRow(recipe)
+                        recipeCard(recipe)
                     }
                     .onDelete { offsets in
                         for index in offsets {
@@ -75,7 +75,7 @@ struct RecipesHomeView: View {
                     }
                 } else {
                     ForEach(displayedRecipes) { recipe in
-                        recipeRow(recipe)
+                        recipeCard(recipe)
                     }
                 }
             }
@@ -87,6 +87,14 @@ struct RecipesHomeView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showFavoritesOnly.toggle()
+                } label: {
+                    Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
+                }
+                .tint(.brandTerracotta)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -116,50 +124,103 @@ struct RecipesHomeView: View {
         }
     }
 
-    /// A "+" to jump straight to `QuickAddToPlanSheet`, plus the row itself.
-    /// The "+" sits outside the `NavigationLink` (as a sibling, not nested
-    /// inside its label) so tapping it adds to the plan instead of opening
-    /// the recipe — a button nested inside a NavigationLink's label fires
-    /// both gestures at once.
-    @ViewBuilder
-    private func recipeRow(_ recipe: Recipe) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                quickAddRecipe = recipe
-            } label: {
-                Image(systemName: "plus.circle.fill")
-                    .font(.brandTitle2)
-                    .foregroundStyle(Color.accentColor)
-            }
-            .buttonStyle(.plain)
+    private var emptyStateTitle: String {
+        if showFavoritesOnly { return "No Favorites Yet" }
+        return section == .mine ? "No Recipes Yet" : "Library is Empty"
+    }
 
-            NavigationLink {
-                RecipeDetailView(recipe: recipe)
-            } label: {
-                RecipeRow(recipe: recipe)
-            }
+    private var emptyStateDescription: String {
+        if showFavoritesOnly { return "Tap the heart on a recipe to save it here." }
+        return section == .mine
+            ? "Add your own recipe or import one from a link."
+            : "Check back soon for more built-in recipes."
+    }
+
+    /// A photo card (image on top, title + details below), a `NavigationLink`
+    /// to the recipe, with two floating buttons over the image: a heart to
+    /// favorite, a "+" to jump straight to `QuickAddToPlanSheet`. Both are
+    /// applied as `.overlay`s on the *outside* of the `NavigationLink`, not
+    /// nested inside its `label:` — a `Button` inside a `NavigationLink`'s
+    /// label fires both the button's action and the navigation on the same
+    /// tap, so `RecipeCardContent` itself carries no interactive controls at
+    /// all, only the image/title/meta visuals.
+    @ViewBuilder
+    private func recipeCard(_ recipe: Recipe) -> some View {
+        NavigationLink {
+            RecipeDetailView(recipe: recipe)
+        } label: {
+            RecipeCardContent(recipe: recipe)
         }
+        .buttonStyle(.plain)
+        .overlay(alignment: .topLeading) {
+            CircularIconButton(systemImage: "plus", tint: .white) {
+                quickAddRecipe = recipe
+            }
+            .padding(8)
+        }
+        .overlay(alignment: .topTrailing) {
+            CircularIconButton(
+                systemImage: recipe.isFavorite ? "heart.fill" : "heart",
+                tint: recipe.isFavorite ? .brandTerracotta : .white
+            ) {
+                recipe.isFavorite.toggle()
+            }
+            .padding(8)
+        }
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
     }
 }
 
-private struct RecipeRow: View {
+private struct RecipeCardContent: View {
     let recipe: Recipe
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(recipe.title).font(.brandHeadline)
-            HStack(spacing: 8) {
-                if recipe.totalMinutes > 0 {
-                    Label("\(recipe.totalMinutes) min", systemImage: "clock")
+        VStack(alignment: .leading, spacing: 0) {
+            RecipeThumbnail(recipe: recipe)
+                .frame(height: 150)
+                .frame(maxWidth: .infinity)
+                .clipped()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(recipe.title)
+                    .font(.brandHeadline)
+                    .foregroundStyle(.primary)
+                HStack(spacing: 8) {
+                    if recipe.totalMinutes > 0 {
+                        Label("\(recipe.totalMinutes) min", systemImage: "clock")
+                    }
+                    Label("serves \(recipe.servings)", systemImage: "person.2")
+                    if recipe.source == .imported {
+                        Label("imported", systemImage: "link")
+                    }
                 }
-                Label("serves \(recipe.servings)", systemImage: "person.2")
-                if recipe.source == .imported {
-                    Label("imported", systemImage: "link")
-                }
+                .font(.brandCaption)
+                .foregroundStyle(.secondary)
             }
-            .font(.brandCaption)
-            .foregroundStyle(.secondary)
+            .padding(10)
         }
-        .padding(.vertical, 2)
+        .background(Color.brandCream)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.06)))
+    }
+}
+
+/// A small circular button floating over a photo — a translucent dark disc
+/// so a white icon reads clearly regardless of what's underneath it.
+private struct CircularIconButton: View {
+    let systemImage: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.brandCallout)
+                .foregroundStyle(tint)
+                .padding(8)
+                .background(.black.opacity(0.35), in: Circle())
+        }
+        .buttonStyle(.plain)
     }
 }

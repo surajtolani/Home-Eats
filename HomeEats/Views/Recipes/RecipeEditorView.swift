@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 /// Manual recipe entry per the spec: title, ingredients, instructions.
 /// Ingredients and steps are typed one-per-line, which keeps the form simple
@@ -20,6 +21,8 @@ struct RecipeEditorView: View {
     @State private var tagsText: String
     @State private var ingredientsText: String
     @State private var instructionsText: String
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var photoData: Data?
 
     init(existing: Recipe? = nil) {
         self.existing = existing
@@ -31,6 +34,7 @@ struct RecipeEditorView: View {
         _tagsText = State(initialValue: (existing?.tags ?? []).joined(separator: ", "))
         _ingredientsText = State(initialValue: (existing?.ingredients ?? []).map(\.displayText).joined(separator: "\n"))
         _instructionsText = State(initialValue: (existing?.instructions ?? []).joined(separator: "\n"))
+        _photoData = State(initialValue: existing?.photoData)
     }
 
     var body: some View {
@@ -39,6 +43,19 @@ struct RecipeEditorView: View {
                 Section("Recipe") {
                     TextField("Title", text: $title)
                     TextField("Short description (optional)", text: $summary)
+                }
+                Section("Photo") {
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        if let photoData, let uiImage = UIImage(data: photoData) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 160)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        } else {
+                            Label("Add a Photo", systemImage: "camera")
+                        }
+                    }
                 }
                 Section("Details") {
                     Stepper("Servings: \(servings)", value: $servings, in: 1...20)
@@ -74,6 +91,13 @@ struct RecipeEditorView: View {
                         .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .onChange(of: selectedPhotoItem) { _, newItem in
+                Task {
+                    if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                        photoData = ImageResizing.downsized(data, maxDimension: 800)
+                    }
+                }
+            }
         }
     }
 
@@ -97,6 +121,7 @@ struct RecipeEditorView: View {
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        recipe.photoData = photoData
 
         if existing == nil {
             modelContext.insert(recipe)
