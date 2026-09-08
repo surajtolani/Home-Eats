@@ -105,7 +105,7 @@ struct DayDetailView: View {
                 }
                 .font(.brandCaption)
             }
-            .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 0, leading: 16, bottom: 0, trailing: 16))
+            .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 0, leading: 16, bottom: 12, trailing: 16))
             .listRowSeparator(.hidden)
         } header: {
             Label(slot.displayName, systemImage: slot.symbolName)
