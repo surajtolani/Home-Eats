@@ -53,6 +53,11 @@ struct GroceryListView: View {
     var body: some View {
         List {
             Section {
+                BrandHeaderBanner()
+                    .asBrandBannerRow()
+            }
+
+            Section {
                 weekNavigator.listRowSeparator(.hidden)
                 Picker("View", selection: $viewMode) {
                     ForEach(GroceryViewMode.allCases) { mode in
@@ -77,14 +82,20 @@ struct GroceryListView: View {
             quickAddFromHistorySection
         }
         .navigationTitle("Grocery List")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // A direct "+" for the single most common action (adding one
+            // item by hand), rather than burying it a level deep inside the
+            // "•••" menu with the less-frequent management screens.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showAddItemSheet = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button {
-                        showAddItemSheet = true
-                    } label: {
-                        Label("Add Item", systemImage: "plus")
-                    }
                     Button {
                         showStaplesManager = true
                     } label: {
@@ -248,10 +259,27 @@ struct GroceryListView: View {
 
     // MARK: - Quick add from history
 
+    /// Always shown, even empty — this used to disappear entirely until
+    /// something populated it, which made it hard to find in the first
+    /// place (there was nothing on screen pointing to it). It fills in on
+    /// its own as you check items off (see `GroceryItemRow.recordAsHistorical`),
+    /// or instantly via "Paste an Old List" for a new household with
+    /// nothing checked off yet.
     @ViewBuilder
     private var quickAddFromHistorySection: some View {
-        if !historicalItems.isEmpty {
-            Section {
+        Section {
+            if historicalItems.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Nothing here yet.")
+                        .foregroundStyle(.secondary)
+                    Button {
+                        showHistoryImport = true
+                    } label: {
+                        Label("Paste an Old Grocery List", systemImage: "doc.text")
+                    }
+                }
+                .padding(.vertical, 4)
+            } else {
                 ForEach(historicalCategoriesGrouped) { group in
                     DisclosureGroup(group.category.displayName) {
                         ForEach(group.items) { historyItem in
@@ -263,11 +291,11 @@ struct GroceryListView: View {
                         }
                     }
                 }
-            } header: {
-                Text("From Your Past Groceries")
-            } footer: {
-                Text("Tap + to add something you've bought before to this week's list. Paste in an old list from the toolbar.")
             }
+        } header: {
+            Text("From Your Past Groceries")
+        } footer: {
+            Text("This fills in automatically as you check items off below — or tap + to add something from here straight to this week's list.")
         }
     }
 
@@ -387,13 +415,16 @@ private struct GroceryItemRow: View {
     let productOption: ProductOption?
     let onTapProduct: () -> Void
 
+    @Environment(\.modelContext) private var modelContext
+    @Query private var historicalItems: [HistoricalGroceryItem]
+
     var body: some View {
         HStack {
             Button {
-                item.isChecked.toggle()
+                setChecked(!item.isChecked)
             } label: {
                 Image(systemName: item.isChecked ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(item.isChecked ? .green : .secondary)
+                    .foregroundStyle(item.isChecked ? .brandForest : .secondary)
             }
             .buttonStyle(.plain)
 
@@ -420,6 +451,38 @@ private struct GroceryItemRow: View {
             }
             .buttonStyle(.plain)
         }
+        // A second, explicitly-worded way to do the same thing the leading
+        // circle already does — "already have this at home" and "picked
+        // this up in the store" both just mean "I don't need to buy it",
+        // so both reuse `isChecked` rather than adding a second flag that
+        // would need its own display treatment everywhere.
+        .swipeActions(edge: .leading) {
+            if !item.isChecked {
+                Button {
+                    setChecked(true)
+                } label: {
+                    Label("I Have It", systemImage: "checkmark")
+                }
+                .tint(.brandForest)
+            }
+        }
+    }
+
+    private func setChecked(_ checked: Bool) {
+        item.isChecked = checked
+        guard checked else { return }
+        recordAsHistorical()
+    }
+
+    /// Learns from what you actually buy: checking an item off adds it to
+    /// the "past groceries" catalog if it isn't already there, so that
+    /// catalog builds itself from real shopping trips instead of only ever
+    /// growing when someone pastes an old list by hand.
+    private func recordAsHistorical() {
+        let key = GroceryListBuilder.canonicalKey(for: item.name)
+        let alreadyKnown = historicalItems.contains { GroceryListBuilder.canonicalKey(for: $0.name) == key }
+        guard !alreadyKnown else { return }
+        modelContext.insert(HistoricalGroceryItem(name: item.name, category: item.category))
     }
 }
 

@@ -16,6 +16,11 @@ struct RestaurantListView: View {
 
     var body: some View {
         List {
+            Section {
+                BrandHeaderBanner()
+                    .asBrandBannerRow()
+            }
+
             if isSearchActive {
                 searchResultsSection
             }
@@ -65,6 +70,7 @@ struct RestaurantListView: View {
             searchModel.search(newValue)
         }
         .navigationTitle("Eating Out")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {

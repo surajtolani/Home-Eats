@@ -34,7 +34,9 @@ struct RecipesHomeView: View {
     }
 
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
+            BrandHeaderBanner()
+
             Picker("Section", selection: $section) {
                 ForEach(Section.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -83,6 +85,7 @@ struct RecipesHomeView: View {
         }
         .searchable(text: $searchText, prompt: "Search recipes")
         .navigationTitle("Recipes")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

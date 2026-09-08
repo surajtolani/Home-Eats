@@ -54,6 +54,8 @@ struct CalendarPlanView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            BrandHeaderBanner()
+
             Picker("View", selection: $viewMode) {
                 ForEach(PlanViewMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
@@ -71,6 +73,7 @@ struct CalendarPlanView: View {
             }
         }
         .navigationTitle("Plan")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 ActiveUserMenu()
