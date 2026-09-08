@@ -22,6 +22,12 @@ struct BrandHeaderBanner: View {
         Image("BrandWordmark")
             .resizable()
             .scaledToFit()
-            .frame(height: 28)
+            // The compact/inline nav bar is 44pt tall total; this is close
+            // to the practical ceiling before the logo starts clipping
+            // against the bar's own edges, so it fills nearly all of that
+            // available height (and, since the artwork's aspect ratio is
+            // fixed, whatever width that implies) rather than looking small
+            // and centered in a mostly-empty bar.
+            .frame(height: 40)
     }
 }
