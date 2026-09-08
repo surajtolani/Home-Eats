@@ -52,6 +52,7 @@ struct DayDetailView: View {
                     onLog: { activeSheet = .logMeal(meal) },
                     onRemove: { modelContext.delete(meal) }
                 )
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
             }
             ForEach(suggestions(for: slot)) { suggestion in
                 SuggestionRow(
@@ -78,7 +79,7 @@ struct DayDetailView: View {
                     activeSheet = .orderIn(slot)
                 }
             }
-            .padding(.vertical, 4)
+            .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
             .listRowSeparator(.hidden)
 
             Menu {
@@ -92,6 +93,7 @@ struct DayDetailView: View {
                 Text("Suggest something instead (for a vote)")
             }
             .font(.brandCaption)
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
         } header: {
             Label(slot.displayName, systemImage: slot.symbolName)
         }
@@ -189,8 +191,8 @@ private enum SheetAction: Identifiable {
 /// (`PlannedMealRow`'s icon+pill shape, below) once one exists. Explicitly
 /// NOT `.buttonStyle(.bordered)`: that style draws its own background with
 /// its own fixed minimum padding/height, which doesn't actually shrink just
-/// because the font inside it does — `.plain` plus a hand-drawn outline is
-/// what makes this genuinely smaller than the pill above, not just the text.
+/// because the font inside it does — `.plain` plus a hand-drawn fill is what
+/// makes this genuinely smaller than the pill above, not just the text.
 private struct SlotAddButton: View {
     let title: String
     let systemImage: String
@@ -200,19 +202,21 @@ private struct SlotAddButton: View {
         Button(action: action) {
             VStack(spacing: 0) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 10))
+                    .font(.system(size: 10.5))
                 Text(title)
-                    .font(.system(size: 9))
+                    .font(.system(size: 9.5))
                     .multilineTextAlignment(.center)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 2)
             .background {
+                // "Evergreen" from the brand sheet — same swatch as
+                // Color.brandForest elsewhere in the app.
                 RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1)
+                    .fill(Color.brandForest)
             }
         }
         .buttonStyle(.plain)
