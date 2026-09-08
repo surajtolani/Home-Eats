@@ -53,11 +53,6 @@ struct GroceryListView: View {
     var body: some View {
         List {
             Section {
-                BrandHeaderBanner()
-                    .asBrandBannerRow()
-            }
-
-            Section {
                 weekNavigator.listRowSeparator(.hidden)
                 Picker("View", selection: $viewMode) {
                     ForEach(GroceryViewMode.allCases) { mode in
@@ -84,6 +79,9 @@ struct GroceryListView: View {
         .navigationTitle("Grocery List")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                BrandHeaderBanner()
+            }
             // A direct "+" for the single most common action (adding one
             // item by hand), rather than burying it a level deep inside the
             // "•••" menu with the less-frequent management screens.

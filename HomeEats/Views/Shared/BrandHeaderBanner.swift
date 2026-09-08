@@ -1,40 +1,26 @@
 import SwiftUI
 
-/// A small "Home Eats" masthead shown at the top of every tab's root screen.
-/// Puts consistent brand identity in the content itself instead of leaning
-/// on the nav bar's large title — which, on the tabs with a search bar or a
-/// custom header row right underneath it, wasn't actually rendering usable
-/// space so much as leaving a blank gap above that other content. Every tab
-/// also sets `.navigationBarTitleDisplayMode(.inline)` alongside this, so
-/// there's exactly one place branding/title text shows up, not a large
-/// title fighting this banner for the same real estate.
+/// The "Home Eats" mark shown in the navigation bar's center (`.principal`
+/// toolbar slot) on every tab's root screen, in place of that screen's own
+/// title text. This is what makes it "the top of the app" — the nav bar
+/// itself is the one piece of chrome that's unavoidably above all content
+/// on every screen; a banner rendered as regular content, by contrast, only
+/// ever sits *below* the nav bar; on the tabs with a search bar or a custom
+/// header row right underneath it, that gap read as a blank space rather
+/// than a rendered title. `.navigationTitle` is still set on each screen
+/// (needed so the *back* button reads "Recipes" etc. when pushing from
+/// here) — it's just not what's visually displayed once this replaces it.
 struct BrandHeaderBanner: View {
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             Image("BrandMark")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 30, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(width: 22, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
             Text("Home Eats")
-                .font(.brandTitle3)
+                .font(.brandHeadline)
                 .foregroundStyle(Color.brandForest)
-            Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .background(Color.brandSage.opacity(0.15))
-    }
-}
-
-/// The same banner, pre-shaped as a single, separatorless `List`/`Form` row
-/// spanning the full width — for the tabs whose root content is a `List`
-/// rather than a plain `VStack`.
-extension View {
-    func asBrandBannerRow() -> some View {
-        self
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
     }
 }

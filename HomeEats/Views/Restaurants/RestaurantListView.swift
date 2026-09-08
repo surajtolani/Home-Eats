@@ -16,11 +16,6 @@ struct RestaurantListView: View {
 
     var body: some View {
         List {
-            Section {
-                BrandHeaderBanner()
-                    .asBrandBannerRow()
-            }
-
             if isSearchActive {
                 searchResultsSection
             }
@@ -72,6 +67,9 @@ struct RestaurantListView: View {
         .navigationTitle("Eating Out")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                BrandHeaderBanner()
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showEditor = true

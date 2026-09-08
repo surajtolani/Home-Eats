@@ -54,8 +54,6 @@ struct CalendarPlanView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            BrandHeaderBanner()
-
             Picker("View", selection: $viewMode) {
                 ForEach(PlanViewMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
@@ -77,6 +75,9 @@ struct CalendarPlanView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 ActiveUserMenu()
+            }
+            ToolbarItem(placement: .principal) {
+                BrandHeaderBanner()
             }
             ToolbarItem(placement: .topBarTrailing) {
                 // The weekly notification also opens this flow, but that

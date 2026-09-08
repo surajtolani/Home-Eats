@@ -52,7 +52,7 @@ struct DayDetailView: View {
                     onLog: { activeSheet = .logMeal(meal) },
                     onRemove: { modelContext.delete(meal) }
                 )
-                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
             }
             ForEach(suggestions(for: slot)) { suggestion in
                 SuggestionRow(
@@ -61,39 +61,45 @@ struct DayDetailView: View {
                     onVote: { toggleVote(on: suggestion) },
                     onAdopt: { adopt(suggestion) }
                 )
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
             }
 
             // Three single-tap buttons instead of a two-tap "Add" menu — the
             // three things you're actually deciding between for any given
             // meal. Suggesting-for-a-vote is a less common path, so it stays
             // reachable but out of the way, as a small menu below rather
-            // than a fourth equally-weighted button.
-            HStack(spacing: 8) {
-                SlotAddButton(title: "Add a Recipe", systemImage: "frying.pan") {
-                    activeSheet = .addRecipe(slot)
+            // than a fourth equally-weighted button. Both live in one Form
+            // row (a VStack), not two — Form/List rows each carry their own
+            // minimum height regardless of how tight the insets are set, so
+            // the only way to actually remove the gap *between* these two is
+            // to stop them being separate rows in the first place.
+            VStack(spacing: 4) {
+                HStack(spacing: 8) {
+                    SlotAddButton(title: "Add a Recipe", systemImage: "frying.pan") {
+                        activeSheet = .addRecipe(slot)
+                    }
+                    SlotAddButton(title: "Eat Out", systemImage: "fork.knife") {
+                        activeSheet = .addRestaurant(slot)
+                    }
+                    SlotAddButton(title: "Order In", systemImage: "bag") {
+                        activeSheet = .orderIn(slot)
+                    }
                 }
-                SlotAddButton(title: "Eat Out", systemImage: "fork.knife") {
-                    activeSheet = .addRestaurant(slot)
-                }
-                SlotAddButton(title: "Order In", systemImage: "bag") {
-                    activeSheet = .orderIn(slot)
-                }
-            }
-            .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
-            .listRowSeparator(.hidden)
 
-            Menu {
-                Button { activeSheet = .suggestRecipe(slot) } label: {
-                    Label("Suggest a Recipe", systemImage: "bubble.left")
+                Menu {
+                    Button { activeSheet = .suggestRecipe(slot) } label: {
+                        Label("Suggest a Recipe", systemImage: "bubble.left")
+                    }
+                    Button { activeSheet = .suggestRestaurant(slot) } label: {
+                        Label("Suggest a Restaurant", systemImage: "bubble.left")
+                    }
+                } label: {
+                    Text("Suggest something instead (for a vote)")
                 }
-                Button { activeSheet = .suggestRestaurant(slot) } label: {
-                    Label("Suggest a Restaurant", systemImage: "bubble.left")
-                }
-            } label: {
-                Text("Suggest something instead (for a vote)")
+                .font(.brandCaption)
             }
-            .font(.brandCaption)
-            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+            .listRowSeparator(.hidden)
         } header: {
             Label(slot.displayName, systemImage: slot.symbolName)
         }

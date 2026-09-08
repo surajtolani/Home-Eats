@@ -3,11 +3,6 @@ import SwiftUI
 struct MoreView: View {
     var body: some View {
         List {
-            Section {
-                BrandHeaderBanner()
-                    .asBrandBannerRow()
-            }
-
             NavigationLink {
                 FamilyMembersView()
             } label: {
@@ -26,5 +21,10 @@ struct MoreView: View {
         }
         .navigationTitle("More")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                BrandHeaderBanner()
+            }
+        }
     }
 }

@@ -35,8 +35,6 @@ struct RecipesHomeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            BrandHeaderBanner()
-
             Picker("Section", selection: $section) {
                 ForEach(Section.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -87,6 +85,9 @@ struct RecipesHomeView: View {
         .navigationTitle("Recipes")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                BrandHeaderBanner()
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
