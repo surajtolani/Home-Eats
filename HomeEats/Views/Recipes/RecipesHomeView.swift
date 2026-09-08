@@ -11,6 +11,8 @@ struct RecipesHomeView: View {
     @State private var showFavoritesOnly = false
     @State private var showImportSheet = false
     @State private var showManualEditor = false
+    @State private var showAIImportSheet = false
+    @State private var showRecommendSheet = false
     @State private var quickAddRecipe: Recipe?
 
     enum Section: String, CaseIterable, Identifiable {
@@ -108,6 +110,17 @@ struct RecipesHomeView: View {
                     } label: {
                         Label("Import from URL", systemImage: "link")
                     }
+                    Button {
+                        showAIImportSheet = true
+                    } label: {
+                        Label("Add from Photo or Notes", systemImage: "camera.viewfinder")
+                    }
+                    Divider()
+                    Button {
+                        showRecommendSheet = true
+                    } label: {
+                        Label("Recommend a Meal", systemImage: "sparkles")
+                    }
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -115,6 +128,12 @@ struct RecipesHomeView: View {
         }
         .sheet(isPresented: $showManualEditor) {
             RecipeEditorView()
+        }
+        .sheet(isPresented: $showAIImportSheet) {
+            RecipeAIImportView()
+        }
+        .sheet(isPresented: $showRecommendSheet) {
+            RecommendMealView()
         }
         .sheet(isPresented: $showImportSheet) {
             RecipeImportView()

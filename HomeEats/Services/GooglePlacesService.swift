@@ -1,0 +1,94 @@
+import Foundation
+import CoreLocation
+
+/// Talks to the Home Eats backend's Google Places proxy (see
+/// backend/README.md) rather than Google directly — the backend holds the
+/// real, billed API key so it never ships inside the app. Until a backend
+/// is deployed and `baseURLString` below is filled in, `isConfigured` stays
+/// false and `RestaurantListView` falls back to Apple's free (but
+/// rating/price/cuisine-less) MapKit search instead.
+enum GooglePlacesService {
+    /// Fill this in once you've deployed `backend/` — e.g.
+    /// "https://home-eats-backend.onrender.com". See backend/README.md.
+    private static let baseURLString = ""
+
+    static var isConfigured: Bool { !baseURLString.isEmpty }
+
+    struct PlaceResult: Identifiable {
+        let id: String
+        let name: String
+        let address: String?
+        let rating: Double?
+        /// "$" through "$$$$", already normalized by the backend from
+        /// Google's price-level enum to match `Restaurant.priceRange`.
+        let priceRange: String?
+        let cuisine: String?
+        let mapsURLString: String?
+        let coordinate: CLLocationCoordinate2D?
+    }
+
+    enum ServiceError: LocalizedError {
+        case notConfigured
+        case requestFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .notConfigured:
+                return "Google search isn't set up yet."
+            case .requestFailed:
+                return "Couldn't search right now — check your connection."
+            }
+        }
+    }
+
+    static func search(_ query: String) async throws -> [PlaceResult] {
+        guard isConfigured, let base = URL(string: baseURLString) else {
+            throw ServiceError.notConfigured
+        }
+        var components = URLComponents(
+            url: base.appendingPathComponent("restaurants/search"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let url = components?.url else { throw ServiceError.requestFailed }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw ServiceError.requestFailed
+        }
+
+        let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
+        return decoded.results.map { raw in
+            var coordinate: CLLocationCoordinate2D?
+            if let latitude = raw.latitude, let longitude = raw.longitude {
+                coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            }
+            return PlaceResult(
+                id: raw.id,
+                name: raw.name,
+                address: raw.address,
+                rating: raw.rating,
+                priceRange: (raw.priceRange?.isEmpty ?? true) ? nil : raw.priceRange,
+                cuisine: raw.cuisine,
+                mapsURLString: raw.mapsURL,
+                coordinate: coordinate
+            )
+        }
+    }
+
+    private struct SearchResponse: Decodable {
+        let results: [RawResult]
+    }
+
+    private struct RawResult: Decodable {
+        let id: String
+        let name: String
+        let address: String?
+        let rating: Double?
+        let priceRange: String?
+        let cuisine: String?
+        let mapsURL: String?
+        let latitude: Double?
+        let longitude: Double?
+    }
+}

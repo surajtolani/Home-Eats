@@ -96,57 +96,47 @@ struct RestaurantListView: View {
             } else if searchModel.results.isEmpty {
                 Text("No matches found.").foregroundStyle(.secondary)
             } else {
-                ForEach(Array(searchModel.results.enumerated()), id: \.offset) { _, item in
-                    SearchResultRow(item: item) {
-                        addFromSearch(item)
+                ForEach(searchModel.results) { result in
+                    SearchResultRow(result: result) {
+                        addFromSearch(result)
                     }
                 }
             }
         } header: {
             Text("Search Results")
         } footer: {
-            Text("Powered by Apple's local search — free, no account needed. Tap the ⊕ on a result to add it.")
+            Text(
+                GooglePlacesService.isConfigured
+                    ? "Powered by Google — includes rating, price, and cuisine. Tap the ⊕ on a result to add it."
+                    : "Powered by Apple's local search — free, no account needed. Tap the ⊕ on a result to add it."
+            )
         }
     }
 
-    private func addFromSearch(_ item: MKMapItem) {
+    private func addFromSearch(_ result: RestaurantSearchModel.Result) {
         let restaurant = Restaurant(
-            name: item.name ?? "Unnamed Restaurant",
-            cuisine: cuisineLabel(for: item),
-            websiteURL: item.url?.absoluteString,
-            address: item.placemark.title
+            name: result.name,
+            cuisine: result.cuisine,
+            priceRange: result.priceRange,
+            rating: result.rating.map { Int($0.rounded()) },
+            websiteURL: result.mapsURLString,
+            address: result.address
         )
         modelContext.insert(restaurant)
         searchText = ""
         searchModel.clear()
     }
-
-    /// Turns MapKit's point-of-interest category (e.g. "MKPOICategoryBakery")
-    /// into a readable label ("Bakery") for the restaurant's cuisine field.
-    /// The generic "Restaurant" category isn't useful as a label, so that
-    /// one is left blank rather than shown.
-    private func cuisineLabel(for item: MKMapItem) -> String? {
-        guard let category = item.pointOfInterestCategory else { return nil }
-        let raw = category.rawValue.replacingOccurrences(of: "MKPOICategory", with: "")
-        guard raw != "Restaurant", !raw.isEmpty else { return nil }
-        var spaced = ""
-        for (index, character) in raw.enumerated() {
-            if index > 0, character.isUppercase { spaced.append(" ") }
-            spaced.append(character)
-        }
-        return spaced
-    }
 }
 
 private struct SearchResultRow: View {
-    let item: MKMapItem
+    let result: RestaurantSearchModel.Result
     let onAdd: () -> Void
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.name ?? "Unknown")
-                if let address = item.placemark.title {
+                Text(result.name)
+                if let address = result.address {
                     Text(address)
                         .font(.brandCaption)
                         .foregroundStyle(.secondary)
@@ -163,12 +153,26 @@ private struct SearchResultRow: View {
     }
 }
 
-/// Searches Apple's (free, no API key) local-search index for places
-/// matching the query, so the user can find a real restaurant and add it
-/// with one tap instead of typing everything by hand.
+/// Searches for places matching the query — Google (via the backend proxy,
+/// see `GooglePlacesService`) when it's configured, since it can return
+/// rating/price/cuisine that Apple's free local-search index has no concept
+/// of at all; falls back to `MKLocalSearch` (free, no account, no backend
+/// needed) otherwise, or if the Google request fails for any reason.
 @MainActor
 final class RestaurantSearchModel: ObservableObject {
-    @Published var results: [MKMapItem] = []
+    /// One result row's worth of data, whichever source it came from — the
+    /// view only ever deals with this, never `MKMapItem`/`GooglePlacesService.PlaceResult` directly.
+    struct Result: Identifiable {
+        let id: String
+        let name: String
+        let address: String?
+        let cuisine: String?
+        let priceRange: String?
+        let rating: Double?
+        let mapsURLString: String?
+    }
+
+    @Published var results: [Result] = []
     @Published var isSearching = false
     @Published var errorMessage: String?
 
@@ -191,19 +195,71 @@ final class RestaurantSearchModel: ObservableObject {
             errorMessage = nil
             defer { isSearching = false }
 
-            let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = trimmed
-            request.resultTypes = .pointOfInterest
-            do {
-                let response = try await MKLocalSearch(request: request).start()
-                guard !Task.isCancelled else { return }
-                results = response.mapItems
-            } catch {
-                guard !Task.isCancelled else { return }
-                results = []
-                errorMessage = "Couldn't search right now — check your connection."
+            if GooglePlacesService.isConfigured {
+                do {
+                    let places = try await GooglePlacesService.search(trimmed)
+                    guard !Task.isCancelled else { return }
+                    results = places.map {
+                        Result(
+                            id: $0.id,
+                            name: $0.name,
+                            address: $0.address,
+                            cuisine: $0.cuisine,
+                            priceRange: $0.priceRange,
+                            rating: $0.rating,
+                            mapsURLString: $0.mapsURLString
+                        )
+                    }
+                    return
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    // Fall through to MapKit rather than dead-ending the
+                    // search just because the backend had a bad moment.
+                }
             }
+
+            await searchWithMapKit(trimmed)
         }
+    }
+
+    private func searchWithMapKit(_ query: String) async {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = query
+        request.resultTypes = .pointOfInterest
+        do {
+            let response = try await MKLocalSearch(request: request).start()
+            guard !Task.isCancelled else { return }
+            results = response.mapItems.enumerated().map { index, item in
+                Result(
+                    id: "mapkit-\(index)-\(item.name ?? "")",
+                    name: item.name ?? "Unknown",
+                    address: item.placemark.title,
+                    cuisine: cuisineLabel(for: item),
+                    priceRange: nil,
+                    rating: nil,
+                    mapsURLString: item.url?.absoluteString
+                )
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            results = []
+            errorMessage = "Couldn't search right now — check your connection."
+        }
+    }
+
+    /// Turns MapKit's point-of-interest category (e.g. "MKPOICategoryBakery")
+    /// into a readable label ("Bakery"). The generic "Restaurant" category
+    /// isn't useful as a label, so that one is left blank rather than shown.
+    private func cuisineLabel(for item: MKMapItem) -> String? {
+        guard let category = item.pointOfInterestCategory else { return nil }
+        let raw = category.rawValue.replacingOccurrences(of: "MKPOICategory", with: "")
+        guard raw != "Restaurant", !raw.isEmpty else { return nil }
+        var spaced = ""
+        for (index, character) in raw.enumerated() {
+            if index > 0, character.isUppercase { spaced.append(" ") }
+            spaced.append(character)
+        }
+        return spaced
     }
 
     func clear() {

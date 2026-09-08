@@ -1,0 +1,20 @@
+{
+  "name": "home-eats-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny proxy in front of the Google Places API for the Home Eats iOS app - the app never holds the real Google API key.",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
+    "express": "^4.22.2",
+    "zod": "^4.5.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

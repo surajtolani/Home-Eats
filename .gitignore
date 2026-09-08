@@ -23,3 +23,7 @@ Carthage/Build/
 
 ## Claude Code local tooling (agent worktrees, session state — not project content)
 .claude/
+
+## Backend (Node)
+backend/node_modules/
+backend/.env

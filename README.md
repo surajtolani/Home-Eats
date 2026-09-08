@@ -94,6 +94,14 @@ account, per the spec. The models:
 - `SampleDataSeeder` seeds the built-in recipe library
   (`Resources/Seed/BuiltInRecipes.json`), a starter staples list, and the
   settings singleton on first launch.
+- `GooglePlacesService` / `ClaudeRecipeService` talk to the small proxy
+  server in `backend/` — never directly to Google or Anthropic — so the
+  real, billed API keys never ship inside the app. Both stay unconfigured
+  (`isConfigured == false`) until `backend/` is deployed and each service's
+  `baseURLString` is filled in; see `backend/README.md` for the full setup.
+  Until then, restaurant search quietly falls back to the free `MKLocalSearch`
+  it always used, and the two AI recipe features (below) show a plain
+  "not set up yet" message instead of failing oddly.
 
 **Multi-user on one device**: rather than separate logins, `ActiveUserSession`
 tracks "who's using the app right now" (persisted in `UserDefaults`),
