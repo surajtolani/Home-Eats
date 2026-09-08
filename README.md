@@ -109,6 +109,18 @@ guidelines sheet:
 - **App icon** — `Resources/Assets.xcassets/AppIcon.appiconset` (single
   1024×1024 universal image; Xcode/iOS generate every other size and apply
   corner rounding themselves — never add a pre-rounded icon).
+- **Nav bar logo** — `Resources/Assets.xcassets/BrandWordmark.imageset`, the
+  brand sheet's "Primary Logo (Horizontal)" artwork cropped directly from
+  that sheet with its background made transparent (it's a flattened raster
+  crop, not a vector export, since that's what was provided — good enough at
+  the size it's actually shown, but a real SVG/PDF export would look crisper
+  if one ever exists). One recolor from the source: the house's walls+base
+  are tinted Sage (isolated from the roof/heart/utensils, which share the
+  same connected outline in the artwork, via connected-component pixel
+  analysis rather than by hand). Shown via `Views/Shared/BrandHeaderBanner.swift`
+  in every tab's nav bar `.principal` toolbar slot — the one piece of chrome
+  that's actually above all other content on every screen, unlike a banner
+  rendered as regular page content (which only ever sits below the nav bar).
 - **Colors** — `Resources/Assets.xcassets` has one color asset per palette
   color (`BrandOlive`, `BrandForest`, `BrandSage`, `BrandCream`,
   `BrandTerracotta`, `BrandHoney`, `BrandBlush`, `BrandSand`), exposed as
