@@ -424,7 +424,7 @@ private struct GroceryItemRow: View {
                 setChecked(!item.isChecked)
             } label: {
                 Image(systemName: item.isChecked ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(item.isChecked ? .brandForest : .secondary)
+                    .foregroundStyle(item.isChecked ? Color.brandForest : Color.secondary)
             }
             .buttonStyle(.plain)
 
