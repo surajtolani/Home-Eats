@@ -201,7 +201,7 @@ struct GroceryListView: View {
             Section {
                 ForEach(rejectedItems) { item in
                     HStack {
-                        Text(item.name)
+                        Text(item.name.titleCasedForDisplay)
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button {
@@ -522,7 +522,7 @@ private struct HistoryQuickAddRow: View {
 
     var body: some View {
         HStack {
-            Text(name)
+            Text(name.titleCasedForDisplay)
             Spacer()
             Button(action: onAdd) {
                 Image(systemName: iconName)
@@ -553,7 +553,7 @@ private struct GroceryItemRow: View {
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.name)
+                Text(item.name.titleCasedForDisplay)
                     .strikethrough(item.isChecked)
                     .foregroundStyle(item.isChecked ? .secondary : .primary)
                 if !item.quantityText.isEmpty {
@@ -565,7 +565,7 @@ private struct GroceryItemRow: View {
 
             Spacer()
 
-            QuantityStepper(count: $item.quantityCount)
+            QuantityStepper(count: $item.quantityCount, onDeleteAtMinimum: deleteItem)
 
             Button(action: onTapProduct) {
                 if let productOption {
@@ -600,6 +600,10 @@ private struct GroceryItemRow: View {
         recordAsHistorical()
     }
 
+    private func deleteItem() {
+        modelContext.delete(item)
+    }
+
     /// Learns from what you actually buy: checking an item off adds it to
     /// the "past groceries" catalog if it isn't already there, so that
     /// catalog builds itself from real shopping trips instead of only ever
@@ -615,34 +619,41 @@ private struct GroceryItemRow: View {
 /// A `[-] N [+]` control for `GroceryItem.quantityCount` — how many of an
 /// item to get, kept separate from `quantityText` (a free-text description
 /// like "3 cups" pulled from a recipe, not necessarily a whole-item count).
-/// Floors at 1 rather than letting the count reach 0, since "0 of an item on
-/// your list" isn't meaningfully different from the item not being on the
-/// list — removing it entirely is what the swipe-to-delete/checkbox already do.
+/// At 1, the "-" becomes a trash icon: tapping it removes the item from the
+/// list entirely instead of getting stuck disabled at a floor of 1.
 private struct QuantityStepper: View {
     @Binding var count: Int
+    let onDeleteAtMinimum: () -> Void
+
+    private var isAtMinimum: Bool { count <= 1 }
 
     var body: some View {
         HStack(spacing: 6) {
             Button {
-                count = max(1, count - 1)
+                if isAtMinimum {
+                    onDeleteAtMinimum()
+                } else {
+                    count -= 1
+                }
             } label: {
-                Image(systemName: "minus.circle")
+                Image(systemName: isAtMinimum ? "trash" : "minus.circle")
             }
-            .disabled(count <= 1)
+            .foregroundStyle(isAtMinimum ? Color.brandTerracotta : Color.brandForest)
 
             Text("\(count)")
                 .font(.brandCaption)
                 .monospacedDigit()
                 .frame(minWidth: 16)
+                .foregroundStyle(Color.brandForest)
 
             Button {
                 count += 1
             } label: {
                 Image(systemName: "plus.circle")
             }
+            .foregroundStyle(Color.brandForest)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.brandForest)
     }
 }
 
@@ -657,7 +668,7 @@ private struct SuggestedItemRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.name)
+                Text(item.name.titleCasedForDisplay)
                 if !item.quantityText.isEmpty {
                     Text(item.quantityText)
                         .font(.brandCaption)

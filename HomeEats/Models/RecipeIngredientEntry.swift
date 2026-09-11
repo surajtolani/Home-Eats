@@ -57,9 +57,10 @@ struct RecipeIngredientEntry: Codable, Hashable, Identifiable {
     /// quantity could be parsed at all (e.g. "Salt to taste").
     var displayText: String {
         if quantity != nil {
-            return Self.formattedLine(quantity: quantity, unit: unit, name: name)
+            return Self.formattedLine(quantity: quantity, unit: unit, name: name.titleCasedForDisplay)
         }
-        return rawText.isEmpty ? name : rawText
+        let text = rawText.isEmpty ? name : rawText
+        return text.titleCasedForDisplay
     }
 }
 

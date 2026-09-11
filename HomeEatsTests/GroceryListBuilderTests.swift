@@ -273,6 +273,78 @@ final class GroceryListBuilderTests: XCTestCase {
         XCTAssertEqual(items.first { $0.name == "Milk" }?.category, .pantry)
     }
 
+    /// Recipe ingredient names carry prep instructions ("onion, diced") the
+    /// recipe view wants but a shopping list doesn't — those should be
+    /// stripped by the time an ingredient becomes a `GroceryItem`.
+    func testStripsPrepInstructionsFromGroceryItemNames() throws {
+        let context = try makeInMemoryContext()
+        let recipe = Recipe(title: "Tacos", ingredients: [
+            RecipeIngredientEntry(name: "onion, diced", quantity: 1, unit: nil),
+            RecipeIngredientEntry(name: "chicken breast, cut into thick slices", quantity: 1, unit: "lb"),
+            RecipeIngredientEntry(name: "olive oil (to cook in)", quantity: 1, unit: "tbsp")
+        ])
+        context.insert(recipe)
+        let meal = PlannedMeal(date: .now, slot: .dinner, recipe: recipe)
+        context.insert(meal)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        XCTAssertTrue(items.contains { $0.name == "onion" })
+        XCTAssertTrue(items.contains { $0.name == "chicken breast" })
+        XCTAssertTrue(items.contains { $0.name == "olive oil" })
+        XCTAssertFalse(items.contains { $0.name.contains(",") })
+        XCTAssertFalse(items.contains { $0.name.contains("(") })
+    }
+
+    /// A recipe-derived "onion, diced" and a staple "onion" should still
+    /// merge into a single grocery line despite the prep-instruction suffix
+    /// on the recipe's copy.
+    func testCleanedNameStillMergesWithPlainDuplicate() throws {
+        let context = try makeInMemoryContext()
+        let recipeA = Recipe(title: "A", ingredients: [
+            RecipeIngredientEntry(name: "onion, diced", quantity: 1, unit: "cup")
+        ])
+        let recipeB = Recipe(title: "B", ingredients: [
+            RecipeIngredientEntry(name: "onion", quantity: 1, unit: "cup")
+        ])
+        context.insert(recipeA)
+        context.insert(recipeB)
+        let mealA = PlannedMeal(date: .now, slot: .dinner, recipe: recipeA)
+        let mealB = PlannedMeal(date: .now, slot: .lunch, recipe: recipeB)
+        context.insert(mealA)
+        context.insert(mealB)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [mealA, mealB], staples: [], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let onionItems = items.filter { $0.name.lowercased() == "onion" }
+        XCTAssertEqual(onionItems.count, 1, "Should merge into a single line, not two separate ones")
+        XCTAssertEqual(onionItems.first?.quantityText, "2 cups (from 2 recipes)")
+    }
+
+    /// "Water" isn't a real purchasable grocery item — it should never make
+    /// it onto the generated list at all.
+    func testWaterIsExcludedFromGroceryList() throws {
+        let context = try makeInMemoryContext()
+        let recipe = Recipe(title: "Pasta", ingredients: [
+            RecipeIngredientEntry(name: "water", quantity: 4, unit: "cups"),
+            RecipeIngredientEntry(name: "spaghetti", quantity: 1, unit: "lb")
+        ])
+        context.insert(recipe)
+        let meal = PlannedMeal(date: .now, slot: .dinner, recipe: recipe)
+        context.insert(meal)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        XCTAssertFalse(items.contains { $0.name.lowercased().contains("water") })
+        XCTAssertTrue(items.contains { $0.name.lowercased().contains("spaghetti") })
+    }
+
     func testCanonicalKeyMergesSimplePlurals() {
         XCTAssertEqual(
             GroceryListBuilder.canonicalKey(for: "Onions"),

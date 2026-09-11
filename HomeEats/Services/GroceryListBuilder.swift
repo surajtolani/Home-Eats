@@ -29,9 +29,19 @@ enum GroceryListBuilder {
         var aggregates: [String: IngredientAggregate] = [:]
         for recipe in recipes {
             for ingredient in recipe.ingredients {
-                let key = canonicalKey(for: ingredient.name)
+                // Strip prep instructions ("onion, diced" -> "onion") before
+                // this ever becomes a grocery line — the recipe's own
+                // ingredient list keeps the full descriptive text, but a
+                // shopping list should just say what to buy. Ingredients
+                // that aren't actually purchasable at all (water, ice) are
+                // skipped entirely rather than becoming a line item.
+                let cleanName = IngredientNameCleaner.groceryName(from: ingredient.name)
+                guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
+                    continue
+                }
+                let key = canonicalKey(for: cleanName)
                 var aggregate = aggregates[key] ?? IngredientAggregate(
-                    displayName: ingredient.name,
+                    displayName: cleanName,
                     category: ingredient.category
                 )
                 aggregate.add(ingredient, from: recipe.id)
@@ -191,20 +201,16 @@ enum GroceryListBuilder {
         var displayName: String
         var category: GroceryCategory
         var totalsByUnit: [String: Double] = [:]
-        var freeTextParts: [String] = []
         var recipeIDs: Set<UUID> = []
 
         mutating func add(_ ingredient: RecipeIngredientEntry, from recipeID: UUID) {
             recipeIDs.insert(recipeID)
-            if let quantity = ingredient.quantity {
-                // Canonicalize the unit before using it as a bucket key —
-                // otherwise "1 cup" and "2 cups" land in separate buckets
-                // ("cup" vs "cups") and never actually combine.
-                let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
-                totalsByUnit[unitKey, default: 0] += quantity
-            } else if !ingredient.rawText.isEmpty {
-                freeTextParts.append(ingredient.rawText)
-            }
+            guard let quantity = ingredient.quantity else { return }
+            // Canonicalize the unit before using it as a bucket key —
+            // otherwise "1 cup" and "2 cups" land in separate buckets
+            // ("cup" vs "cups") and never actually combine.
+            let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
+            totalsByUnit[unitKey, default: 0] += quantity
         }
 
         var quantityText: String {
@@ -213,7 +219,9 @@ enum GroceryListBuilder {
                 let amount = IngredientQuantityFormatter.string(for: total)
                 parts.append(unit.isEmpty ? amount : "\(amount) \(unit)")
             }
-            parts.append(contentsOf: freeTextParts)
+            // No numeric quantity was ever parsed for this ingredient (e.g.
+            // "salt to taste") — nothing to show here rather than falling
+            // back to the raw, unclean source line.
             let recipeSuffix = recipeIDs.count > 1 ? " (from \(recipeIDs.count) recipes)" : ""
             return parts.isEmpty ? "" : parts.joined(separator: " + ") + recipeSuffix
         }
