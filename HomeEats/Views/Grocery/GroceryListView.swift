@@ -26,6 +26,12 @@ struct GroceryListView: View {
     @State private var showAislesManager = false
     @State private var showHistoryImport = false
     @State private var productPickerItem: GroceryItem?
+    // The only two collapsible sections on this screen — everything else
+    // (the grocery list itself, its per-category groupings) stays always
+    // visible. Default expanded so nothing looks hidden the first time you
+    // land here; either can be tapped closed once you don't need it.
+    @State private var suggestionsExpanded = true
+    @State private var pastGroceriesExpanded = true
 
     private var calendar: Calendar { Calendar.current }
     private var weekStart: Date {
@@ -84,7 +90,10 @@ struct GroceryListView: View {
                 }
             }
 
-            suggestedSection
+            Section {
+            } header: {
+                majorHeader("Grocery List")
+            }
 
             if viewMode == .byCategory {
                 byCategorySections
@@ -92,9 +101,9 @@ struct GroceryListView: View {
                 myLayoutSections
             }
 
-            rejectedSection
+            suggestionsSection
 
-            quickAddFromHistorySection
+            pastGroceriesSection
         }
         .navigationTitle("Grocery List")
         .navigationBarTitleDisplayMode(.inline)
@@ -155,28 +164,51 @@ struct GroceryListView: View {
 
     // MARK: - Suggested (from this week's recipes, pending Add/Reject)
 
+    /// One collapsible section — not one dropdown per sub-group — covering
+    /// both the pending suggestions and anything already rejected out of
+    /// them, since both are really the same "review this week's recipe
+    /// ingredients" workflow.
     @ViewBuilder
-    private var suggestedSection: some View {
-        if !suggestedItems.isEmpty {
+    private var suggestionsSection: some View {
+        if !suggestedItems.isEmpty || !rejectedItems.isEmpty {
             Section {
-                ForEach(suggestedItems) { item in
-                    SuggestedItemRow(
-                        item: item,
-                        onAdd: { accept(item) },
-                        onReject: { reject(item) }
-                    )
-                }
-            } header: {
-                HStack {
-                    Text("Suggested From This Week's Recipes")
-                    Spacer()
-                    Button("Add All", action: acceptAllSuggested)
-                        .font(.brandCaption)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.brandForest)
+                DisclosureGroup(isExpanded: $suggestionsExpanded) {
+                    if !suggestedItems.isEmpty {
+                        Button("Add All", action: acceptAllSuggested)
+                            .font(.brandCallout.bold())
+                            .foregroundStyle(Color.brandForest)
+                        ForEach(suggestedItems) { item in
+                            SuggestedItemRow(
+                                item: item,
+                                onAdd: { accept(item) },
+                                onReject: { reject(item) }
+                            )
+                        }
+                    }
+                    if !rejectedItems.isEmpty {
+                        Text("Rejected")
+                            .font(.brandCallout.bold())
+                            .foregroundStyle(.secondary)
+                            .padding(.top, suggestedItems.isEmpty ? 0 : 6)
+                        ForEach(rejectedItems) { item in
+                            HStack {
+                                Text(item.name.titleCasedForDisplay)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button {
+                                    accept(item)
+                                } label: {
+                                    Label("Add", systemImage: "plus.circle")
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                } label: {
+                    majorHeader("Suggestions From This Week's Recipes")
                 }
             } footer: {
-                Text("Pulled from this week's planned recipes. Add what you actually need to buy, or reject anything you already have on hand — rejected items move to the Rejected section below.")
+                Text("Pulled from this week's planned recipes. Add what you actually need to buy, or reject anything you already have on hand — you can always add a rejected item back later.")
             }
         }
     }
@@ -191,33 +223,6 @@ struct GroceryListView: View {
 
     private func acceptAllSuggested() {
         for item in suggestedItems { item.section = .thisWeek }
-    }
-
-    // MARK: - Rejected
-
-    @ViewBuilder
-    private var rejectedSection: some View {
-        if !rejectedItems.isEmpty {
-            Section {
-                ForEach(rejectedItems) { item in
-                    HStack {
-                        Text(item.name.titleCasedForDisplay)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button {
-                            accept(item)
-                        } label: {
-                            Label("Add", systemImage: "plus.circle")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            } header: {
-                Text("Rejected")
-            } footer: {
-                Text("Items you said you already have on hand. Tap Add if you change your mind.")
-            }
-        }
     }
 
     // MARK: - By category (default) view
@@ -368,49 +373,48 @@ struct GroceryListView: View {
 
     // MARK: - Quick add from history
 
+    private var historicalItemsSorted: [HistoricalGroceryItem] {
+        historicalItems.sorted { $0.name < $1.name }
+    }
+
     /// Always shown, even empty — this used to disappear entirely until
     /// something populated it, which made it hard to find in the first
     /// place (there was nothing on screen pointing to it). It fills in on
     /// its own as you check items off (see `GroceryItemRow.recordAsHistorical`),
     /// or instantly via "Paste an Old List" for a new household with
-    /// nothing checked off yet.
+    /// nothing checked off yet. A single flat, alphabetical list — this
+    /// used to also break itself down into a dropdown per category
+    /// (Produce, Dairy, ...), which was a dropdown-within-a-dropdown for no
+    /// real benefit given how short this list usually is.
     @ViewBuilder
-    private var quickAddFromHistorySection: some View {
+    private var pastGroceriesSection: some View {
         Section {
-            if historicalItems.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Nothing here yet.")
-                        .foregroundStyle(.secondary)
-                    Button {
-                        showHistoryImport = true
-                    } label: {
-                        Label("Paste an Old Grocery List", systemImage: "doc.text")
-                    }
-                }
-                .padding(.vertical, 4)
-            } else {
-                ForEach(historicalCategoriesGrouped) { group in
-                    DisclosureGroup(group.category.displayName) {
-                        ForEach(group.items) { historyItem in
-                            HistoryQuickAddRow(
-                                name: historyItem.name,
-                                isInList: alreadyInList(historyItem),
-                                onAdd: { quickAdd(historyItem) }
-                            )
+            DisclosureGroup(isExpanded: $pastGroceriesExpanded) {
+                if historicalItems.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Nothing here yet.")
+                            .foregroundStyle(.secondary)
+                        Button {
+                            showHistoryImport = true
+                        } label: {
+                            Label("Paste an Old Grocery List", systemImage: "doc.text")
                         }
                     }
-                }
-            }
-        } header: {
-            HStack {
-                Text("From Your Past Groceries")
-                Spacer()
-                if !historicalItems.isEmpty {
+                    .padding(.vertical, 4)
+                } else {
                     Button("Add All", action: addAllHistorical)
-                        .font(.brandCaption)
-                        .buttonStyle(.plain)
+                        .font(.brandCallout.bold())
                         .foregroundStyle(Color.brandForest)
+                    ForEach(historicalItemsSorted) { historyItem in
+                        HistoryQuickAddRow(
+                            name: historyItem.name,
+                            isInList: alreadyInList(historyItem),
+                            onAdd: { quickAdd(historyItem) }
+                        )
+                    }
                 }
+            } label: {
+                majorHeader("From Your Past Groceries")
             }
         } footer: {
             Text("This fills in automatically as you check items off below — or tap + (or Add All) to bring items from here straight onto this week's list.")
@@ -421,25 +425,6 @@ struct GroceryListView: View {
         for historyItem in historicalItems where !alreadyInList(historyItem) {
             quickAdd(historyItem)
         }
-    }
-
-    /// A small `Identifiable` wrapper around the grouping result, rather than
-    /// a raw `(GroceryCategory, [HistoricalGroceryItem])` tuple — `ForEach`
-    /// over a tuple array (`id: \.0`) nested this deeply (Section > ForEach >
-    /// DisclosureGroup > ForEach) is a known SwiftUI type-checker trap: it
-    /// can fail with misleading "generic parameter could not be inferred" /
-    /// "expected argument type Binding<...>" errors that have nothing to do
-    /// with the actual code. A named, `Identifiable` element sidesteps it.
-    private struct HistoricalCategoryGroup: Identifiable {
-        let category: GroceryCategory
-        let items: [HistoricalGroceryItem]
-        var id: String { category.rawValue }
-    }
-
-    private var historicalCategoriesGrouped: [HistoricalCategoryGroup] {
-        Dictionary(grouping: historicalItems, by: \.category)
-            .sorted { $0.key.sortIndex < $1.key.sortIndex }
-            .map { HistoricalCategoryGroup(category: $0.key, items: $0.value.sorted { $0.name < $1.name }) }
     }
 
     private func alreadyInList(_ historyItem: HistoricalGroceryItem) -> Bool {
@@ -488,6 +473,19 @@ struct GroceryListView: View {
         return allProductOptions.first { $0.id == id }
     }
 
+    /// A pronounced top-level heading — "Grocery List", "Suggestions From
+    /// This Week's Recipes", "From Your Past Groceries" — standing well out
+    /// from the smaller, plain per-category headers (like "Produce")
+    /// nested underneath them. `.textCase(nil)` stops List's default
+    /// small-caps-gray section-header styling from overriding this.
+    private func majorHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.brandTitle3.bold())
+            .foregroundStyle(.primary)
+            .textCase(nil)
+            .padding(.vertical, 4)
+    }
+
     private func regenerate() {
         let weekDays = calendar.daysOfWeek(containing: weekStart)
         let mealsThisWeek = allPlannedMeals.filter { meal in
@@ -506,8 +504,7 @@ struct GroceryListView: View {
     }
 }
 
-/// One row of `quickAddFromHistorySection`, pulled out to its own `View`
-/// rather than inlined — see the comment on `HistoricalCategoryGroup` above.
+/// One row of `pastGroceriesSection`, pulled out to its own `View`.
 private struct HistoryQuickAddRow: View {
     let name: String
     let isInList: Bool
@@ -657,7 +654,7 @@ private struct QuantityStepper: View {
     }
 }
 
-/// One row of `suggestedSection` — an ingredient pulled from this week's
+/// One row of `suggestionsSection` — an ingredient pulled from this week's
 /// recipes, not yet decided on. Shows Add/Reject instead of the usual
 /// checkbox/quantity controls, since it isn't actually "on the list" yet.
 private struct SuggestedItemRow: View {
