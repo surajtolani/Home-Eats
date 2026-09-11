@@ -37,11 +37,19 @@ struct GroceryListView: View {
         allGroceryItems.filter { $0.weekStartDate.isSameDay(as: weekStart) }
     }
 
-    private var thisWeekByCategory: [(GroceryCategory, [GroceryItem])] {
-        grouped(items.filter { $0.section == .thisWeek })
+    /// Everything actually "on the list" to buy — accepted recipe
+    /// ingredients plus staples — as opposed to `.suggested` (still pending
+    /// a decision) or `.rejected` (explicitly not needed). Staples used to
+    /// get their own separate "Staples" section, grouped by category same
+    /// as everything else — which just duplicated every category header a
+    /// second time. Merging them into one set of category groups here means
+    /// each category (e.g. "Produce") appears once, with both this week's
+    /// recipe items and standing staples in it together.
+    private var purchasableItems: [GroceryItem] {
+        items.filter { $0.section == .thisWeek || $0.section == .staples }
     }
-    private var staplesByCategory: [(GroceryCategory, [GroceryItem])] {
-        grouped(items.filter { $0.section == .staples })
+    private var purchasableByCategory: [(GroceryCategory, [GroceryItem])] {
+        grouped(purchasableItems)
     }
     /// Freshly pulled from this week's recipes, awaiting an Add/Reject
     /// decision — see `GroceryListSection.suggested`.
@@ -216,13 +224,22 @@ struct GroceryListView: View {
 
     @ViewBuilder
     private var byCategorySections: some View {
-        if !thisWeekByCategory.isEmpty {
-            ForEach(thisWeekByCategory, id: \.0) { category, categoryItems in
-                Section(category.displayName) {
+        if !purchasableByCategory.isEmpty {
+            ForEach(Array(purchasableByCategory.enumerated()), id: \.element.0) { index, entry in
+                let (category, categoryItems) = entry
+                Section {
                     ForEach(categoryItems) { item in
                         row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
                     }
                     .onDelete { offsets in delete(categoryItems, at: offsets) }
+                } header: {
+                    Text(category.displayName)
+                } footer: {
+                    // Only shown once, under the last category section,
+                    // rather than repeated under every one.
+                    if index == purchasableByCategory.count - 1 {
+                        Text("Drag an item onto a different category header to move it there for good. Manage your standing staples from the toolbar.")
+                    }
                 }
                 .onDrop(of: [.plainText], isTargeted: nil) { providers in
                     handleCategoryDrop(providers, assigningTo: category)
@@ -230,27 +247,8 @@ struct GroceryListView: View {
             }
         } else {
             Section {
-                Text("No recipes are planned for this week yet, so there's nothing to shop for. Head to the Plan tab to pick some meals.")
+                Text("Nothing on your list yet. Plan some meals in the Plan tab, or add a staple from the toolbar, then generate the list.")
                     .foregroundStyle(.secondary)
-            }
-        }
-
-        if !staplesByCategory.isEmpty {
-            Section {
-                ForEach(staplesByCategory, id: \.0) { category, categoryItems in
-                    DisclosureGroup(category.displayName) {
-                        ForEach(categoryItems) { item in
-                            row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
-                        }
-                    }
-                    .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                        handleCategoryDrop(providers, assigningTo: category)
-                    }
-                }
-            } header: {
-                Text("Staples")
-            } footer: {
-                Text("Your household's regular items. Manage the full list from the toolbar. Drag any item onto a different category header to move it there for good.")
             }
         }
     }
@@ -284,7 +282,10 @@ struct GroceryListView: View {
 
     @ViewBuilder
     private var myLayoutSections: some View {
-        let unassigned = items.filter { aisleID(for: $0) == nil }
+        // Aisle layout is only meaningful for things you're actually
+        // buying — a still-pending suggestion or something you rejected
+        // shouldn't show up sorted into an aisle.
+        let unassigned = purchasableItems.filter { aisleID(for: $0) == nil }
 
         Section {
             if unassigned.isEmpty {
@@ -305,7 +306,7 @@ struct GroceryListView: View {
         }
 
         ForEach(aisles) { aisle in
-            let aisleItems = items.filter { aisleID(for: $0) == aisle.id }
+            let aisleItems = purchasableItems.filter { aisleID(for: $0) == aisle.id }
             Section(aisle.name) {
                 if aisleItems.isEmpty {
                     Text("Drop items here").font(.brandCaption).foregroundStyle(.tertiary)
