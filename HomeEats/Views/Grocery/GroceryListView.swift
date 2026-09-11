@@ -205,7 +205,7 @@ struct GroceryListView: View {
                         }
                     }
                 } label: {
-                    majorHeader("Suggestions From This Week's Recipes")
+                    majorHeader("Suggestions From This Week's Recipes", font: .brandHeadline.bold())
                 }
             } footer: {
                 Text("Pulled from this week's planned recipes. Add what you actually need to buy, or reject anything you already have on hand — you can always add a rejected item back later.")
@@ -414,7 +414,7 @@ struct GroceryListView: View {
                     }
                 }
             } label: {
-                majorHeader("From Your Past Groceries")
+                majorHeader("From Your Past Groceries", font: .brandHeadline.bold())
             }
         } footer: {
             Text("This fills in automatically as you check items off below — or tap + (or Add All) to bring items from here straight onto this week's list.")
@@ -478,9 +478,12 @@ struct GroceryListView: View {
     /// from the smaller, plain per-category headers (like "Produce")
     /// nested underneath them. `.textCase(nil)` stops List's default
     /// small-caps-gray section-header styling from overriding this.
-    private func majorHeader(_ title: String) -> some View {
+    /// `font` defaults to the largest size, for "Grocery List"; the two
+    /// dropdown headers pass a smaller one — bold enough to still read as a
+    /// heading, but not competing with the page's one non-collapsible title.
+    private func majorHeader(_ title: String, font: Font = .brandTitle3.bold()) -> some View {
         Text(title)
-            .font(.brandTitle3.bold())
+            .font(font)
             .foregroundStyle(.primary)
             .textCase(nil)
             .padding(.vertical, 4)
