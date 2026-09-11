@@ -43,6 +43,14 @@ struct GroceryListView: View {
     private var staplesByCategory: [(GroceryCategory, [GroceryItem])] {
         grouped(items.filter { $0.section == .staples })
     }
+    /// Freshly pulled from this week's recipes, awaiting an Add/Reject
+    /// decision — see `GroceryListSection.suggested`.
+    private var suggestedItems: [GroceryItem] {
+        items.filter { $0.section == .suggested }.sorted { $0.name < $1.name }
+    }
+    private var rejectedItems: [GroceryItem] {
+        items.filter { $0.section == .rejected }.sorted { $0.name < $1.name }
+    }
 
     private func grouped(_ items: [GroceryItem]) -> [(GroceryCategory, [GroceryItem])] {
         Dictionary(grouping: items, by: \.category)
@@ -68,11 +76,15 @@ struct GroceryListView: View {
                 }
             }
 
+            suggestedSection
+
             if viewMode == .byCategory {
                 byCategorySections
             } else {
                 myLayoutSections
             }
+
+            rejectedSection
 
             quickAddFromHistorySection
         }
@@ -133,6 +145,73 @@ struct GroceryListView: View {
         }
     }
 
+    // MARK: - Suggested (from this week's recipes, pending Add/Reject)
+
+    @ViewBuilder
+    private var suggestedSection: some View {
+        if !suggestedItems.isEmpty {
+            Section {
+                ForEach(suggestedItems) { item in
+                    SuggestedItemRow(
+                        item: item,
+                        onAdd: { accept(item) },
+                        onReject: { reject(item) }
+                    )
+                }
+            } header: {
+                HStack {
+                    Text("Suggested From This Week's Recipes")
+                    Spacer()
+                    Button("Add All", action: acceptAllSuggested)
+                        .font(.brandCaption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.brandForest)
+                }
+            } footer: {
+                Text("Pulled from this week's planned recipes. Add what you actually need to buy, or reject anything you already have on hand — rejected items move to the Rejected section below.")
+            }
+        }
+    }
+
+    private func accept(_ item: GroceryItem) {
+        item.section = .thisWeek
+    }
+
+    private func reject(_ item: GroceryItem) {
+        item.section = .rejected
+    }
+
+    private func acceptAllSuggested() {
+        for item in suggestedItems { item.section = .thisWeek }
+    }
+
+    // MARK: - Rejected
+
+    @ViewBuilder
+    private var rejectedSection: some View {
+        if !rejectedItems.isEmpty {
+            Section {
+                ForEach(rejectedItems) { item in
+                    HStack {
+                        Text(item.name)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            accept(item)
+                        } label: {
+                            Label("Add", systemImage: "plus.circle")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } header: {
+                Text("Rejected")
+            } footer: {
+                Text("Items you said you already have on hand. Tap Add if you change your mind.")
+            }
+        }
+    }
+
     // MARK: - By category (default) view
 
     @ViewBuilder
@@ -141,9 +220,12 @@ struct GroceryListView: View {
             ForEach(thisWeekByCategory, id: \.0) { category, categoryItems in
                 Section(category.displayName) {
                     ForEach(categoryItems) { item in
-                        row(for: item)
+                        row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
                     }
                     .onDelete { offsets in delete(categoryItems, at: offsets) }
+                }
+                .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                    handleCategoryDrop(providers, assigningTo: category)
                 }
             }
         } else {
@@ -158,16 +240,44 @@ struct GroceryListView: View {
                 ForEach(staplesByCategory, id: \.0) { category, categoryItems in
                     DisclosureGroup(category.displayName) {
                         ForEach(categoryItems) { item in
-                            row(for: item)
+                            row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
                         }
+                    }
+                    .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                        handleCategoryDrop(providers, assigningTo: category)
                     }
                 }
             } header: {
                 Text("Staples")
             } footer: {
-                Text("Your household's regular items. Manage the full list from the toolbar.")
+                Text("Your household's regular items. Manage the full list from the toolbar. Drag any item onto a different category header to move it there for good.")
             }
         }
+    }
+
+    /// Reads the dragged item's name back out of the drop payload and
+    /// re-categorizes it — mirrors `handleDrop` above, but mutates the item's
+    /// `category` (and flags `categoryManuallySet` so `GroceryListBuilder`
+    /// never overwrites it on a future regenerate) instead of a separate
+    /// aisle-assignment table, since "By Category" groups directly off
+    /// `GroceryItem.category` rather than a table like "My Layout" does.
+    private func handleCategoryDrop(_ providers: [NSItemProvider], assigningTo category: GroceryCategory) -> Bool {
+        guard let provider = providers.first else { return false }
+        guard provider.canLoadObject(ofClass: NSString.self) else { return false }
+        provider.loadObject(ofClass: NSString.self) { reading, _ in
+            guard let name = reading as? String else { return }
+            Task { @MainActor in
+                assignCategory(name, to: category)
+            }
+        }
+        return true
+    }
+
+    private func assignCategory(_ name: String, to category: GroceryCategory) {
+        let key = GroceryListBuilder.canonicalKey(for: name)
+        guard let match = items.first(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }) else { return }
+        match.category = category
+        match.categoryManuallySet = true
     }
 
     // MARK: - "My Grocery Layout" view
@@ -291,9 +401,24 @@ struct GroceryListView: View {
                 }
             }
         } header: {
-            Text("From Your Past Groceries")
+            HStack {
+                Text("From Your Past Groceries")
+                Spacer()
+                if !historicalItems.isEmpty {
+                    Button("Add All", action: addAllHistorical)
+                        .font(.brandCaption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.brandForest)
+                }
+            }
         } footer: {
-            Text("This fills in automatically as you check items off below — or tap + to add something from here straight to this week's list.")
+            Text("This fills in automatically as you check items off below — or tap + (or Add All) to bring items from here straight onto this week's list.")
+        }
+    }
+
+    private func addAllHistorical() {
+        for historyItem in historicalItems where !alreadyInList(historyItem) {
+            quickAdd(historyItem)
         }
     }
 
@@ -439,6 +564,8 @@ private struct GroceryItemRow: View {
 
             Spacer()
 
+            QuantityStepper(count: $item.quantityCount)
+
             Button(action: onTapProduct) {
                 if let productOption {
                     ProductThumbnail(option: productOption)
@@ -481,6 +608,79 @@ private struct GroceryItemRow: View {
         let alreadyKnown = historicalItems.contains { GroceryListBuilder.canonicalKey(for: $0.name) == key }
         guard !alreadyKnown else { return }
         modelContext.insert(HistoricalGroceryItem(name: item.name, category: item.category))
+    }
+}
+
+/// A `[-] N [+]` control for `GroceryItem.quantityCount` — how many of an
+/// item to get, kept separate from `quantityText` (a free-text description
+/// like "3 cups" pulled from a recipe, not necessarily a whole-item count).
+/// Floors at 1 rather than letting the count reach 0, since "0 of an item on
+/// your list" isn't meaningfully different from the item not being on the
+/// list — removing it entirely is what the swipe-to-delete/checkbox already do.
+private struct QuantityStepper: View {
+    @Binding var count: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                count = max(1, count - 1)
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .disabled(count <= 1)
+
+            Text("\(count)")
+                .font(.brandCaption)
+                .monospacedDigit()
+                .frame(minWidth: 16)
+
+            Button {
+                count += 1
+            } label: {
+                Image(systemName: "plus.circle")
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.brandForest)
+    }
+}
+
+/// One row of `suggestedSection` — an ingredient pulled from this week's
+/// recipes, not yet decided on. Shows Add/Reject instead of the usual
+/// checkbox/quantity controls, since it isn't actually "on the list" yet.
+private struct SuggestedItemRow: View {
+    let item: GroceryItem
+    let onAdd: () -> Void
+    let onReject: () -> Void
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                if !item.quantityText.isEmpty {
+                    Text(item.quantityText)
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            Button(action: onReject) {
+                Label("Reject", systemImage: "xmark.circle")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.trailing, 4)
+
+            Button(action: onAdd) {
+                Label("Add", systemImage: "plus.circle.fill")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.brandForest)
+        }
     }
 }
 

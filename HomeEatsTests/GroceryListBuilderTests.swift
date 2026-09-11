@@ -174,6 +174,105 @@ final class GroceryListBuilderTests: XCTestCase {
         XCTAssertEqual(onionItem?.quantityText, "3 cups (from 2 recipes)")
     }
 
+    /// Recipe ingredients should land in `.suggested`, pending an Add/Reject
+    /// decision, rather than going straight onto the list — the whole point
+    /// being to let a week where you already have half the ingredients on
+    /// hand skip re-buying them.
+    func testRecipeIngredientsLandInSuggestedNotThisWeek() throws {
+        let context = try makeInMemoryContext()
+        let tacoNight = Recipe(title: "Tacos", ingredients: [
+            RecipeIngredientEntry(name: "onion", quantity: 1, unit: "cup")
+        ])
+        context.insert(tacoNight)
+        let meal = PlannedMeal(date: .now, slot: .dinner, recipe: tacoNight)
+        context.insert(meal)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let onionItem = items.first { $0.name.lowercased().contains("onion") }
+        XCTAssertEqual(onionItem?.section, .suggested)
+        XCTAssertTrue(items.filter { $0.section == .thisWeek }.isEmpty)
+    }
+
+    /// Once a suggestion has been accepted (moved to `.thisWeek`, as the
+    /// "Add" button does), regenerating the list again shouldn't move it
+    /// back to `.suggested` or duplicate it — the decision already made
+    /// should stick, only its quantity/provenance should refresh.
+    func testAcceptedSuggestionSurvivesRegenerateWithoutReverting() throws {
+        let context = try makeInMemoryContext()
+        let tacoNight = Recipe(title: "Tacos", ingredients: [
+            RecipeIngredientEntry(name: "onion", quantity: 1, unit: "cup")
+        ])
+        context.insert(tacoNight)
+        let meal = PlannedMeal(date: .now, slot: .dinner, recipe: tacoNight)
+        context.insert(meal)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        var items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let suggestion = try XCTUnwrap(items.first { $0.name.lowercased().contains("onion") })
+        suggestion.section = .thisWeek // simulate tapping "Add"
+
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let onionItems = items.filter { $0.name.lowercased().contains("onion") }
+        XCTAssertEqual(onionItems.count, 1, "Should not duplicate into a second suggested row")
+        XCTAssertEqual(onionItems.first?.section, .thisWeek)
+    }
+
+    /// Symmetric case: a rejected suggestion ("I already have this") should
+    /// also stick through a regenerate rather than reappearing as a fresh
+    /// suggestion every time.
+    func testRejectedSuggestionSurvivesRegenerateWithoutReverting() throws {
+        let context = try makeInMemoryContext()
+        let tacoNight = Recipe(title: "Tacos", ingredients: [
+            RecipeIngredientEntry(name: "onion", quantity: 1, unit: "cup")
+        ])
+        context.insert(tacoNight)
+        let meal = PlannedMeal(date: .now, slot: .dinner, recipe: tacoNight)
+        context.insert(meal)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        var items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let suggestion = try XCTUnwrap(items.first { $0.name.lowercased().contains("onion") })
+        suggestion.section = .rejected // simulate tapping "Reject"
+
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let onionItems = items.filter { $0.name.lowercased().contains("onion") }
+        XCTAssertEqual(onionItems.count, 1, "Should not duplicate into a second suggested row")
+        XCTAssertEqual(onionItems.first?.section, .rejected)
+    }
+
+    /// A category the user drags to a new spot (`categoryManuallySet`)
+    /// should never be silently reset by the next regenerate — mirrors how
+    /// a "My Layout" aisle placement is never auto-overwritten.
+    func testManuallySetCategorySurvivesRegenerate() throws {
+        let context = try makeInMemoryContext()
+        let milk = StapleItem(name: "Milk", category: .dairyAndEggs, isActive: true)
+        context.insert(milk)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
+
+        var items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let milkItem = try XCTUnwrap(items.first { $0.name == "Milk" })
+        milkItem.category = .pantry // simulate a drag to a different category
+        milkItem.categoryManuallySet = true
+
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
+
+        items = try context.fetch(FetchDescriptor<GroceryItem>())
+        XCTAssertEqual(items.first { $0.name == "Milk" }?.category, .pantry)
+    }
+
     func testCanonicalKeyMergesSimplePlurals() {
         XCTAssertEqual(
             GroceryListBuilder.canonicalKey(for: "Onions"),

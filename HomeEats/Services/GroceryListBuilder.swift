@@ -48,8 +48,16 @@ enum GroceryListBuilder {
         // one — see `dedupedByCanonicalKey` below for what that used to cause.
         let allItems = (try? context.fetch(FetchDescriptor<GroceryItem>())) ?? []
         let existingItems = allItems.filter { $0.weekStartDate.isSameDay(as: normalizedWeekStart) }
+        let existingSuggested = dedupedByCanonicalKey(
+            existingItems.filter { $0.section == .suggested },
+            in: context
+        )
         let existingThisWeek = dedupedByCanonicalKey(
             existingItems.filter { $0.section == .thisWeek && !$0.isManuallyAdded },
+            in: context
+        )
+        let existingRejected = dedupedByCanonicalKey(
+            existingItems.filter { $0.section == .rejected },
             in: context
         )
         let existingStaples = dedupedByCanonicalKey(
@@ -57,19 +65,26 @@ enum GroceryListBuilder {
             in: context
         )
 
-        // 3. Upsert "this week" lines.
+        // 3. Upsert recipe-derived lines. A key already decided this week
+        // (accepted onto the list, or explicitly rejected) is refreshed in
+        // place but never moved back to "suggested" — regenerating is meant
+        // to pick up ingredient/quantity changes, not re-litigate a decision
+        // already made. A brand new key becomes a fresh suggestion, pending
+        // Add/Reject.
         var seenKeys = Set<String>()
         for (key, aggregate) in aggregates {
             seenKeys.insert(key)
             if let existing = existingThisWeek[key] {
-                existing.quantityText = aggregate.quantityText
-                existing.category = aggregate.category
-                existing.sourceRecipeIDs = Array(aggregate.recipeIDs)
+                refresh(existing, from: aggregate)
+            } else if let existing = existingRejected[key] {
+                refresh(existing, from: aggregate)
+            } else if let existing = existingSuggested[key] {
+                refresh(existing, from: aggregate)
             } else {
                 let item = GroceryItem(
                     name: aggregate.displayName,
                     category: aggregate.category,
-                    section: .thisWeek,
+                    section: .suggested,
                     quantityText: aggregate.quantityText,
                     weekStartDate: normalizedWeekStart,
                     sourceRecipeIDs: Array(aggregate.recipeIDs)
@@ -77,8 +92,11 @@ enum GroceryListBuilder {
                 context.insert(item)
             }
         }
-        // Remove auto-generated lines whose ingredient is no longer needed.
-        for (key, item) in existingThisWeek where !seenKeys.contains(key) {
+        // Remove pending suggestions whose ingredient is no longer needed.
+        // Accepted/rejected lines are never auto-removed this way — once
+        // the user has decided on something, only they remove it (swipe
+        // delete, or un-rejecting it back off the list).
+        for (key, item) in existingSuggested where !seenKeys.contains(key) {
             context.delete(item)
         }
 
@@ -90,8 +108,12 @@ enum GroceryListBuilder {
             if let existing = existingStaples[key] {
                 // Pick up edits made in StaplesManagerView since this list
                 // was last generated (category, usual amount) — checked
-                // state is left alone since that's the user's in-store progress.
-                existing.category = staple.category
+                // state is left alone since that's the user's in-store
+                // progress, and category is left alone if the user has since
+                // dragged this line to a different category themselves.
+                if !existing.categoryManuallySet {
+                    existing.category = staple.category
+                }
                 existing.quantityText = staple.defaultQuantityText ?? ""
             } else {
                 let item = GroceryItem(
@@ -108,6 +130,17 @@ enum GroceryListBuilder {
         // (but never touch manual additions).
         for (key, item) in existingStaples where !seenStapleKeys.contains(key) && !item.isManuallyAdded {
             context.delete(item)
+        }
+    }
+
+    /// Refreshes an existing recipe-derived line's quantity/provenance from
+    /// a newly-computed aggregate. Category is skipped if the user has
+    /// since dragged the item to a different category themselves.
+    private static func refresh(_ item: GroceryItem, from aggregate: IngredientAggregate) {
+        item.quantityText = aggregate.quantityText
+        item.sourceRecipeIDs = Array(aggregate.recipeIDs)
+        if !item.categoryManuallySet {
+            item.category = aggregate.category
         }
     }
 
