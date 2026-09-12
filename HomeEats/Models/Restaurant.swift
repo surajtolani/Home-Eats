@@ -29,6 +29,19 @@ final class Restaurant {
     /// image URL on demand rather than downloading/storing the image
     /// itself, so it costs nothing until someone actually views it.
     var googlePhotoName: String?
+    /// Google's own place ID, captured when added from a Google search
+    /// result — lets the detail page fetch that place's hours/phone/
+    /// reviews later via `GooglePlacesService.placeDetails(placeID:)`. Not
+    /// set for a restaurant added manually or found via the MapKit
+    /// fallback, since neither of those has a matching Google place.
+    var googlePlaceID: String?
+    /// Captured at add-time (from the search result, whichever source it
+    /// came from) so the detail page can drop a map pin immediately
+    /// without re-geocoding the address on every visit. `nil` for a
+    /// manually-added restaurant with no coordinate to capture — the
+    /// detail view falls back to geocoding `address` in that case.
+    var latitude: Double?
+    var longitude: Double?
 
     init(
         id: UUID = UUID(),
@@ -41,7 +54,10 @@ final class Restaurant {
         address: String? = nil,
         isFavorite: Bool = false,
         createdAt: Date = .now,
-        googlePhotoName: String? = nil
+        googlePhotoName: String? = nil,
+        googlePlaceID: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil
     ) {
         self.id = id
         self.name = name
@@ -54,6 +70,9 @@ final class Restaurant {
         self.isFavorite = isFavorite
         self.createdAt = createdAt
         self.googlePhotoName = googlePhotoName
+        self.googlePlaceID = googlePlaceID
+        self.latitude = latitude
+        self.longitude = longitude
     }
 
     /// A single "Italian · $$ · ★★★★☆" line for list/detail display, Google

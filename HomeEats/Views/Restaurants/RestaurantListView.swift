@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import MapKit
+import CoreLocation
 
 struct RestaurantListView: View {
     @Environment(\.modelContext) private var modelContext
@@ -122,7 +123,10 @@ struct RestaurantListView: View {
             rating: result.rating.map { Int($0.rounded()) },
             websiteURL: result.mapsURLString,
             address: result.address,
-            googlePhotoName: result.photoName
+            googlePhotoName: result.photoName,
+            googlePlaceID: result.isGoogleSourced ? result.id : nil,
+            latitude: result.coordinate?.latitude,
+            longitude: result.coordinate?.longitude
         )
         modelContext.insert(restaurant)
         searchText = ""
@@ -213,6 +217,11 @@ final class RestaurantSearchModel: ObservableObject {
         /// Only ever set for a Google-sourced result — see
         /// `GooglePlacesService.PlaceResult.photoName`.
         let photoName: String?
+        let coordinate: CLLocationCoordinate2D?
+        /// Whether `id` is a real Google place ID (safe to keep and later
+        /// use for `GooglePlacesService.placeDetails(placeID:)`) as opposed
+        /// to a locally-synthesized id for a MapKit fallback result.
+        let isGoogleSourced: Bool
     }
 
     @Published var results: [Result] = []
@@ -251,7 +260,9 @@ final class RestaurantSearchModel: ObservableObject {
                             priceRange: $0.priceRange,
                             rating: $0.rating,
                             mapsURLString: $0.mapsURLString,
-                            photoName: $0.photoName
+                            photoName: $0.photoName,
+                            coordinate: $0.coordinate,
+                            isGoogleSourced: true
                         )
                     }
                     return
@@ -282,7 +293,9 @@ final class RestaurantSearchModel: ObservableObject {
                     priceRange: nil,
                     rating: nil,
                     mapsURLString: item.url?.absoluteString,
-                    photoName: nil
+                    photoName: nil,
+                    coordinate: item.placemark.coordinate,
+                    isGoogleSourced: false
                 )
             }
         } catch {

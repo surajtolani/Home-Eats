@@ -177,6 +177,65 @@ app.get("/restaurants/photo", async (req, res) => {
   }
 });
 
+// GET /restaurants/details?placeId=<Google place id>
+// Powers the restaurant detail page's hours/phone/reviews — pulled only
+// when someone actually opens that restaurant (not on every search result),
+// since Place Details is its own billed request. `placeId` is the `id`
+// field from a /restaurants/search result, saved on the app's Restaurant
+// row as `googlePlaceID`.
+app.get("/restaurants/details", async (req, res) => {
+  const placeId = (req.query.placeId || "").toString().trim();
+  if (!placeId) {
+    return res.status(400).json({ error: "Missing required query param 'placeId'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+
+  try {
+    const response = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
+      headers: {
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": [
+          "rating",
+          "userRatingCount",
+          "nationalPhoneNumber",
+          "regularOpeningHours.weekdayDescriptions",
+          "reviews",
+        ].join(","),
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("Place details error", response.status, detail);
+      return res.status(502).json({ error: "Place details request failed." });
+    }
+
+    const place = await response.json();
+    // Google returns up to 5 of the place's most relevant reviews per
+    // request (there's no pagination for more) — plenty for an inline
+    // preview; "Open in Google Maps" is still there for the full list.
+    const reviews = (place.reviews || []).map((review) => ({
+      authorName: review.authorAttribution?.displayName ?? "Google user",
+      rating: typeof review.rating === "number" ? review.rating : null,
+      text: review.text?.text ?? null,
+      relativeTime: review.relativePublishTimeDescription ?? null,
+    }));
+
+    res.json({
+      rating: typeof place.rating === "number" ? place.rating : null,
+      userRatingCount: typeof place.userRatingCount === "number" ? place.userRatingCount : null,
+      phoneNumber: place.nationalPhoneNumber ?? null,
+      openingHours: place.regularOpeningHours?.weekdayDescriptions ?? [],
+      reviews,
+    });
+  } catch (error) {
+    console.error("Place details request threw", error);
+    res.status(502).json({ error: "Place details request failed." });
+  }
+});
+
 // POST /recipes/extract
 // Body: { imageBase64?, mediaType?, notesText? } — at least one of
 // imageBase64 or notesText required. Powers "add a recipe from a photo or

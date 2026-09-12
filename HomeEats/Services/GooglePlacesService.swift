@@ -31,6 +31,28 @@ enum GooglePlacesService {
         let photoName: String?
     }
 
+    /// The extra detail (beyond what a search result already carries) shown
+    /// on a restaurant's own detail page — hours, phone, reviews — fetched
+    /// only when that page is actually opened, since it's a separate
+    /// billed Place Details request.
+    struct PlaceDetails: Decodable {
+        let rating: Double?
+        let userRatingCount: Int?
+        let phoneNumber: String?
+        /// Pre-formatted lines from Google ("Monday: 9:00 AM – 9:00 PM"),
+        /// one per day — shown as-is rather than re-parsed.
+        let openingHours: [String]
+        let reviews: [Review]
+
+        struct Review: Decodable, Identifiable {
+            let authorName: String
+            let rating: Int?
+            let text: String?
+            let relativeTime: String?
+            var id: String { authorName + (relativeTime ?? "") + (text?.prefix(20) ?? "") }
+        }
+    }
+
     enum ServiceError: LocalizedError {
         case notConfigured
         case requestFailed
@@ -79,6 +101,29 @@ enum GooglePlacesService {
                 photoName: raw.photoName
             )
         }
+    }
+
+    /// Fetches a restaurant's hours/phone/reviews for its detail page.
+    /// `placeID` is a `PlaceResult.id` captured when the restaurant was
+    /// added from a Google search result (saved as `Restaurant.googlePlaceID`)
+    /// — there's nothing to fetch for a restaurant added manually or via
+    /// the MapKit fallback, since neither has a matching Google place.
+    static func placeDetails(placeID: String) async throws -> PlaceDetails {
+        guard isConfigured, let base = URL(string: baseURLString) else {
+            throw ServiceError.notConfigured
+        }
+        var components = URLComponents(
+            url: base.appendingPathComponent("restaurants/details"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "placeId", value: placeID)]
+        guard let url = components?.url else { throw ServiceError.requestFailed }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw ServiceError.requestFailed
+        }
+        return try JSONDecoder().decode(PlaceDetails.self, from: data)
     }
 
     /// Builds the URL to actually load a photo's image bytes from — points

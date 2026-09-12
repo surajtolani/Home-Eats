@@ -92,6 +92,11 @@ sync). That's the only change needed on the app side:
   fetches the actual bytes on demand — the app requests one only for a
   restaurant someone actually adds and views, not for every search result,
   since each fetch is a separate billed Google request.
+- `/restaurants/details?placeId=...` (Place Details) returns a restaurant's
+  hours, phone number, and reviews — the detail page's own separate,
+  billed request, made only when that restaurant's page is actually
+  opened. That's what lets `RestaurantDetailView` show reviews/hours
+  directly instead of only linking out to the Google Maps app.
 - Every `/recipes/*` call costs real money the moment a key is configured
   (Claude Opus 5 — see the model table in the Anthropic Console for current
   pricing). Fine for household-scale use; if this app ever gets real
