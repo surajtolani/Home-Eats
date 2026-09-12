@@ -236,7 +236,6 @@ struct GroceryListView: View {
                     ForEach(categoryItems) { item in
                         row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
                     }
-                    .onDelete { offsets in delete(categoryItems, at: offsets) }
                 } header: {
                     Text(category.displayName)
                 } footer: {
@@ -497,10 +496,6 @@ struct GroceryListView: View {
             staples: staples,
             in: modelContext
         )
-    }
-
-    private func delete(_ items: [GroceryItem], at offsets: IndexSet) {
-        for index in offsets { modelContext.delete(items[index]) }
     }
 }
 
