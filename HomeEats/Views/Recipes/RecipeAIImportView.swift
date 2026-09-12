@@ -32,7 +32,7 @@ struct RecipeAIImportView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section("Photo") {
+                Section {
                     if let imageData, let uiImage = UIImage(data: imageData) {
                         Image(uiImage: uiImage)
                             .resizable()
@@ -54,6 +54,8 @@ struct RecipeAIImportView: View {
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                         Label(imageData == nil ? "Choose From Library" : "Choose a Different Photo", systemImage: "photo.on.rectangle")
                     }
+                } header: {
+                    Text("Photo")
                 } footer: {
                     // `allowsEditing` on the camera capture gives a built-in
                     // crop/rotate step — handy for trimming a whole cookbook
