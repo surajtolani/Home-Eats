@@ -3,11 +3,15 @@ import SwiftData
 
 /// Builds/refreshes the grocery list's *suggestions*: pulls ingredients from
 /// whichever planned meals the caller passes in (typically whatever date
-/// range someone picked in "Suggestions From Your Meal Plan") plus every
-/// active household staple, merges duplicates into one line each, and
-/// surfaces anything new as a pending suggestion — never directly onto the
-/// visible list. Restaurant days contribute nothing (per spec, only
-/// home-cooked recipes need groceries).
+/// range someone picked in "Suggestions From Your Meal Plan"), merges
+/// duplicates into one line each, and surfaces anything new as a pending
+/// suggestion — never directly onto the visible list. Restaurant days
+/// contribute nothing (per spec, only home-cooked recipes need groceries).
+/// `staples` is accepted for callers that still want to merge in active
+/// household staples the same way, but nothing in the app currently does —
+/// "Generate Suggestions" deliberately passes `[]` so a short/empty
+/// meal-plan result reads as "nothing needed," not as a wall of unrelated
+/// staples (see GroceryListView.generateSuggestions).
 ///
 /// The grocery list itself is a single persistent, standing list — not
 /// scoped to any particular week — so this always merges against
@@ -18,15 +22,20 @@ import SwiftData
 enum GroceryListBuilder {
 
     /// Regenerates grocery *suggestions* inside `context` from
-    /// `plannedMeals` and every active staple. This never adds anything
-    /// directly to the visible list — a brand new ingredient or staple
-    /// always lands in `.suggested`, pending an explicit Add/Reject; only a
-    /// key already decided (accepted, legacy `.staples`, or rejected) gets
-    /// refreshed in place. Existing checked state, manual additions, and
-    /// chosen product options for items that persist are preserved; a
-    /// pending suggestion that's no longer needed (a recipe was swapped
-    /// out of the range, or a staple deactivated) is removed — anything
-    /// already decided is never auto-removed this way.
+    /// `plannedMeals` and any active staple passed in. This never adds
+    /// anything directly to the visible list — a brand new ingredient or
+    /// staple always lands in `.suggested`, pending an explicit Add/Reject;
+    /// only a key already decided (accepted, or legacy `.staples`) gets
+    /// refreshed in place. Rejecting a suggestion deletes it outright (see
+    /// GroceryListView.reject) rather than parking it in some remembered
+    /// "rejected" state, so there's nothing to refresh-in-place for a
+    /// rejection — the next time that ingredient shows up in a planned
+    /// meal, it's indistinguishable from one never suggested before.
+    /// Existing checked state, manual additions, and chosen product options
+    /// for items that persist are preserved; a pending suggestion that's no
+    /// longer needed (a recipe was swapped out of the range, or a staple
+    /// deactivated) is removed — anything already decided is never
+    /// auto-removed this way.
     @MainActor
     static func regenerate(
         plannedMeals: [PlannedMeal],
@@ -88,10 +97,6 @@ enum GroceryListBuilder {
             existingItems.filter { $0.section == .thisWeek && !$0.isManuallyAdded },
             in: context
         )
-        let existingRejected = dedupedByCanonicalKey(
-            existingItems.filter { $0.section == .rejected },
-            in: context
-        )
         let existingStaples = dedupedByCanonicalKey(
             existingItems.filter { $0.section == .staples },
             in: context
@@ -119,8 +124,6 @@ enum GroceryListBuilder {
             if let existing = existingThisWeek[key] {
                 refresh(existing, from: aggregate)
             } else if let existing = existingStaples[key] {
-                refresh(existing, from: aggregate)
-            } else if let existing = existingRejected[key] {
                 refresh(existing, from: aggregate)
             } else if let existing = existingSuggested[key] {
                 refresh(existing, from: aggregate)

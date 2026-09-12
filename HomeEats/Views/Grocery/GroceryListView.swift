@@ -54,8 +54,8 @@ struct GroceryListView: View {
 
     /// Everything actually "on the list" to buy — accepted recipe
     /// ingredients plus staples — as opposed to `.suggested` (still pending
-    /// a decision) or `.rejected` (explicitly not needed). Staples used to
-    /// get their own separate "Staples" section, grouped by category same
+    /// a decision; rejecting one just deletes it, see `reject(_:)`). Staples
+    /// used to get their own separate "Staples" section, grouped by category same
     /// as everything else — which just duplicated every category header a
     /// second time. Merging them into one set of category groups here means
     /// each category (e.g. "Produce") appears once, with both recipe items
@@ -71,10 +71,6 @@ struct GroceryListView: View {
     private var suggestedItems: [GroceryItem] {
         items.filter { $0.section == .suggested }.sorted { $0.name < $1.name }
     }
-    private var rejectedItems: [GroceryItem] {
-        items.filter { $0.section == .rejected }.sorted { $0.name < $1.name }
-    }
-
     private func grouped(_ items: [GroceryItem]) -> [(GroceryCategory, [GroceryItem])] {
         Dictionary(grouping: items, by: \.category)
             .sorted { $0.key.sortIndex < $1.key.sortIndex }
@@ -189,13 +185,6 @@ struct GroceryListView: View {
                 item.selectedProductOptionID = chosen?.id
             }
         }
-        // Keeps active staples surfaced as pending suggestions any time the
-        // tab is opened, without needing a manual "generate" step — only
-        // staples flow through here; meal-plan ingredients are pulled in
-        // deliberately, for whatever date range is chosen below.
-        .task {
-            refreshStaples()
-        }
     }
 
     // MARK: - Suggested (from a chosen meal-plan range, pending Add/Reject)
@@ -245,27 +234,11 @@ struct GroceryListView: View {
                         )
                     }
                 }
-                if !rejectedItems.isEmpty {
-                    Text("Rejected")
-                        .font(.brandCallout.bold())
-                        .foregroundStyle(.secondary)
-                        .padding(.top, suggestedItems.isEmpty ? 0 : 6)
-                    ForEach(rejectedItems) { item in
-                        GrocerySuggestionRow(
-                            name: item.name,
-                            quantityText: item.quantityText,
-                            isSecondary: true,
-                            addIsDisabled: false,
-                            onAdd: { accept(item) },
-                            onReject: nil
-                        )
-                    }
-                }
             } label: {
                 majorHeader("Suggestions From Your Meal Plan")
             }
         } footer: {
-            Text("Pulled from your meal plan for the dates you pick, plus your active staples. Add what you actually need to buy, or reject anything you already have on hand — you can always add a rejected item back later.")
+            Text("Pulled from your meal plan for the dates you pick. Add what you actually need to buy, or reject anything you already have on hand — rejecting just removes the suggestion; it comes back on its own next time that ingredient shows up in a planned meal.")
         }
     }
 
@@ -273,8 +246,21 @@ struct GroceryListView: View {
         item.section = .thisWeek
     }
 
+    /// Rejecting just means "not needed this time" — it deletes the
+    /// suggestion outright rather than parking it in some permanent
+    /// "rejected" bucket. It used to do the latter (`item.section =
+    /// .rejected`), which meant rejecting an ingredient once (e.g. "I
+    /// already have flour") silently blocked that same ingredient from ever
+    /// being suggested again for ANY future meal, on any day, since
+    /// GroceryListBuilder.regenerate treated an existing `.rejected` row as
+    /// an already-made decision and just refreshed it in place rather than
+    /// re-suggesting it. Deleting it means the next regenerate has no
+    /// memory of the rejection at all, and creates a fresh `.suggested` row
+    /// exactly like it would for an ingredient never seen before — which is
+    /// the actually-expected behavior ("I have flour on hand this week"
+    /// shouldn't mean "never ask me about flour again").
     private func reject(_ item: GroceryItem) {
-        item.section = .rejected
+        modelContext.delete(item)
     }
 
     private func acceptAllSuggested() {
@@ -285,11 +271,12 @@ struct GroceryListView: View {
         let mealsOnSelectedDays = allPlannedMeals.filter { meal in
             selectedSuggestionDates.contains(calendar.startOfDay(for: meal.date))
         }
-        GroceryListBuilder.regenerate(plannedMeals: mealsOnSelectedDays, staples: staples, in: modelContext)
-    }
-
-    private func refreshStaples() {
-        GroceryListBuilder.regenerate(plannedMeals: [], staples: staples, in: modelContext)
+        // Staples deliberately aren't passed here (see GroceryListBuilder) —
+        // this button is specifically "suggestions from your meal plan for
+        // these dates," and mixing in every active staple on top of that
+        // made a short/no recipe-ingredient result look like it was just
+        // dumping the staples list instead of actually reading the plan.
+        GroceryListBuilder.regenerate(plannedMeals: mealsOnSelectedDays, staples: [], in: modelContext)
     }
 
     /// The default set of pre-selected days when the screen first loads —
