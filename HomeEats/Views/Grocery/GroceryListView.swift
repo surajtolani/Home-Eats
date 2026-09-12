@@ -37,6 +37,13 @@ struct GroceryListView: View {
     @State private var suggestionRangeEnd = Calendar.current.date(
         byAdding: .day, value: 6, to: Calendar.current.startOfDay(for: .now)
     ) ?? .now
+    // A real, writable `@State` rather than `.environment(\.editMode,
+    // .constant(.active))` — a `.constant` binding silently swallows any
+    // write List's own internals make to it, which is exactly the kind of
+    // thing that can leave its drag-to-reorder machinery only half-working.
+    // This stays `.active` forever (nothing in this screen ever flips it
+    // back), but as a genuine binding rather than a no-op one.
+    @State private var editMode: EditMode = .active
 
     private var calendar: Calendar { Calendar.current }
 
@@ -106,7 +113,7 @@ struct GroceryListView: View {
         // on permanently means there's always exactly one, persistent way
         // to reorder a category/aisle's items without an extra "Edit" tap
         // first, and no second, competing handle layered on top of it.
-        .environment(\.editMode, .constant(.active))
+        .environment(\.editMode, $editMode)
         .navigationTitle("Grocery List")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -346,7 +353,7 @@ struct GroceryListView: View {
         // Aisle layout is only meaningful for things you're actually
         // buying — a still-pending suggestion or something you rejected
         // shouldn't show up sorted into an aisle.
-        let unassigned = purchasableItems.filter { aisleID(for: $0) == nil }
+        let unassigned = layoutSorted(purchasableItems.filter { aisleID(for: $0) == nil })
 
         Section {
             if unassigned.isEmpty {
@@ -368,7 +375,7 @@ struct GroceryListView: View {
         }
 
         ForEach(aisles) { aisle in
-            let aisleItems = purchasableItems.filter { aisleID(for: $0) == aisle.id }
+            let aisleItems = layoutSorted(purchasableItems.filter { aisleID(for: $0) == aisle.id })
             Section(aisle.name) {
                 if aisleItems.isEmpty {
                     Text("Touch and hold an item above to move it here.").font(.brandCaption).foregroundStyle(.tertiary)
@@ -384,11 +391,30 @@ struct GroceryListView: View {
         }
     }
 
+    /// "My Layout" position, lowest first — kept in `layoutOrderIndex`
+    /// rather than the "By Category" view's `orderIndex`, so reordering in
+    /// one view never disturbs the other's order (see the field's doc
+    /// comment on `GroceryItem`).
+    private func layoutSorted(_ items: [GroceryItem]) -> [GroceryItem] {
+        items.sorted { $0.layoutOrderIndex < $1.layoutOrderIndex }
+    }
+
+    /// Lands an item at the end of whichever aisle group (or "Unsorted",
+    /// `aisleID == nil`) it was just assigned to via the context menu —
+    /// same idea as `moveToCategory`'s "lands at the end of its new
+    /// category" behavior, so a menu-driven move doesn't leave the item at
+    /// some arbitrary/stale position.
+    private func placeAtEndOfLayoutGroup(_ item: GroceryItem, aisleID: UUID?) {
+        let siblings = purchasableItems.filter { self.aisleID(for: $0) == aisleID && $0.id != item.id }
+        let maxIndex = siblings.map(\.layoutOrderIndex).max() ?? 0
+        item.layoutOrderIndex = maxIndex + 1
+    }
+
     private func moveWithinAisle(_ aisleItems: [GroceryItem], from source: IndexSet, to destination: Int) {
         var reordered = aisleItems
         reordered.move(fromOffsets: source, toOffset: destination)
         for (index, item) in reordered.enumerated() {
-            item.orderIndex = Double(index)
+            item.layoutOrderIndex = Double(index)
         }
     }
 
@@ -397,6 +423,7 @@ struct GroceryListView: View {
         Menu {
             Button {
                 unassign([item.name])
+                placeAtEndOfLayoutGroup(item, aisleID: nil)
             } label: {
                 if aisleID(for: item) == nil {
                     Label("Unsorted", systemImage: "checkmark")
@@ -407,6 +434,7 @@ struct GroceryListView: View {
             ForEach(aisles) { aisle in
                 Button {
                     assign([item.name], to: aisle)
+                    placeAtEndOfLayoutGroup(item, aisleID: aisle.id)
                 } label: {
                     if aisleID(for: item) == aisle.id {
                         Label(aisle.name, systemImage: "checkmark")

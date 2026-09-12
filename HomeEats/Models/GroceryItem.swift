@@ -52,14 +52,21 @@ final class GroceryItem {
     /// checks this before overwriting `category` on a regenerate, the same
     /// way a "My Layout" aisle placement is never overwritten automatically.
     var categoryManuallySet: Bool = false
-    /// Manual sort position within a category, lowest first. A `Double`
-    /// (rather than an `Int`) so reordering can slot an item between two
-    /// existing ones (new value = the average of its new neighbors) without
-    /// ever needing to renumber every other row in the category. Freshly
-    /// generated items are appended after everything that already exists
-    /// this week, so an existing manual order is never disturbed by a
-    /// regenerate.
+    /// Manual sort position within a category, lowest first, for the "By
+    /// Category" view specifically. A `Double` (rather than an `Int`) so
+    /// reordering can slot an item between two existing ones (new value =
+    /// the average of its new neighbors) without ever needing to renumber
+    /// every other row in the category. Freshly generated items are
+    /// appended after everything that already exists, so an existing
+    /// manual order is never disturbed by a regenerate.
     var orderIndex: Double = 0
+    /// The same idea as `orderIndex`, but for the "My Layout" view's
+    /// within-aisle position instead — kept as a separate field rather than
+    /// reusing `orderIndex` so reordering in one view can never scramble the
+    /// other's order. The two views group items completely differently
+    /// (category vs. aisle), so there's no reason a position meaningful in
+    /// one would still make sense in the other.
+    var layoutOrderIndex: Double = 0
 
     init(
         id: UUID = UUID(),
@@ -74,7 +81,8 @@ final class GroceryItem {
         isManuallyAdded: Bool = false,
         quantityCount: Int = 1,
         categoryManuallySet: Bool = false,
-        orderIndex: Double = 0
+        orderIndex: Double = 0,
+        layoutOrderIndex: Double = 0
     ) {
         self.id = id
         self.name = name
@@ -89,5 +97,6 @@ final class GroceryItem {
         self.quantityCount = quantityCount
         self.categoryManuallySet = categoryManuallySet
         self.orderIndex = orderIndex
+        self.layoutOrderIndex = layoutOrderIndex
     }
 }

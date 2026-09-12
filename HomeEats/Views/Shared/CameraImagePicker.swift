@@ -41,8 +41,16 @@ struct CameraImagePicker: UIViewControllerRepresentable {
             didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
         ) {
             // The edited (cropped) image when the user adjusted it, else the
-            // original capture as-is.
-            let image = (info[.editedImage] as? UIImage) ?? (info[.originalImage] as? UIImage)
+            // original capture as-is. `.normalizedOrientation()` bakes
+            // whatever `.imageOrientation` the picker handed back into the
+            // actual pixel data before this ever turns into JPEG bytes —
+            // `UIImage.jpegData` only *tags* the orientation as EXIF
+            // metadata rather than rotating pixels, so anything downstream
+            // that doesn't carefully honor that tag (a raw resize/redraw,
+            // a thumbnail generator, ...) would otherwise still show it
+            // sideways despite the picker's own preview looking correct.
+            let image = ((info[.editedImage] as? UIImage) ?? (info[.originalImage] as? UIImage))?
+                .normalizedOrientation()
             onCapture(image?.jpegData(compressionQuality: 0.9))
         }
 
