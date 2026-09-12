@@ -273,6 +273,59 @@ final class GroceryListBuilderTests: XCTestCase {
         XCTAssertEqual(items.first { $0.name == "Milk" }?.category, .pantry)
     }
 
+    /// Freshly generated items should each get a distinct, increasing
+    /// `orderIndex` — not all default to 0, which would leave their
+    /// relative order within a category undefined.
+    func testNewItemsGetIncreasingOrderIndex() throws {
+        let context = try makeInMemoryContext()
+        let recipe = Recipe(title: "Salad", ingredients: [
+            RecipeIngredientEntry(name: "lettuce", quantity: 1, unit: nil),
+            RecipeIngredientEntry(name: "tomato", quantity: 1, unit: nil),
+            RecipeIngredientEntry(name: "cucumber", quantity: 1, unit: nil)
+        ])
+        context.insert(recipe)
+        let meal = PlannedMeal(date: .now, slot: .dinner, recipe: recipe)
+        context.insert(meal)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let orderIndices = Set(items.map(\.orderIndex))
+        XCTAssertEqual(orderIndices.count, items.count, "Every item should get its own distinct orderIndex")
+    }
+
+    /// A manual reorder (dragging one item in front of another, setting
+    /// `orderIndex` directly) should never be reset by a later regenerate —
+    /// same guarantee as `categoryManuallySet` above, for position instead
+    /// of category.
+    func testManualOrderIndexSurvivesRegenerate() throws {
+        let context = try makeInMemoryContext()
+        let recipe = Recipe(title: "Salad", ingredients: [
+            RecipeIngredientEntry(name: "lettuce", quantity: 1, unit: nil),
+            RecipeIngredientEntry(name: "tomato", quantity: 1, unit: nil)
+        ])
+        context.insert(recipe)
+        let meal = PlannedMeal(date: .now, slot: .dinner, recipe: recipe)
+        context.insert(meal)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        var items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let lettuce = try XCTUnwrap(items.first { $0.name.lowercased().contains("lettuce") })
+        let tomato = try XCTUnwrap(items.first { $0.name.lowercased().contains("tomato") })
+        // Simulate dragging tomato in front of lettuce.
+        tomato.orderIndex = lettuce.orderIndex - 1
+
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [], in: context)
+
+        items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let refreshedLettuce = try XCTUnwrap(items.first { $0.name.lowercased().contains("lettuce") })
+        let refreshedTomato = try XCTUnwrap(items.first { $0.name.lowercased().contains("tomato") })
+        XCTAssertLessThan(refreshedTomato.orderIndex, refreshedLettuce.orderIndex)
+    }
+
     /// Recipe ingredient names carry prep instructions ("onion, diced") the
     /// recipe view wants but a shopping list doesn't — those should be
     /// stripped by the time an ingredient becomes a `GroceryItem`.

@@ -48,6 +48,14 @@ final class GroceryItem {
     /// checks this before overwriting `category` on a regenerate, the same
     /// way a "My Layout" aisle placement is never overwritten automatically.
     var categoryManuallySet: Bool = false
+    /// Manual sort position within a category, lowest first. A `Double`
+    /// (rather than an `Int`) so reordering can slot an item between two
+    /// existing ones (new value = the average of its new neighbors) without
+    /// ever needing to renumber every other row in the category. Freshly
+    /// generated items are appended after everything that already exists
+    /// this week, so an existing manual order is never disturbed by a
+    /// regenerate.
+    var orderIndex: Double = 0
 
     init(
         id: UUID = UUID(),
@@ -61,7 +69,8 @@ final class GroceryItem {
         selectedProductOptionID: UUID? = nil,
         isManuallyAdded: Bool = false,
         quantityCount: Int = 1,
-        categoryManuallySet: Bool = false
+        categoryManuallySet: Bool = false,
+        orderIndex: Double = 0
     ) {
         self.id = id
         self.name = name
@@ -75,5 +84,6 @@ final class GroceryItem {
         self.isManuallyAdded = isManuallyAdded
         self.quantityCount = quantityCount
         self.categoryManuallySet = categoryManuallySet
+        self.orderIndex = orderIndex
     }
 }

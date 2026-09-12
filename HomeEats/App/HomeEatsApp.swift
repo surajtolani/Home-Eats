@@ -26,7 +26,8 @@ struct HomeEatsApp: App {
             AppSettings.self,
             StoreAisle.self,
             ItemAisleAssignment.self,
-            HistoricalGroceryItem.self
+            HistoricalGroceryItem.self,
+            GroceryReminder.self
         ])
         // Local-first storage per spec: everything lives on-device by
         // default. `cloudKitDatabase: .none` keeps that explicit; flipping
@@ -88,6 +89,7 @@ struct HomeEatsApp: App {
                 .task {
                     reminderRouter.install()
                     await scheduleReminderIfConfigured()
+                    await scheduleGroceryRemindersIfConfigured()
                 }
         }
         .modelContainer(modelContainer)
@@ -121,5 +123,16 @@ struct HomeEatsApp: App {
         let descriptor = FetchDescriptor<AppSettings>()
         guard let settings = try? modelContainer.mainContext.fetch(descriptor).first else { return }
         await NotificationScheduler.reschedule(using: settings)
+    }
+
+    /// Same reasoning as `scheduleReminderIfConfigured()` above, for the
+    /// (possibly several) grocery-run reminders — `GroceryRemindersSettingsView`'s
+    /// add/edit/remove handlers are the only other call sites, so this is
+    /// what re-arms them across an app relaunch.
+    @MainActor
+    private func scheduleGroceryRemindersIfConfigured() async {
+        let descriptor = FetchDescriptor<GroceryReminder>()
+        guard let reminders = try? modelContainer.mainContext.fetch(descriptor) else { return }
+        await NotificationScheduler.rescheduleGroceryReminders(reminders)
     }
 }

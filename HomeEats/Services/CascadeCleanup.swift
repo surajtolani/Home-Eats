@@ -24,6 +24,12 @@ enum CascadeCleanup {
     static func removeReferences(toRestaurantID restaurantID: UUID, in context: ModelContext) {
         let meals = (try? context.fetch(FetchDescriptor<PlannedMeal>())) ?? []
         for meal in meals where meal.restaurant?.id == restaurantID {
+            // A deleted meal's own pending "place your order" notification
+            // (if it had one) would otherwise still fire later, pointing at
+            // a plan that no longer exists.
+            if meal.orderReminderDate != nil {
+                NotificationScheduler.cancelOrderReminder(for: meal)
+            }
             context.delete(meal)
         }
         let suggestions = (try? context.fetch(FetchDescriptor<MealSuggestion>())) ?? []

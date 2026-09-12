@@ -24,6 +24,12 @@ final class PlannedMeal {
     var decidedByMemberID: UUID?
     var decidedAt: Date
     var notes: String?
+    /// When set, an exact date/time a one-time "don't forget to place your
+    /// order" local notification was scheduled for — only meaningful for
+    /// an order-in meal. Kept here (rather than just letting the
+    /// notification fire and forget) so the reminder can be shown/edited/
+    /// cancelled later, and re-synced if this meal's own date ever changes.
+    var orderReminderDate: Date?
 
     init(
         id: UUID = UUID(),
@@ -34,7 +40,8 @@ final class PlannedMeal {
         isOrderIn: Bool = false,
         decidedByMemberID: UUID? = nil,
         decidedAt: Date = .now,
-        notes: String? = nil
+        notes: String? = nil,
+        orderReminderDate: Date? = nil
     ) {
         self.id = id
         self.date = Self.normalize(date)
@@ -45,6 +52,7 @@ final class PlannedMeal {
         self.decidedByMemberID = decidedByMemberID
         self.decidedAt = decidedAt
         self.notes = notes
+        self.orderReminderDate = orderReminderDate
     }
 
     static func normalize(_ date: Date) -> Date {

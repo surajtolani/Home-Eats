@@ -75,6 +75,12 @@ enum GroceryListBuilder {
             in: context
         )
 
+        // Newly-created lines are appended after everything that already
+        // exists this week (rather than, say, starting back at 0), so a
+        // manual reorder never gets disturbed by a regenerate picking up a
+        // new ingredient partway through the list.
+        var nextOrderIndex = (existingItems.map(\.orderIndex).max() ?? 0) + 1
+
         // 3. Upsert recipe-derived lines. A key already decided this week
         // (accepted onto the list, or explicitly rejected) is refreshed in
         // place but never moved back to "suggested" — regenerating is meant
@@ -97,8 +103,10 @@ enum GroceryListBuilder {
                     section: .suggested,
                     quantityText: aggregate.quantityText,
                     weekStartDate: normalizedWeekStart,
-                    sourceRecipeIDs: Array(aggregate.recipeIDs)
+                    sourceRecipeIDs: Array(aggregate.recipeIDs),
+                    orderIndex: nextOrderIndex
                 )
+                nextOrderIndex += 1
                 context.insert(item)
             }
         }
@@ -131,8 +139,10 @@ enum GroceryListBuilder {
                     category: staple.category,
                     section: .staples,
                     quantityText: staple.defaultQuantityText ?? "",
-                    weekStartDate: normalizedWeekStart
+                    weekStartDate: normalizedWeekStart,
+                    orderIndex: nextOrderIndex
                 )
+                nextOrderIndex += 1
                 context.insert(item)
             }
         }

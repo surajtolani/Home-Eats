@@ -69,7 +69,7 @@ struct GroceryListView: View {
     private func grouped(_ items: [GroceryItem]) -> [(GroceryCategory, [GroceryItem])] {
         Dictionary(grouping: items, by: \.category)
             .sorted { $0.key.sortIndex < $1.key.sortIndex }
-            .map { ($0.key, $0.value.sorted { $0.name < $1.name }) }
+            .map { ($0.key, $0.value.sorted { $0.orderIndex < $1.orderIndex }) }
     }
 
     var body: some View {
@@ -234,7 +234,11 @@ struct GroceryListView: View {
                 let (category, categoryItems) = entry
                 Section {
                     ForEach(categoryItems) { item in
-                        row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
+                        row(for: item)
+                            .onDrag { NSItemProvider(object: item.name as NSString) }
+                            .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                                handleReorderDrop(providers, targetItem: item, targetCategory: category)
+                            }
                     }
                 } header: {
                     Text(category.displayName)
@@ -242,10 +246,15 @@ struct GroceryListView: View {
                     // Only shown once, under the last category section,
                     // rather than repeated under every one.
                     if index == purchasableByCategory.count - 1 {
-                        Text("Drag an item onto a different category header to move it there for good. Manage your standing staples from the toolbar.")
+                        Text("Drag an item onto another item to reorder it there, or onto a different category header to move it there for good. Manage your standing staples from the toolbar.")
                     }
                 }
                 .onDrop(of: [.plainText], isTargeted: nil) { providers in
+                    // Catches a drop that lands on the header or on empty
+                    // space in the section, rather than directly on a row —
+                    // just moves the item into this category, appended at
+                    // the end, since there's no specific row to place it
+                    // relative to.
                     handleCategoryDrop(providers, assigningTo: category)
                 }
             }
@@ -277,9 +286,55 @@ struct GroceryListView: View {
 
     private func assignCategory(_ name: String, to category: GroceryCategory) {
         let key = GroceryListBuilder.canonicalKey(for: name)
-        guard let match = items.first(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }) else { return }
+        guard let match = purchasableItems.first(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }) else { return }
         match.category = category
         match.categoryManuallySet = true
+        // Dropped with no specific row to target — append to the end of
+        // this category rather than leaving whatever order position it
+        // happened to have in its old one.
+        let highestInCategory = purchasableItems.filter { $0.category == category }.map(\.orderIndex).max() ?? 0
+        match.orderIndex = highestInCategory + 1
+    }
+
+    /// Reads the dragged item's name back out of the drop payload and
+    /// inserts it immediately before `targetItem` — reordering within the
+    /// same category, or moving it into a different one and placing it at
+    /// that exact spot, in one gesture.
+    private func handleReorderDrop(
+        _ providers: [NSItemProvider],
+        targetItem: GroceryItem,
+        targetCategory: GroceryCategory
+    ) -> Bool {
+        guard let provider = providers.first else { return false }
+        guard provider.canLoadObject(ofClass: NSString.self) else { return false }
+        provider.loadObject(ofClass: NSString.self) { reading, _ in
+            guard let name = reading as? String else { return }
+            Task { @MainActor in
+                reorder(name, toJustBefore: targetItem, in: targetCategory)
+            }
+        }
+        return true
+    }
+
+    private func reorder(_ name: String, toJustBefore targetItem: GroceryItem, in category: GroceryCategory) {
+        let key = GroceryListBuilder.canonicalKey(for: name)
+        guard let dragged = purchasableItems.first(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }),
+              dragged.id != targetItem.id else { return }
+
+        if dragged.category != category {
+            dragged.category = category
+            dragged.categoryManuallySet = true
+        }
+
+        // Fractional indexing: the new value just needs to land strictly
+        // between the sibling before `targetItem` and `targetItem` itself,
+        // so every other row's `orderIndex` can stay untouched.
+        let siblings = purchasableItems
+            .filter { $0.category == category && $0.id != dragged.id }
+            .sorted { $0.orderIndex < $1.orderIndex }
+        guard let targetPosition = siblings.firstIndex(where: { $0.id == targetItem.id }) else { return }
+        let precedingOrderIndex = targetPosition > 0 ? siblings[targetPosition - 1].orderIndex : targetItem.orderIndex - 1
+        dragged.orderIndex = (precedingOrderIndex + targetItem.orderIndex) / 2
     }
 
     // MARK: - "My Grocery Layout" view

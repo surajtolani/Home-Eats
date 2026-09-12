@@ -23,6 +23,7 @@ struct PlanningReminderFlowView: View {
     @State private var showRecipePicker = false
     @State private var showRestaurantPicker = false
     @State private var showOrderInPicker = false
+    @State private var pendingOrderReminder: PendingOrderReminder?
 
     private var calendar: Calendar { Calendar.current }
 
@@ -152,6 +153,9 @@ struct PlanningReminderFlowView: View {
                 decideDinner(date: date, restaurant: restaurant, isOrderIn: true)
             }
         }
+        .sheet(item: $pendingOrderReminder) { pending in
+            OrderReminderSheet(meal: pending.meal, restaurant: pending.restaurant)
+        }
     }
 
     private func decideDinner(date: Date, recipe: Recipe? = nil, restaurant: Restaurant? = nil, isOrderIn: Bool = false) {
@@ -164,5 +168,23 @@ struct PlanningReminderFlowView: View {
             decidedByMemberID: activeUserSession.activeMemberID
         )
         modelContext.insert(meal)
+
+        // Same "offer a reminder right away" behavior as DayDetailView's
+        // Order In flow — deferred a tick so it doesn't race
+        // RestaurantPickerSheet's own `dismiss()`, called immediately after
+        // this same `onPick` completion closure returns.
+        if isOrderIn, let restaurant {
+            Task { @MainActor in
+                pendingOrderReminder = PendingOrderReminder(meal: meal, restaurant: restaurant)
+            }
+        }
     }
+}
+
+/// Bridges a freshly-created order-in meal + its restaurant into
+/// `.sheet(item:)`, which needs a single `Identifiable` value.
+private struct PendingOrderReminder: Identifiable {
+    let meal: PlannedMeal
+    let restaurant: Restaurant
+    var id: UUID { meal.id }
 }

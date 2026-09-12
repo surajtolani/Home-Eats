@@ -57,7 +57,16 @@ struct DayDetailView: View {
                     meal: meal,
                     member: members.first(where: { $0.id == meal.decidedByMemberID }),
                     onLog: { activeSheet = .logMeal(meal) },
-                    onRemove: { modelContext.delete(meal) }
+                    onRemove: {
+                        if meal.orderReminderDate != nil {
+                            NotificationScheduler.cancelOrderReminder(for: meal)
+                        }
+                        modelContext.delete(meal)
+                    },
+                    onCancelReminder: {
+                        NotificationScheduler.cancelOrderReminder(for: meal)
+                        meal.orderReminderDate = nil
+                    }
                 )
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
             }
@@ -127,6 +136,8 @@ struct DayDetailView: View {
             RestaurantPickerSheet { restaurant in
                 decide(slot: slot, restaurant: restaurant, isOrderIn: true)
             }
+        case .setOrderReminder(let meal, let restaurant):
+            OrderReminderSheet(meal: meal, restaurant: restaurant)
         case .suggestRecipe(let slot):
             RecipePickerSheet { recipe in
                 addSuggestion(slot: slot, recipe: recipe)
@@ -150,6 +161,19 @@ struct DayDetailView: View {
             decidedByMemberID: activeUserSession.activeMemberID
         )
         modelContext.insert(meal)
+
+        // Immediately offer to set a reminder for an order-in meal — the
+        // whole point of ordering in is placing the order by some specific
+        // time, easy to forget once the day gets busy. Deferred to the next
+        // run loop turn rather than set synchronously here, since this
+        // closure runs from inside `RestaurantPickerSheet`'s `onPick`,
+        // immediately followed by that sheet's own `dismiss()` — changing
+        // `activeSheet` in the same tick would race that dismissal.
+        if isOrderIn, let restaurant {
+            Task { @MainActor in
+                activeSheet = .setOrderReminder(meal, restaurant)
+            }
+        }
     }
 
     private func addSuggestion(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil) {
@@ -182,6 +206,7 @@ private enum SheetAction: Identifiable {
     case addRecipe(MealSlot)
     case addRestaurant(MealSlot)
     case orderIn(MealSlot)
+    case setOrderReminder(PlannedMeal, Restaurant)
     case suggestRecipe(MealSlot)
     case suggestRestaurant(MealSlot)
     case logMeal(PlannedMeal)
@@ -191,6 +216,7 @@ private enum SheetAction: Identifiable {
         case .addRecipe(let slot): return "addRecipe-\(slot.rawValue)"
         case .addRestaurant(let slot): return "addRestaurant-\(slot.rawValue)"
         case .orderIn(let slot): return "orderIn-\(slot.rawValue)"
+        case .setOrderReminder(let meal, _): return "setOrderReminder-\(meal.id.uuidString)"
         case .suggestRecipe(let slot): return "suggestRecipe-\(slot.rawValue)"
         case .suggestRestaurant(let slot): return "suggestRestaurant-\(slot.rawValue)"
         case .logMeal(let meal): return "logMeal-\(meal.id.uuidString)"
@@ -241,6 +267,7 @@ private struct PlannedMealRow: View {
     let member: FamilyMember?
     let onLog: () -> Void
     let onRemove: () -> Void
+    let onCancelReminder: () -> Void
 
     /// A distinct icon+color per kind, so the pill below reads at a glance —
     /// same three colors as the calendar's own legend/status dots.
@@ -274,6 +301,12 @@ private struct PlannedMealRow: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(iconColor.opacity(0.12), in: Capsule())
+            if let reminderDate = meal.orderReminderDate {
+                Image(systemName: "bell.fill")
+                    .font(.brandCaption)
+                    .foregroundStyle(.secondary)
+                    .help("Reminder at \(reminderDate.formatted(date: .omitted, time: .shortened))")
+            }
             Spacer()
             if let member {
                 MemberBadgeView(member: member, size: 20)
@@ -294,6 +327,11 @@ private struct PlannedMealRow: View {
             if meal.date <= .now {
                 Button(action: onLog) {
                     Label("Log This Meal in History", systemImage: "checkmark.seal")
+                }
+            }
+            if meal.orderReminderDate != nil {
+                Button(role: .destructive, action: onCancelReminder) {
+                    Label("Cancel Reminder", systemImage: "bell.slash")
                 }
             }
             Button(role: .destructive, action: onRemove) {
