@@ -64,6 +64,7 @@ struct HomeEatsApp: App {
         }
 
         SampleDataSeeder.seedIfNeeded(context: modelContainer.mainContext)
+        GroceryLayoutOrderBackfill.runIfNeeded(context: modelContainer.mainContext)
     }
 
     var body: some Scene {

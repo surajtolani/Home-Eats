@@ -78,7 +78,27 @@ struct GroceryListView: View {
     private func grouped(_ items: [GroceryItem]) -> [(GroceryCategory, [GroceryItem])] {
         Dictionary(grouping: items, by: \.category)
             .sorted { $0.key.sortIndex < $1.key.sortIndex }
-            .map { ($0.key, $0.value.sorted { $0.orderIndex < $1.orderIndex }) }
+            .map { ($0.key, $0.value.sorted(by: orderIndexIsBefore)) }
+    }
+
+    /// `orderIndex` alone isn't a reliable sort key when two items share the
+    /// same value — every never-manually-touched item defaults to `0`, and
+    /// `@Query`'s own fetch order for ties isn't guaranteed stable across
+    /// re-fetches (this array is recomputed on every relevant model change).
+    /// Falling back to the item's own `id` gives every comparison a
+    /// deterministic answer, so two tied items don't visibly swap places
+    /// from one render to the next for reasons unrelated to an actual drag.
+    private func orderIndexIsBefore(_ lhs: GroceryItem, _ rhs: GroceryItem) -> Bool {
+        lhs.orderIndex != rhs.orderIndex
+            ? lhs.orderIndex < rhs.orderIndex
+            : lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    /// Same idea as `orderIndexIsBefore`, for `layoutOrderIndex` (My Layout).
+    private func layoutOrderIndexIsBefore(_ lhs: GroceryItem, _ rhs: GroceryItem) -> Bool {
+        lhs.layoutOrderIndex != rhs.layoutOrderIndex
+            ? lhs.layoutOrderIndex < rhs.layoutOrderIndex
+            : lhs.id.uuidString < rhs.id.uuidString
     }
 
     var body: some View {
@@ -463,7 +483,7 @@ struct GroceryListView: View {
     /// one view never disturbs the other's order (see the field's doc
     /// comment on `GroceryItem`).
     private func layoutSorted(_ items: [GroceryItem]) -> [GroceryItem] {
-        items.sorted { $0.layoutOrderIndex < $1.layoutOrderIndex }
+        items.sorted(by: layoutOrderIndexIsBefore)
     }
 
     /// Lands an item at the end of whichever aisle group (or "Unsorted",
@@ -595,9 +615,31 @@ struct GroceryListView: View {
         }
     }
 
+    /// Doesn't just call `quickAdd(_:)` in a loop: `@Query`-backed
+    /// `purchasableItems` doesn't refresh mid-function, so if it did, every
+    /// item added in this same loop (per category) would compute the exact
+    /// same "current max" and collide on the same `orderIndex` — several
+    /// new items tying with each other, which is just as unstable-looking
+    /// as tying with an existing item. Running counters (seeded once,
+    /// before the loop starts) avoid that entirely.
     private func addAllHistorical() {
+        var runningOrderIndexByCategory: [GroceryCategory: Double] = [:]
+        var runningLayoutOrderIndex = purchasableItems.map(\.layoutOrderIndex).max() ?? 0
         for historyItem in historicalItems where !alreadyInList(historyItem) {
-            quickAdd(historyItem)
+            let currentMax = runningOrderIndexByCategory[historyItem.category]
+                ?? (purchasableItems.filter { $0.category == historyItem.category }.map(\.orderIndex).max() ?? 0)
+            let nextOrderIndex = currentMax + 1
+            runningOrderIndexByCategory[historyItem.category] = nextOrderIndex
+            runningLayoutOrderIndex += 1
+            let item = GroceryItem(
+                name: historyItem.name,
+                category: historyItem.category,
+                section: .thisWeek,
+                isManuallyAdded: true,
+                orderIndex: nextOrderIndex,
+                layoutOrderIndex: runningLayoutOrderIndex
+            )
+            modelContext.insert(item)
         }
     }
 
@@ -608,13 +650,15 @@ struct GroceryListView: View {
 
     private func quickAdd(_ historyItem: HistoricalGroceryItem) {
         guard !alreadyInList(historyItem) else { return }
-        let maxIndex = purchasableItems.filter { $0.category == historyItem.category }.map(\.orderIndex).max() ?? 0
+        let categoryMax = purchasableItems.filter { $0.category == historyItem.category }.map(\.orderIndex).max() ?? 0
+        let layoutMax = purchasableItems.map(\.layoutOrderIndex).max() ?? 0
         let item = GroceryItem(
             name: historyItem.name,
             category: historyItem.category,
             section: .thisWeek,
             isManuallyAdded: true,
-            orderIndex: maxIndex + 1
+            orderIndex: categoryMax + 1,
+            layoutOrderIndex: layoutMax + 1
         )
         modelContext.insert(item)
     }

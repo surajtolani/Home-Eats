@@ -6,6 +6,7 @@ import SwiftData
 struct AddGroceryItemSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Query private var allGroceryItems: [GroceryItem]
 
     @State private var name = ""
     @State private var quantityText = ""
@@ -54,12 +55,23 @@ struct AddGroceryItemSheet: View {
     }
 
     private func save() {
+        // Lands at the end of both the "By Category" and "My Layout"
+        // ordering — without this, a hand-typed item defaults to
+        // orderIndex/layoutOrderIndex 0 and jumps to the very top of its
+        // category (and of "Unsorted"), ahead of anything already
+        // carefully arranged there, which reads exactly like "my reorder
+        // didn't stick" the next time an item gets added.
+        let purchasable = allGroceryItems.filter { $0.section == .thisWeek || $0.section == .staples }
+        let categoryMax = purchasable.filter { $0.category == category }.map(\.orderIndex).max() ?? 0
+        let layoutMax = purchasable.map(\.layoutOrderIndex).max() ?? 0
         let item = GroceryItem(
             name: name.trimmingCharacters(in: .whitespaces),
             category: category,
             section: section,
             quantityText: quantityText,
-            isManuallyAdded: true
+            isManuallyAdded: true,
+            orderIndex: categoryMax + 1,
+            layoutOrderIndex: layoutMax + 1
         )
         modelContext.insert(item)
         dismiss()
