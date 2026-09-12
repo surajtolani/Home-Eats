@@ -36,9 +36,11 @@ enum ClaudeRecipeServiceError: LocalizedError {
 /// backend/README.md) rather than the Anthropic API directly — the backend
 /// holds the real API key, same reasoning as `GooglePlacesService`.
 enum ClaudeRecipeService {
-    /// Fill this in once you've deployed `backend/` — e.g.
-    /// "https://home-eats-backend.onrender.com". See backend/README.md.
-    private static let baseURLString = ""
+    /// Same backend/deployment as `GooglePlacesService` — this only starts
+    /// actually working once `ANTHROPIC_API_KEY` is also set on that
+    /// deployment (see backend/README.md); until then `isConfigured` is
+    /// true but requests will just fail with `.requestFailed`.
+    private static let baseURLString = "https://home-eats-uqbp.onrender.com"
 
     static var isConfigured: Bool { !baseURLString.isEmpty }
 

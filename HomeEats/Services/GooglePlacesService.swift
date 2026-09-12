@@ -3,14 +3,12 @@ import CoreLocation
 
 /// Talks to the Home Eats backend's Google Places proxy (see
 /// backend/README.md) rather than Google directly — the backend holds the
-/// real, billed API key so it never ships inside the app. Until a backend
-/// is deployed and `baseURLString` below is filled in, `isConfigured` stays
-/// false and `RestaurantListView` falls back to Apple's free (but
+/// real, billed API key so it never ships inside the app. If `baseURLString`
+/// below is ever cleared back to empty, `isConfigured` goes false and
+/// `RestaurantListView` falls back to Apple's free (but
 /// rating/price/cuisine-less) MapKit search instead.
 enum GooglePlacesService {
-    /// Fill this in once you've deployed `backend/` — e.g.
-    /// "https://home-eats-backend.onrender.com". See backend/README.md.
-    private static let baseURLString = ""
+    private static let baseURLString = "https://home-eats-uqbp.onrender.com"
 
     static var isConfigured: Bool { !baseURLString.isEmpty }
 
