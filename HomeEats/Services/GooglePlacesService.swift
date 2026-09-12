@@ -23,6 +23,12 @@ enum GooglePlacesService {
         let cuisine: String?
         let mapsURLString: String?
         let coordinate: CLLocationCoordinate2D?
+        /// A stable Google photo resource name ("places/ID/photos/REF"), if
+        /// this place has one — pass it to `photoURL(for:)` to build the
+        /// actual image URL. Not the image itself: fetching real photo
+        /// bytes is a separate, billed Google request, only worth making
+        /// for a place someone actually adds.
+        let photoName: String?
     }
 
     enum ServiceError: LocalizedError {
@@ -69,9 +75,28 @@ enum GooglePlacesService {
                 priceRange: (raw.priceRange?.isEmpty ?? true) ? nil : raw.priceRange,
                 cuisine: raw.cuisine,
                 mapsURLString: raw.mapsURL,
-                coordinate: coordinate
+                coordinate: coordinate,
+                photoName: raw.photoName
             )
         }
+    }
+
+    /// Builds the URL to actually load a photo's image bytes from — points
+    /// at this same backend's `/restaurants/photo` proxy (never at Google
+    /// directly, so the API key stays server-side), suitable for handing
+    /// straight to `AsyncImage`. Returns `nil` if the backend isn't
+    /// configured or `photoName` is empty.
+    static func photoURL(for photoName: String, maxWidthPx: Int = 800) -> URL? {
+        guard isConfigured, !photoName.isEmpty, let base = URL(string: baseURLString) else { return nil }
+        var components = URLComponents(
+            url: base.appendingPathComponent("restaurants/photo"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "name", value: photoName),
+            URLQueryItem(name: "maxWidthPx", value: String(maxWidthPx))
+        ]
+        return components?.url
     }
 
     private struct SearchResponse: Decodable {
@@ -88,5 +113,6 @@ enum GooglePlacesService {
         let mapsURL: String?
         let latitude: Double?
         let longitude: Double?
+        let photoName: String?
     }
 }

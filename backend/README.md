@@ -87,10 +87,11 @@ sync). That's the only change needed on the app side:
   seconds to wake back up on the next request — fine for a household app,
   worth knowing so a "slow first search"/"slow first recommendation" isn't
   mistaken for a bug.
-- The Google side proxies *search* only (`/restaurants/search`). Google's
-  Place Details / Photos endpoints (for a restaurant's actual photos)
-  aren't wired up — a reasonable next step if you want real restaurant
-  photos later, same proxy pattern.
+- `/restaurants/search` also returns each place's Google photo (as a stable
+  `photoName` reference, not the image itself), and `/restaurants/photo`
+  fetches the actual bytes on demand — the app requests one only for a
+  restaurant someone actually adds and views, not for every search result,
+  since each fetch is a separate billed Google request.
 - Every `/recipes/*` call costs real money the moment a key is configured
   (Claude Opus 5 — see the model table in the Anthropic Console for current
   pricing). Fine for household-scale use; if this app ever gets real

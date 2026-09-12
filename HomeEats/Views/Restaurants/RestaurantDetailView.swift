@@ -18,6 +18,21 @@ struct RestaurantDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if let googlePhotoName = restaurant.googlePhotoName,
+                   let url = GooglePlacesService.photoURL(for: googlePhotoName, maxWidthPx: 900) {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFill()
+                        } else {
+                            Color.secondary.opacity(0.12)
+                        }
+                    }
+                    .frame(height: 200)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+
                 header
 
                 mapSection

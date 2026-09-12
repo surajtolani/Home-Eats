@@ -23,6 +23,12 @@ final class Restaurant {
     var address: String?
     var isFavorite: Bool
     var createdAt: Date
+    /// A stable Google Places photo resource name ("places/ID/photos/REF"),
+    /// captured when this restaurant was added from a Google search result
+    /// — `GooglePlacesService.photoURL(for:)` turns it into an actual
+    /// image URL on demand rather than downloading/storing the image
+    /// itself, so it costs nothing until someone actually views it.
+    var googlePhotoName: String?
 
     init(
         id: UUID = UUID(),
@@ -34,7 +40,8 @@ final class Restaurant {
         websiteURL: String? = nil,
         address: String? = nil,
         isFavorite: Bool = false,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        googlePhotoName: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -46,6 +53,7 @@ final class Restaurant {
         self.address = address
         self.isFavorite = isFavorite
         self.createdAt = createdAt
+        self.googlePhotoName = googlePhotoName
     }
 
     /// A single "Italian · $$ · ★★★★☆" line for list/detail display, Google

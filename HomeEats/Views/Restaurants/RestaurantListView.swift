@@ -33,6 +33,7 @@ struct RestaurantListView: View {
                             RestaurantDetailView(restaurant: restaurant)
                         } label: {
                             HStack {
+                                RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoName, size: 44)
                                 VStack(alignment: .leading) {
                                     HStack {
                                         Text(restaurant.name).foregroundStyle(.primary)
@@ -120,7 +121,8 @@ struct RestaurantListView: View {
             priceRange: result.priceRange,
             rating: result.rating.map { Int($0.rounded()) },
             websiteURL: result.mapsURLString,
-            address: result.address
+            address: result.address,
+            googlePhotoName: result.photoName
         )
         modelContext.insert(restaurant)
         searchText = ""
@@ -134,6 +136,7 @@ private struct SearchResultRow: View {
 
     var body: some View {
         HStack {
+            RestaurantThumbnail(googlePhotoName: result.photoName, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(result.name)
                 if let address = result.address {
@@ -150,6 +153,43 @@ private struct SearchResultRow: View {
             }
             .buttonStyle(.plain)
         }
+    }
+}
+
+/// A small circular photo for a restaurant — Google's photo when one was
+/// captured at add-time (fetched on demand via the backend proxy, see
+/// `GooglePlacesService.photoURL(for:)`), otherwise a plain placeholder
+/// icon. Nothing to show for a restaurant added manually or from MapKit,
+/// since neither source has a photo to offer.
+struct RestaurantThumbnail: View {
+    let googlePhotoName: String?
+    var size: CGFloat = 44
+
+    var body: some View {
+        Group {
+            if let googlePhotoName, let url = GooglePlacesService.photoURL(for: googlePhotoName, maxWidthPx: Int(size) * 2) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        placeholder
+                    }
+                }
+            } else {
+                placeholder
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.secondary.opacity(0.12))
+            .overlay {
+                Image(systemName: "fork.knife")
+                    .foregroundStyle(.secondary)
+            }
     }
 }
 
@@ -170,6 +210,9 @@ final class RestaurantSearchModel: ObservableObject {
         let priceRange: String?
         let rating: Double?
         let mapsURLString: String?
+        /// Only ever set for a Google-sourced result — see
+        /// `GooglePlacesService.PlaceResult.photoName`.
+        let photoName: String?
     }
 
     @Published var results: [Result] = []
@@ -207,7 +250,8 @@ final class RestaurantSearchModel: ObservableObject {
                             cuisine: $0.cuisine,
                             priceRange: $0.priceRange,
                             rating: $0.rating,
-                            mapsURLString: $0.mapsURLString
+                            mapsURLString: $0.mapsURLString,
+                            photoName: $0.photoName
                         )
                     }
                     return
@@ -237,7 +281,8 @@ final class RestaurantSearchModel: ObservableObject {
                     cuisine: cuisineLabel(for: item),
                     priceRange: nil,
                     rating: nil,
-                    mapsURLString: item.url?.absoluteString
+                    mapsURLString: item.url?.absoluteString,
+                    photoName: nil
                 )
             }
         } catch {

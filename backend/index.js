@@ -98,6 +98,7 @@ app.get("/restaurants/search", async (req, res) => {
           "places.primaryTypeDisplayName",
           "places.googleMapsUri",
           "places.location",
+          "places.photos",
         ].join(","),
       },
       body: JSON.stringify({ textQuery: query }),
@@ -120,12 +121,59 @@ app.get("/restaurants/search", async (req, res) => {
       mapsURL: place.googleMapsUri ?? null,
       latitude: place.location?.latitude ?? null,
       longitude: place.location?.longitude ?? null,
+      // A stable resource name like "places/ID/photos/REF" for the place's
+      // first photo, if it has one — not the image itself (that's a
+      // separate, billed request, only worth making for a place someone
+      // actually adds; see GET /restaurants/photo below). This reference
+      // name doesn't expire, unlike the signed media URL it's later
+      // exchanged for, so it's safe to store on the saved Restaurant.
+      photoName: place.photos?.[0]?.name ?? null,
     }));
 
     res.json({ results });
   } catch (error) {
     console.error("Places API request threw", error);
     res.status(502).json({ error: "Places API request failed." });
+  }
+});
+
+// GET /restaurants/photo?name=<photo resource name>&maxWidthPx=<n>
+// Fetches an actual photo's bytes from Google using the server-side key and
+// streams them back — the app never talks to Google directly (same reason
+// as every other route here) and can just point an AsyncImage straight at
+// this URL. `name` is the stable "places/ID/photos/REF" string returned as
+// `photoName` from /restaurants/search (or saved on a Restaurant).
+app.get("/restaurants/photo", async (req, res) => {
+  const name = (req.query.name || "").toString().trim();
+  if (!name) {
+    return res.status(400).json({ error: "Missing required query param 'name'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+  const maxWidthPx = Math.min(parseInt(req.query.maxWidthPx, 10) || 800, 1600);
+
+  try {
+    const mediaURL =
+      `https://places.googleapis.com/v1/${name}/media` +
+      `?maxWidthPx=${maxWidthPx}&key=${GOOGLE_PLACES_API_KEY}`;
+    const photoResponse = await fetch(mediaURL);
+
+    if (!photoResponse.ok) {
+      console.error("Places photo media error", photoResponse.status);
+      return res.status(502).json({ error: "Couldn't fetch that photo." });
+    }
+
+    const contentType = photoResponse.headers.get("content-type") || "image/jpeg";
+    const buffer = Buffer.from(await photoResponse.arrayBuffer());
+    res.set("Content-Type", contentType);
+    // Photos for a given place don't change often — safe to cache for a day
+    // rather than re-fetching (and re-billing) on every view.
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(buffer);
+  } catch (error) {
+    console.error("Places photo media request threw", error);
+    res.status(502).json({ error: "Couldn't fetch that photo." });
   }
 });
 
