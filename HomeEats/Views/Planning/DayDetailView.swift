@@ -96,7 +96,8 @@ struct DaySlotsView: View {
                     suggestion: suggestion,
                     members: members,
                     onVote: { toggleVote(on: suggestion) },
-                    onAdopt: { adopt(suggestion) }
+                    onAdopt: { adopt(suggestion) },
+                    onRemove: { removeSuggestion(suggestion) }
                 )
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
             }
@@ -128,7 +129,10 @@ struct DaySlotsView: View {
                         Label("Suggest a Recipe", systemImage: "bubble.left")
                     }
                     Button { activeSheet = .suggestRestaurant(slot) } label: {
-                        Label("Suggest a Restaurant", systemImage: "bubble.left")
+                        Label("Suggest Eating Out", systemImage: "bubble.left")
+                    }
+                    Button { activeSheet = .suggestOrderIn(slot) } label: {
+                        Label("Suggest Ordering In", systemImage: "bubble.left")
                     }
                 } label: {
                     Text("Suggest something instead (for a vote)")
@@ -167,6 +171,10 @@ struct DaySlotsView: View {
             RestaurantPickerSheet { restaurant in
                 addSuggestion(slot: slot, restaurant: restaurant)
             }
+        case .suggestOrderIn(let slot):
+            RestaurantPickerSheet { restaurant in
+                addSuggestion(slot: slot, restaurant: restaurant, isOrderIn: true)
+            }
         case .logMeal(let meal):
             LogMealSheet(meal: meal)
         }
@@ -197,14 +205,15 @@ struct DaySlotsView: View {
         }
     }
 
-    private func addSuggestion(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil) {
+    private func addSuggestion(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil, isOrderIn: Bool = false) {
         guard let memberID = activeUserSession.activeMemberID ?? members.first?.id else { return }
         let suggestion = MealSuggestion(
             date: normalizedDate,
             slot: slot,
             proposedByMemberID: memberID,
             recipe: recipe,
-            restaurant: restaurant
+            restaurant: restaurant,
+            isOrderIn: isOrderIn
         )
         modelContext.insert(suggestion)
     }
@@ -215,7 +224,14 @@ struct DaySlotsView: View {
     }
 
     private func adopt(_ suggestion: MealSuggestion) {
-        decide(slot: suggestion.slot, recipe: suggestion.recipe, restaurant: suggestion.restaurant)
+        decide(slot: suggestion.slot, recipe: suggestion.recipe, restaurant: suggestion.restaurant, isOrderIn: suggestion.isOrderIn)
+        modelContext.delete(suggestion)
+    }
+
+    /// Withdraws a suggestion you (or anyone) proposed — for when whoever
+    /// suggested it changes their mind, rather than leaving it sitting
+    /// there to be voted on or adopted.
+    private func removeSuggestion(_ suggestion: MealSuggestion) {
         modelContext.delete(suggestion)
     }
 }
@@ -230,6 +246,7 @@ private enum SheetAction: Identifiable {
     case setOrderReminder(PlannedMeal, Restaurant)
     case suggestRecipe(MealSlot)
     case suggestRestaurant(MealSlot)
+    case suggestOrderIn(MealSlot)
     case logMeal(PlannedMeal)
 
     var id: String {
@@ -240,6 +257,7 @@ private enum SheetAction: Identifiable {
         case .setOrderReminder(let meal, _): return "setOrderReminder-\(meal.id.uuidString)"
         case .suggestRecipe(let slot): return "suggestRecipe-\(slot.rawValue)"
         case .suggestRestaurant(let slot): return "suggestRestaurant-\(slot.rawValue)"
+        case .suggestOrderIn(let slot): return "suggestOrderIn-\(slot.rawValue)"
         case .logMeal(let meal): return "logMeal-\(meal.id.uuidString)"
         }
     }
@@ -367,9 +385,22 @@ private struct SuggestionRow: View {
     let members: [FamilyMember]
     let onVote: () -> Void
     let onAdopt: () -> Void
+    let onRemove: () -> Void
 
     private var proposer: FamilyMember? {
         members.first(where: { $0.id == suggestion.proposedByMemberID })
+    }
+
+    /// Same icon/color convention as `PlannedMealRow` once something's
+    /// actually decided — a recipe suggestion, an eat-out one, and an
+    /// order-in one all read distinctly at a glance here too.
+    private var iconName: String {
+        if suggestion.recipe != nil { return "frying.pan" }
+        return suggestion.isOrderIn ? "bag" : "fork.knife"
+    }
+    private var iconColor: Color {
+        if suggestion.recipe != nil { return .brandForest }
+        return suggestion.isOrderIn ? .brandHoney : .brandTerracotta
     }
 
     var body: some View {
@@ -377,6 +408,8 @@ private struct SuggestionRow: View {
             if let proposer {
                 MemberBadgeView(member: proposer, size: 22)
             }
+            Image(systemName: iconName)
+                .foregroundStyle(iconColor)
             VStack(alignment: .leading) {
                 Text(suggestion.displayTitle)
                 if let note = suggestion.note, !note.isEmpty {
@@ -391,6 +424,16 @@ private struct SuggestionRow: View {
             Button("Use This", action: onAdopt)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove", systemImage: "trash")
+            }
+        }
+        .contextMenu {
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove Suggestion", systemImage: "trash")
+            }
         }
     }
 }

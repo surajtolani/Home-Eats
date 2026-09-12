@@ -7,7 +7,6 @@ struct RootView: View {
     @EnvironmentObject private var activeUserSession: ActiveUserSession
 
     @State private var selectedTab: Tab = .plan
-    @State private var showPlanningFlow = false
 
     enum Tab {
         case plan, recipes, restaurants, grocery, more
@@ -20,7 +19,7 @@ struct RootView: View {
             } else {
                 TabView(selection: $selectedTab) {
                     NavigationStack {
-                        CalendarPlanView(showPlanningFlow: $showPlanningFlow)
+                        CalendarPlanView()
                     }
                     .tabItem { Label("Plan", systemImage: "calendar") }
                     .tag(Tab.plan)
@@ -58,8 +57,11 @@ struct RootView: View {
         }
         .onChange(of: reminderRouter.shouldPresentPlanningFlow) { _, shouldPresent in
             guard shouldPresent else { return }
+            // The weekly planning notification used to launch a separate
+            // guided flow on top of this — now it just switches to the
+            // Plan tab itself, which already puts today's inline day
+            // panel front and center under the calendar.
             selectedTab = .plan
-            showPlanningFlow = true
             reminderRouter.shouldPresentPlanningFlow = false
         }
     }

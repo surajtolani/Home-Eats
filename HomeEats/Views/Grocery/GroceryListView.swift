@@ -30,13 +30,13 @@ struct GroceryListView: View {
     // land here; either can be tapped closed once you don't need it.
     @State private var suggestionsExpanded = true
     @State private var pastGroceriesExpanded = true
-    // The date range "Generate Suggestions" pulls planned meals from —
-    // defaults to the week ahead, but this is meant to be adjusted, e.g. to
-    // just the days after whatever you're already stocked through.
-    @State private var suggestionRangeStart = Calendar.current.startOfDay(for: .now)
-    @State private var suggestionRangeEnd = Calendar.current.date(
-        byAdding: .day, value: 6, to: Calendar.current.startOfDay(for: .now)
-    ) ?? .now
+    // The specific days "Generate Suggestions" pulls planned meals from —
+    // defaults to the week ahead, but tapping days in `suggestionDayStrip`
+    // is meant to adjust this to whatever's actually needed, e.g. just the
+    // days after wherever you're already stocked through. A `Set` of
+    // individual days rather than a start/end range, since the days worth
+    // covering aren't always contiguous (skip a day you're eating out).
+    @State private var selectedSuggestionDates: Set<Date> = GroceryListView.defaultSuggestionDates()
     // A real, writable `@State` rather than `.environment(\.editMode,
     // .constant(.active))` — a `.constant` binding silently swallows any
     // write List's own internals make to it, which is exactly the kind of
@@ -84,6 +84,11 @@ struct GroceryListView: View {
     var body: some View {
         List {
             Section {
+            } header: {
+                groceryListTitleHeader
+            }
+
+            Section {
                 Picker("View", selection: $viewMode) {
                     ForEach(GroceryViewMode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -91,11 +96,6 @@ struct GroceryListView: View {
                 }
                 .pickerStyle(.segmented)
                 .listRowSeparator(.hidden)
-            }
-
-            Section {
-            } header: {
-                groceryListTitleHeader
             }
 
             if viewMode == .byCategory {
@@ -188,14 +188,16 @@ struct GroceryListView: View {
         Section {
             DisclosureGroup(isExpanded: $suggestionsExpanded) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Pick the dates you want to plan groceries for — handy for covering just what's ahead, e.g. Wednesday through next Tuesday if you're already stocked through this Tuesday.")
+                    Text("Tap the days you want to plan groceries for — handy for covering just what's ahead, e.g. Wednesday through next Tuesday if you're already stocked through this Tuesday.")
                         .font(.brandCaption)
                         .foregroundStyle(.secondary)
-                    DatePicker("From", selection: $suggestionRangeStart, displayedComponents: .date)
-                        .onChange(of: suggestionRangeStart) { _, newValue in
-                            if suggestionRangeEnd < newValue { suggestionRangeEnd = newValue }
-                        }
-                    DatePicker("To", selection: $suggestionRangeEnd, in: suggestionRangeStart..., displayedComponents: .date)
+                    suggestionDayStrip
+                    HStack {
+                        Button("Clear", action: clearSuggestionDates)
+                            .font(.brandCaption)
+                            .disabled(selectedSuggestionDates.isEmpty)
+                        Spacer()
+                    }
                     Button {
                         generateSuggestions()
                     } label: {
@@ -204,6 +206,7 @@ struct GroceryListView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Color.brandForest)
+                    .disabled(selectedSuggestionDates.isEmpty)
                 }
                 .padding(.vertical, 6)
 
@@ -259,17 +262,81 @@ struct GroceryListView: View {
     }
 
     private func generateSuggestions() {
-        let start = calendar.startOfDay(for: suggestionRangeStart)
-        let end = calendar.startOfDay(for: suggestionRangeEnd)
-        let mealsInRange = allPlannedMeals.filter { meal in
-            let day = calendar.startOfDay(for: meal.date)
-            return day >= start && day <= end
+        let mealsOnSelectedDays = allPlannedMeals.filter { meal in
+            selectedSuggestionDates.contains(calendar.startOfDay(for: meal.date))
         }
-        GroceryListBuilder.regenerate(plannedMeals: mealsInRange, staples: staples, in: modelContext)
+        GroceryListBuilder.regenerate(plannedMeals: mealsOnSelectedDays, staples: staples, in: modelContext)
     }
 
     private func refreshStaples() {
         GroceryListBuilder.regenerate(plannedMeals: [], staples: staples, in: modelContext)
+    }
+
+    /// The default set of pre-selected days when the screen first loads —
+    /// today through six days out, the same "week ahead" default the old
+    /// From/To range used. A `static` factory (rather than a plain default
+    /// expression) since it needs its own local `Calendar`/`Date.now`
+    /// rather than reaching into instance state that doesn't exist yet at
+    /// `@State` initialization time.
+    private static func defaultSuggestionDates() -> Set<Date> {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        return Set((0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: today) })
+    }
+
+    /// How many days ahead the tappable day strip shows — three weeks is
+    /// enough room to reach past a short trip or a stretch of eating out,
+    /// without scrolling forever.
+    private static let suggestionWindowInDays = 21
+
+    private var suggestionWindowDays: [Date] {
+        let today = calendar.startOfDay(for: .now)
+        return (0..<Self.suggestionWindowInDays).compactMap {
+            calendar.date(byAdding: .day, value: $0, to: today)
+        }
+    }
+
+    private func toggleSuggestionDate(_ day: Date) {
+        let normalized = calendar.startOfDay(for: day)
+        if selectedSuggestionDates.contains(normalized) {
+            selectedSuggestionDates.remove(normalized)
+        } else {
+            selectedSuggestionDates.insert(normalized)
+        }
+    }
+
+    private func clearSuggestionDates() {
+        selectedSuggestionDates.removeAll()
+    }
+
+    /// A single horizontal, tap-to-select row of upcoming days — each one
+    /// toggles independently (not a contiguous from/to range), since the
+    /// days worth covering aren't always contiguous (e.g. skip a day
+    /// you're eating out).
+    private var suggestionDayStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(suggestionWindowDays, id: \.self) { day in
+                    let isSelected = selectedSuggestionDates.contains(day)
+                    Button {
+                        toggleSuggestionDate(day)
+                    } label: {
+                        VStack(spacing: 2) {
+                            Text(day.formatted(.dateTime.weekday(.abbreviated)))
+                                .font(.brandCaption2)
+                            Text(day.formatted(.dateTime.day()))
+                                .font(.brandHeadline.bold())
+                        }
+                        .frame(width: 44, height: 52)
+                        .background(isSelected ? Color.brandForest : Color.secondary.opacity(0.12))
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
     }
 
     // MARK: - By category (default) view

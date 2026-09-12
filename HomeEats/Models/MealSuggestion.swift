@@ -14,6 +14,12 @@ final class MealSuggestion {
     var proposedByMemberID: UUID
     var recipe: Recipe?
     var restaurant: Restaurant?
+    /// Only meaningful alongside `restaurant` — distinguishes "vote for
+    /// eating out at this place" from "vote for ordering in from this
+    /// place," the same distinction `PlannedMeal.isOrderIn` makes once
+    /// something's actually decided. Defaulted so this stays a lightweight
+    /// migration; `false` for a recipe suggestion (unused there).
+    var isOrderIn: Bool = false
     var note: String?
     var createdAt: Date
     /// IDs of family members who upvoted this suggestion (proposer included by default).
@@ -26,6 +32,7 @@ final class MealSuggestion {
         proposedByMemberID: UUID,
         recipe: Recipe? = nil,
         restaurant: Restaurant? = nil,
+        isOrderIn: Bool = false,
         note: String? = nil,
         createdAt: Date = .now,
         votedMemberIDs: [UUID]? = nil
@@ -36,6 +43,7 @@ final class MealSuggestion {
         self.proposedByMemberID = proposedByMemberID
         self.recipe = recipe
         self.restaurant = restaurant
+        self.isOrderIn = isOrderIn
         self.note = note
         self.createdAt = createdAt
         self.votedMemberIDs = votedMemberIDs ?? [proposedByMemberID]

@@ -13,9 +13,13 @@ import SwiftData
 ///   dimmed, same as the calendar grid), with its own prev/next-week
 ///   navigation, for a quick glance across several days without the grid —
 ///   tapping a day here still pushes the full day screen.
+///
+/// There used to also be a separate "Start Planning" guided flow
+/// (`PlanningReminderFlowView`, one day-at-a-time, dinner-only) reachable
+/// from a toolbar button here. Removed per feedback that it was redundant
+/// with — and less capable than — the Calendar mode's own inline day
+/// panel, which already covers every slot for whichever day you're on.
 struct CalendarPlanView: View {
-    @Binding var showPlanningFlow: Bool
-
     @Query(sort: \PlannedMeal.date) private var allPlannedMeals: [PlannedMeal]
     @Query(sort: \MealSuggestion.createdAt) private var allSuggestions: [MealSuggestion]
 
@@ -78,16 +82,6 @@ struct CalendarPlanView: View {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                // The weekly notification also opens this flow, but that
-                // depends on the reminder actually firing — this button is
-                // the flow's only guaranteed-reachable entry point.
-                Button {
-                    showPlanningFlow = true
-                } label: {
-                    Label("Start Planning", systemImage: "wand.and.stars")
-                }
-            }
             // Visible in both view modes — not just Calendar — so switching
             // to Weekly never hides the way back to "now": it also resets
             // Calendar's own position (month + selected date) in the
@@ -97,9 +91,6 @@ struct CalendarPlanView: View {
                 Button("Go to This Week") { goToThisWeek() }
                     .disabled(isAtDefaultPosition)
             }
-        }
-        .fullScreenCover(isPresented: $showPlanningFlow) {
-            PlanningReminderFlowView()
         }
     }
 
