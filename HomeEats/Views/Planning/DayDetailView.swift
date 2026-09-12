@@ -125,13 +125,13 @@ struct DaySlotsView: View {
                 }
 
                 Menu {
-                    Button { activeSheet = .suggestRecipe(slot) } label: {
+                    Button { presentAfterMenuDismiss { activeSheet = .suggestRecipe(slot) } } label: {
                         Label("Suggest a Recipe", systemImage: "bubble.left")
                     }
-                    Button { activeSheet = .suggestRestaurant(slot) } label: {
+                    Button { presentAfterMenuDismiss { activeSheet = .suggestRestaurant(slot) } } label: {
                         Label("Suggest Eating Out", systemImage: "bubble.left")
                     }
-                    Button { activeSheet = .suggestOrderIn(slot) } label: {
+                    Button { presentAfterMenuDismiss { activeSheet = .suggestOrderIn(slot) } } label: {
                         Label("Suggest Ordering In", systemImage: "bubble.left")
                     }
                 } label: {

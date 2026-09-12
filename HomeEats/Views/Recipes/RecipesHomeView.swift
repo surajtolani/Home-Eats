@@ -99,23 +99,23 @@ struct RecipesHomeView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        showManualEditor = true
+                        presentAfterMenuDismiss { showManualEditor = true }
                     } label: {
                         Label("Type a Recipe", systemImage: "square.and.pencil")
                     }
                     Button {
-                        showImportSheet = true
+                        presentAfterMenuDismiss { showImportSheet = true }
                     } label: {
                         Label("Import from URL", systemImage: "link")
                     }
                     Button {
-                        showAIImportSheet = true
+                        presentAfterMenuDismiss { showAIImportSheet = true }
                     } label: {
                         Label("Add from Photo or Notes", systemImage: "camera.viewfinder")
                     }
                     Divider()
                     Button {
-                        showRecommendSheet = true
+                        presentAfterMenuDismiss { showRecommendSheet = true }
                     } label: {
                         Label("Recommend a Meal", systemImage: "sparkles")
                     }

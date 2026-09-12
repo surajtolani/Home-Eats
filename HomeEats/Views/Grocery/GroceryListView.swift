@@ -153,17 +153,17 @@ struct GroceryListView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        showStaplesManager = true
+                        presentAfterMenuDismiss { showStaplesManager = true }
                     } label: {
                         Label("Manage Staples", systemImage: "list.bullet.clipboard")
                     }
                     Button {
-                        showAislesManager = true
+                        presentAfterMenuDismiss { showAislesManager = true }
                     } label: {
                         Label("Manage My Aisles", systemImage: "square.grid.2x2")
                     }
                     Button {
-                        showHistoryImport = true
+                        presentAfterMenuDismiss { showHistoryImport = true }
                     } label: {
                         Label("Add Past Groceries…", systemImage: "doc.text")
                     }
