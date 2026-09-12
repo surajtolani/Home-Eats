@@ -116,12 +116,77 @@ final class GroceryListBuilderTests: XCTestCase {
         GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
 
         var items = try context.fetch(FetchDescriptor<GroceryItem>())
-        XCTAssertTrue(items.contains { $0.name == "Milk" && $0.section == .staples })
+        // A staple is now a pending suggestion, same as a recipe ingredient
+        // — never inserted straight onto the list.
+        XCTAssertTrue(items.contains { $0.name == "Milk" && $0.section == .suggested })
 
         milk.isActive = false
         GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
         items = try context.fetch(FetchDescriptor<GroceryItem>())
         XCTAssertFalse(items.contains { $0.name == "Milk" })
+    }
+
+    /// The explicit point of this whole design: regenerating should never
+    /// put a staple directly onto the visible list — only ever into
+    /// Suggested, pending Add/Reject, exactly like a recipe ingredient.
+    func testStaplesNeverLandDirectlyOnTheList() throws {
+        let context = try makeInMemoryContext()
+        let paperTowels = StapleItem(name: "Paper Towels", category: .household, isActive: true)
+        context.insert(paperTowels)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [paperTowels], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        XCTAssertFalse(items.contains { $0.name == "Paper Towels" && $0.section == .thisWeek })
+        XCTAssertFalse(items.contains { $0.name == "Paper Towels" && $0.section == .staples })
+        XCTAssertTrue(items.contains { $0.name == "Paper Towels" && $0.section == .suggested })
+    }
+
+    /// Once a staple suggestion has been accepted (moved to `.thisWeek`),
+    /// deactivating the staple shouldn't yank it back off the list —
+    /// consistent with how an accepted recipe ingredient is never
+    /// auto-removed once decided.
+    func testAcceptedStapleSurvivesDeactivation() throws {
+        let context = try makeInMemoryContext()
+        let milk = StapleItem(name: "Milk", category: .dairyAndEggs, isActive: true)
+        context.insert(milk)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
+
+        var items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let suggestion = try XCTUnwrap(items.first { $0.name == "Milk" })
+        suggestion.section = .thisWeek // simulate tapping "Add"
+
+        milk.isActive = false
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [], staples: [milk], in: context)
+
+        items = try context.fetch(FetchDescriptor<GroceryItem>())
+        XCTAssertTrue(items.contains { $0.name == "Milk" && $0.section == .thisWeek })
+    }
+
+    /// A staple whose name also matches a recipe ingredient needed this
+    /// week should merge into that one line rather than becoming a
+    /// duplicate second suggestion.
+    func testStapleMergesWithMatchingRecipeIngredient() throws {
+        let context = try makeInMemoryContext()
+        let recipe = Recipe(title: "Pancakes", ingredients: [
+            RecipeIngredientEntry(name: "milk", quantity: 1, unit: "cup")
+        ])
+        context.insert(recipe)
+        let meal = PlannedMeal(date: .now, slot: .breakfast, recipe: recipe)
+        context.insert(meal)
+        let milk = StapleItem(name: "Milk", category: .dairyAndEggs, isActive: true)
+        context.insert(milk)
+
+        let weekStart = Calendar.current.startOfWeek(containing: .now)
+        GroceryListBuilder.regenerate(weekStart: weekStart, plannedMeals: [meal], staples: [milk], in: context)
+
+        let items = try context.fetch(FetchDescriptor<GroceryItem>())
+        let milkItems = items.filter { $0.name.lowercased() == "milk" }
+        XCTAssertEqual(milkItems.count, 1, "Should merge into a single suggested line, not two")
+        XCTAssertEqual(milkItems.first?.section, .suggested)
     }
 
     /// Regression test for a real crash: two staples that canonicalize to

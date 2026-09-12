@@ -1,18 +1,23 @@
 import Foundation
 import SwiftData
 
-/// Builds/refreshes the grocery list for a given week: pulls ingredients from
-/// every home-cooked day in that week, merges duplicate ingredients into one
-/// line, sorts everything by store category, and appends the household's
-/// standing "staples" section. Restaurant days contribute nothing (per spec,
-/// only home-cooked recipes need groceries).
+/// Builds/refreshes the grocery *suggestions* for a given week: pulls
+/// ingredients from every home-cooked day that week plus every active
+/// household staple, merges duplicates into one line each, and surfaces
+/// anything new as a pending suggestion — never directly onto the visible
+/// list. Restaurant days contribute nothing (per spec, only home-cooked
+/// recipes need groceries).
 enum GroceryListBuilder {
 
-    /// Regenerates the "this week" + "staples" grocery items for `weekStart`
-    /// inside `context`. Existing checked state, manual additions, and chosen
-    /// product options for items that persist are preserved; items that no
-    /// longer apply (e.g. a recipe was swapped out) are removed unless the
-    /// user added them manually.
+    /// Regenerates this week's grocery *suggestions* inside `context`. This
+    /// never adds anything directly to the visible list — a brand new
+    /// ingredient or staple always lands in `.suggested`, pending an
+    /// explicit Add/Reject; only a key already decided (accepted, legacy
+    /// `.staples`, or rejected) gets refreshed in place. Existing checked
+    /// state, manual additions, and chosen product options for items that
+    /// persist are preserved; a pending suggestion that's no longer needed
+    /// (a recipe was swapped out, or a staple deactivated) is removed —
+    /// anything already decided is never auto-removed this way.
     @MainActor
     static func regenerate(
         weekStart: Date,
@@ -49,6 +54,23 @@ enum GroceryListBuilder {
             }
         }
 
+        // Active staples feed into this exact same aggregate set now,
+        // rather than being inserted straight onto the visible list —
+        // nothing should land there without a chance to Add/Reject it
+        // first, staples included. A staple whose name also matches a
+        // recipe ingredient needed this week (e.g. "milk" for a recipe,
+        // and kept as a standing staple) merges into that same line
+        // instead of becoming a second one.
+        for staple in staples where staple.isActive {
+            let key = canonicalKey(for: staple.name)
+            var aggregate = aggregates[key] ?? IngredientAggregate(
+                displayName: staple.name,
+                category: staple.category
+            )
+            aggregate.addStaple(staple)
+            aggregates[key] = aggregate
+        }
+
         // 2. Fetch existing items for this week so we can preserve user state.
         // Filtered in Swift (via isSameDay) rather than a #Predicate on exact
         // Date equality: the rest of the app compares weeks the same way
@@ -81,16 +103,22 @@ enum GroceryListBuilder {
         // new ingredient partway through the list.
         var nextOrderIndex = (existingItems.map(\.orderIndex).max() ?? 0) + 1
 
-        // 3. Upsert recipe-derived lines. A key already decided this week
-        // (accepted onto the list, or explicitly rejected) is refreshed in
-        // place but never moved back to "suggested" — regenerating is meant
-        // to pick up ingredient/quantity changes, not re-litigate a decision
-        // already made. A brand new key becomes a fresh suggestion, pending
-        // Add/Reject.
+        // 3. Upsert every candidate line — recipe ingredients and active
+        // staples alike, now that both flow through the same pipeline. A
+        // key already decided this week (accepted onto the list — either
+        // `.thisWeek`, or a legacy `.staples` row from before staples
+        // required review — or explicitly rejected) is refreshed in place
+        // but never moved back to "suggested": regenerating is meant to
+        // pick up ingredient/quantity changes, not re-litigate a decision
+        // already made. A brand new key becomes a fresh suggestion,
+        // pending Add/Reject — nothing is ever inserted directly onto the
+        // visible list by this function.
         var seenKeys = Set<String>()
         for (key, aggregate) in aggregates {
             seenKeys.insert(key)
             if let existing = existingThisWeek[key] {
+                refresh(existing, from: aggregate)
+            } else if let existing = existingStaples[key] {
                 refresh(existing, from: aggregate)
             } else if let existing = existingRejected[key] {
                 refresh(existing, from: aggregate)
@@ -110,45 +138,19 @@ enum GroceryListBuilder {
                 context.insert(item)
             }
         }
-        // Remove pending suggestions whose ingredient is no longer needed.
-        // Accepted/rejected lines are never auto-removed this way — once
-        // the user has decided on something, only they remove it (swipe
-        // delete, or un-rejecting it back off the list).
+        // Remove pending suggestions whose ingredient/staple is no longer
+        // needed (a recipe was swapped out, or a staple was deactivated
+        // before ever being decided on). Accepted/rejected lines are never
+        // auto-removed this way — once the user has decided on something,
+        // only they remove it (the quantity stepper's trash icon).
         for (key, item) in existingSuggested where !seenKeys.contains(key) {
             context.delete(item)
         }
-
-        // 4. Upsert staples lines (only active ones).
-        var seenStapleKeys = Set<String>()
-        for staple in staples where staple.isActive {
-            let key = canonicalKey(for: staple.name)
-            seenStapleKeys.insert(key)
-            if let existing = existingStaples[key] {
-                // Pick up edits made in StaplesManagerView since this list
-                // was last generated (category, usual amount) — checked
-                // state is left alone since that's the user's in-store
-                // progress, and category is left alone if the user has since
-                // dragged this line to a different category themselves.
-                if !existing.categoryManuallySet {
-                    existing.category = staple.category
-                }
-                existing.quantityText = staple.defaultQuantityText ?? ""
-            } else {
-                let item = GroceryItem(
-                    name: staple.name,
-                    category: staple.category,
-                    section: .staples,
-                    quantityText: staple.defaultQuantityText ?? "",
-                    weekStartDate: normalizedWeekStart,
-                    orderIndex: nextOrderIndex
-                )
-                nextOrderIndex += 1
-                context.insert(item)
-            }
-        }
-        // Remove staple lines for staples the user has since deactivated
-        // (but never touch manual additions).
-        for (key, item) in existingStaples where !seenStapleKeys.contains(key) && !item.isManuallyAdded {
+        // Legacy `.staples` rows (accepted before staples required review)
+        // are grandfathered in place — deactivating that staple still
+        // removes it, matching the old behavior for anything not yet
+        // migrated into the unified suggested/accepted pipeline above.
+        for (key, item) in existingStaples where !seenKeys.contains(key) && !item.isManuallyAdded {
             context.delete(item)
         }
     }
@@ -212,6 +214,11 @@ enum GroceryListBuilder {
         var category: GroceryCategory
         var totalsByUnit: [String: Double] = [:]
         var recipeIDs: Set<UUID> = []
+        /// Set when a staple contributes to this line — a staple's amount
+        /// is just a plain user-entered description ("1 gallon"), not a
+        /// parsed unit total, so it's kept separately and appended as-is
+        /// rather than folded into `totalsByUnit`.
+        var stapleQuantityText: String?
 
         mutating func add(_ ingredient: RecipeIngredientEntry, from recipeID: UUID) {
             recipeIDs.insert(recipeID)
@@ -223,11 +230,19 @@ enum GroceryListBuilder {
             totalsByUnit[unitKey, default: 0] += quantity
         }
 
+        mutating func addStaple(_ staple: StapleItem) {
+            guard stapleQuantityText == nil, let text = staple.defaultQuantityText, !text.isEmpty else { return }
+            stapleQuantityText = text
+        }
+
         var quantityText: String {
             var parts: [String] = []
             for (unit, total) in totalsByUnit.sorted(by: { $0.key < $1.key }) {
                 let amount = IngredientQuantityFormatter.string(for: total)
                 parts.append(unit.isEmpty ? amount : "\(amount) \(unit)")
+            }
+            if let stapleQuantityText {
+                parts.append(stapleQuantityText)
             }
             // No numeric quantity was ever parsed for this ingredient (e.g.
             // "salt to taste") — nothing to show here rather than falling
