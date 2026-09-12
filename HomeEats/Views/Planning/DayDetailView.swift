@@ -1,12 +1,37 @@
 import SwiftUI
 import SwiftData
 
-/// One day's plan, broken into Breakfast / Lunch / Dinner / Other. Each slot
-/// can hold more than one decided meal (a dinner plan *and* an ice-cream run
-/// afterward both live in the same day, different slots — or even the same
-/// slot, if the family genuinely can't decide between two options), plus its
-/// own suggestions and votes.
+/// One day's plan, broken into Breakfast / Lunch / Dinner / Other, pushed as
+/// its own screen (from the "Weekly" agenda, or "Plan the Week"'s "Plan
+/// breakfast, lunch & more" link). The Calendar tab's own day panel wants
+/// the exact same per-slot content embedded inline instead of behind a
+/// push — see `DaySlotsView` below, which is where all of the actual slot
+/// logic lives; this is just that plus the `Form`/navigation-title chrome a
+/// standalone pushed screen needs.
 struct DayDetailView: View {
+    let date: Date
+
+    var body: some View {
+        Form {
+            DaySlotsView(date: date)
+        }
+        .navigationTitle(date.formatted(Date.weekdayFull))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// The actual per-slot planning content for one day — Breakfast / Lunch /
+/// Dinner / Other, each able to hold more than one decided meal (a dinner
+/// plan *and* an ice-cream run afterward both live in the same day,
+/// different slots — or even the same slot, if the family genuinely can't
+/// decide between two options), plus its own suggestions and votes.
+///
+/// Pulled out of `DayDetailView` so the exact same content — and all its
+/// sheet/decide/vote logic — can be embedded directly inside another
+/// `List`/`Form` (the Calendar tab's own inline day panel) as well as
+/// pushed as its own screen, without duplicating any of it. Renders as a
+/// sequence of `Section`s — callers provide whatever `Form`/`List` wraps them.
+struct DaySlotsView: View {
     let date: Date
 
     @Environment(\.modelContext) private var modelContext
@@ -30,13 +55,9 @@ struct DayDetailView: View {
     }
 
     var body: some View {
-        Form {
-            ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
-                slotSection(slot)
-            }
+        ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
+            slotSection(slot)
         }
-        .navigationTitle(date.formatted(Date.weekdayFull))
-        .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $activeSheet) { action in
             sheetContent(for: action)
         }

@@ -10,6 +10,7 @@ struct RestaurantListView: View {
     @State private var showEditor = false
     @State private var searchText = ""
     @StateObject private var searchModel = RestaurantSearchModel()
+    @StateObject private var locationProvider = UserLocationProvider()
 
     private var isSearchActive: Bool {
         !searchText.trimmingCharacters(in: .whitespaces).isEmpty
@@ -65,6 +66,12 @@ struct RestaurantListView: View {
         .searchable(text: $searchText, prompt: "Search for a restaurant to add")
         .onChange(of: searchText) { _, newValue in
             searchModel.search(newValue)
+        }
+        .onAppear {
+            locationProvider.requestIfNeeded()
+        }
+        .onChange(of: locationProvider.coordinate) { _, newValue in
+            searchModel.userCoordinate = newValue
         }
         .navigationTitle("Eating Out")
         .navigationBarTitleDisplayMode(.inline)
@@ -233,6 +240,14 @@ final class RestaurantSearchModel: ObservableObject {
     @Published var isSearching = false
     @Published var errorMessage: String?
 
+    /// The app's best guess at "nearby," if location access is available —
+    /// biases (and, for Google, ranks) results toward it, so a common
+    /// restaurant name search doesn't surface a same-named place a
+    /// continent away above the one actually close by. Set by the view
+    /// before searching; `nil` (denied, not yet answered, or simply
+    /// unavailable) just falls back to the previous unbiased behavior.
+    var userCoordinate: CLLocationCoordinate2D?
+
     private var searchTask: Task<Void, Never>?
 
     func search(_ query: String) {
@@ -243,6 +258,7 @@ final class RestaurantSearchModel: ObservableObject {
             errorMessage = nil
             return
         }
+        let coordinate = userCoordinate
         searchTask = Task {
             // Small debounce so we're not firing a search on every keystroke.
             try? await Task.sleep(nanoseconds: 300_000_000)
@@ -254,7 +270,7 @@ final class RestaurantSearchModel: ObservableObject {
 
             if GooglePlacesService.isConfigured {
                 do {
-                    let places = try await GooglePlacesService.search(trimmed)
+                    let places = try await GooglePlacesService.search(trimmed, near: coordinate)
                     guard !Task.isCancelled else { return }
                     results = places.map {
                         Result(
@@ -279,18 +295,38 @@ final class RestaurantSearchModel: ObservableObject {
                 }
             }
 
-            await searchWithMapKit(trimmed)
+            await searchWithMapKit(trimmed, near: coordinate)
         }
     }
 
-    private func searchWithMapKit(_ query: String) async {
+    private func searchWithMapKit(_ query: String, near coordinate: CLLocationCoordinate2D?) async {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
         request.resultTypes = .pointOfInterest
+        if let coordinate {
+            // A ~50km region biases MapKit's own ranking toward this area —
+            // without it, MapKit has no idea where "nearby" even means and
+            // ranks purely by name/relevance, same problem as Google
+            // without `locationBias`.
+            request.region = MKCoordinateRegion(
+                center: coordinate,
+                latitudinalMeters: 100_000,
+                longitudinalMeters: 100_000
+            )
+        }
         do {
             let response = try await MKLocalSearch(request: request).start()
             guard !Task.isCancelled else { return }
-            results = response.mapItems.enumerated().map { index, item in
+            let items = coordinate.map { userLocation in
+                // MapKit's own ranking isn't strictly distance-first even
+                // with a region set — sorting explicitly is what actually
+                // guarantees the closest match shows up first.
+                response.mapItems.sorted {
+                    distance(from: userLocation, to: $0.placemark.coordinate)
+                        < distance(from: userLocation, to: $1.placemark.coordinate)
+                }
+            } ?? response.mapItems
+            results = items.enumerated().map { index, item in
                 Result(
                     id: "mapkit-\(index)-\(item.name ?? "")",
                     name: item.name ?? "Unknown",
@@ -316,6 +352,13 @@ final class RestaurantSearchModel: ObservableObject {
             results = []
             errorMessage = "Couldn't search right now — check your connection."
         }
+    }
+
+    /// Straight-line distance in meters — plenty accurate for ranking
+    /// nearby search results, no need for anything route-aware here.
+    private func distance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> CLLocationDistance {
+        CLLocation(latitude: from.latitude, longitude: from.longitude)
+            .distance(from: CLLocation(latitude: to.latitude, longitude: to.longitude))
     }
 
     /// Turns MapKit's point-of-interest category (e.g. "MKPOICategoryBakery")

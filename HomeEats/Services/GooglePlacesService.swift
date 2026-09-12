@@ -72,7 +72,12 @@ enum GooglePlacesService {
         }
     }
 
-    static func search(_ query: String) async throws -> [PlaceResult] {
+    /// `near`, when available, biases (and ranks) results toward that
+    /// coordinate — without it, Google's Text Search ranks purely by
+    /// text relevance, which is how a common restaurant name search could
+    /// surface a same-named place on another continent above the one
+    /// actually nearby.
+    static func search(_ query: String, near coordinate: CLLocationCoordinate2D? = nil) async throws -> [PlaceResult] {
         guard isConfigured, let base = URL(string: baseURLString) else {
             throw ServiceError.notConfigured
         }
@@ -80,7 +85,12 @@ enum GooglePlacesService {
             url: base.appendingPathComponent("restaurants/search"),
             resolvingAgainstBaseURL: false
         )
-        components?.queryItems = [URLQueryItem(name: "q", value: query)]
+        var queryItems = [URLQueryItem(name: "q", value: query)]
+        if let coordinate {
+            queryItems.append(URLQueryItem(name: "lat", value: String(coordinate.latitude)))
+            queryItems.append(URLQueryItem(name: "lng", value: String(coordinate.longitude)))
+        }
+        components?.queryItems = queryItems
         guard let url = components?.url else { throw ServiceError.requestFailed }
 
         let (data, response) = try await URLSession.shared.data(from: url)

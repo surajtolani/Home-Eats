@@ -4,12 +4,15 @@ import SwiftData
 /// The Plan tab. Two ways to look at the same data, switchable from the
 /// segmented control up top; the "Go to This Week" button in the toolbar
 /// stays visible in both:
-/// - **Calendar**: a month grid up top (past days dimmed, today highlighted);
-///   tapping a date anchors an agenda list below it showing that date and
-///   everything after, so you can page months out and still see what's ahead.
+/// - **Calendar**: a month grid up top (past days dimmed, today highlighted)
+///   with the selected day's own full planner — every slot, not just
+///   dinner — right below it, so deciding a day's meals never needs a
+///   separate screen. Swipe the day header left/right (or use its chevrons,
+///   or just tap a different date in the grid above) to move between days.
 /// - **Weekly**: a flat agenda of just one week at a time (past days
 ///   dimmed, same as the calendar grid), with its own prev/next-week
-///   navigation, for a quick glance without the grid.
+///   navigation, for a quick glance across several days without the grid —
+///   tapping a day here still pushes the full day screen.
 struct CalendarPlanView: View {
     @Binding var showPlanningFlow: Bool
 
@@ -31,10 +34,6 @@ struct CalendarPlanView: View {
     }
 
     private var calendar: Calendar { Calendar.current }
-
-    /// How many upcoming days the "X onward" agenda shows below the calendar —
-    /// enough to actually be useful without querying/rendering an unbounded list.
-    private static let agendaWindowInDays = 21
 
     private var isShowingCurrentMonth: Bool {
         calendar.isDate(displayedMonth, equalTo: .now, toGranularity: .month)
@@ -121,47 +120,70 @@ struct CalendarPlanView: View {
             }
 
             Section {
-                // Deliberately not a `header:` — `List`/`Section` headers
-                // pin to the top while their section scrolls underneath,
-                // which here meant this title stayed fixed in place while
-                // the calendar grid above scrolled up behind it. As a plain
-                // row instead, it scrolls away with everything else.
-                Text(agendaHeaderTitle)
-                    .font(.brandHeadline)
-                    .foregroundStyle(.secondary)
+                selectedDayHeader
                     .listRowSeparator(.hidden)
-
-                ForEach(agendaDates, id: \.self) { day in
-                    NavigationLink {
-                        DayDetailView(date: day)
-                    } label: {
-                        AgendaDayRow(
-                            date: day,
-                            meals: meals(on: day),
-                            suggestionCount: suggestionCount(on: day),
-                            // This agenda only ever lists selectedDate and
-                            // days after it, so it never actually contains a
-                            // past day — explicit false rather than computing
-                            // it, since it'd always evaluate to false anyway.
-                            isPast: false
-                        )
-                    }
-                }
             }
+
+            DaySlotsView(date: selectedDate)
         }
         .listStyle(.plain)
+        // Re-animates the day panel's content sliding to a new day's plan
+        // whenever `selectedDate` changes, whether that came from the swipe
+        // gesture on the header below, its chevrons, or tapping a different
+        // date in the grid above — one consistent transition regardless of
+        // which of the three actually changed it.
+        .animation(.default, value: selectedDate)
     }
 
-    private var agendaHeaderTitle: String {
-        calendar.isDateInToday(selectedDate)
-            ? "Today Onward"
-            : "\(selectedDate.formatted(Date.weekdayFull)), \(selectedDate.formatted(Date.monthDay)) Onward"
-    }
-
-    private var agendaDates: [Date] {
-        (0..<Self.agendaWindowInDays).compactMap {
-            calendar.date(byAdding: .day, value: $0, to: selectedDate)
+    /// The selected day's own big header, styled like "Plan the Week"'s
+    /// per-day card — swipe left/right on it (or use the chevrons) to move
+    /// to an adjacent day without needing to tap back up in the grid.
+    /// Deliberately not a `header:` — `List`/`Section` headers pin to the
+    /// top while their section scrolls underneath, which here would have
+    /// left this pinned in place while the calendar grid above scrolled up
+    /// behind it — a plain row instead scrolls away with everything else.
+    private var selectedDayHeader: some View {
+        HStack {
+            Button { moveSelectedDate(by: -1) } label: { Image(systemName: "chevron.left") }
+            Spacer()
+            VStack(spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(selectedDate.formatted(Date.weekdayFull)).font(.brandTitle2.bold())
+                    if calendar.isDateInToday(selectedDate) {
+                        Text("Today")
+                            .font(.brandCaption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                    }
+                }
+                Text(selectedDate.formatted(Date.monthDay)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button { moveSelectedDate(by: 1) } label: { Image(systemName: "chevron.right") }
         }
+        .buttonStyle(.borderless)
+        .contentShape(Rectangle())
+        // `.simultaneousGesture` rather than `.gesture` — this row still
+        // sits inside the scrollable List above, and a plain `.gesture`
+        // would claim every touch that starts here exclusively, including
+        // an attempt to scroll the list starting from this exact row.
+        // Simultaneous recognition lets both work: a horizontal swipe
+        // changes the day (below), a vertical one still scrolls normally.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    // Horizontal swipe only — a mostly-vertical drag here is
+                    // someone trying to scroll the list, not change days.
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    moveSelectedDate(by: value.translation.width < 0 ? 1 : -1)
+                }
+        )
+    }
+
+    private func moveSelectedDate(by days: Int) {
+        guard let newDate = calendar.date(byAdding: .day, value: days, to: selectedDate) else { return }
+        selectedDate = calendar.startOfDay(for: newDate)
     }
 
     private var monthHeader: some View {

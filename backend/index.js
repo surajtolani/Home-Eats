@@ -80,6 +80,25 @@ app.get("/restaurants/search", async (req, res) => {
     return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
   }
 
+  // Optional — the app's best guess at the user's current location, so a
+  // common restaurant name doesn't surface a same-named place on another
+  // continent above the one actually nearby. Without these, Google just
+  // ranks by text relevance, same as before.
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+  const hasLocation = Number.isFinite(lat) && Number.isFinite(lng);
+
+  const body = { textQuery: query };
+  if (hasLocation) {
+    // A 50km bias radius is generous enough to still find a place a short
+    // drive away without it, but tight enough that "pizza" close to the
+    // user consistently outranks "pizza" three states over.
+    body.locationBias = {
+      circle: { center: { latitude: lat, longitude: lng }, radius: 50000 },
+    };
+    body.rankPreference = "DISTANCE";
+  }
+
   try {
     const response = await fetch("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
@@ -102,7 +121,7 @@ app.get("/restaurants/search", async (req, res) => {
           "places.photos",
         ].join(","),
       },
-      body: JSON.stringify({ textQuery: query }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
