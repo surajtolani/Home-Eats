@@ -111,6 +111,12 @@ struct GroceryListView: View {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
             }
+            // Turns on the reorder (☰) handles for `.onMove` within a
+            // category — off by default so normal taps (checkbox, quantity
+            // stepper, product photo) work as usual the rest of the time.
+            ToolbarItem(placement: .topBarLeading) {
+                EditButton()
+            }
             // A direct "+" for the single most common action (adding one
             // item by hand), rather than burying it a level deep inside the
             // "•••" menu with the less-frequent management screens.
@@ -235,9 +241,9 @@ struct GroceryListView: View {
                 Section {
                     ForEach(categoryItems) { item in
                         draggableRow(for: item)
-                            .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                                handleReorderDrop(providers, targetItem: item, targetCategory: category)
-                            }
+                    }
+                    .onMove { offsets, destination in
+                        moveWithinCategory(categoryItems, from: offsets, to: destination)
                     }
                 } header: {
                     Text(category.displayName)
@@ -245,15 +251,15 @@ struct GroceryListView: View {
                     // Only shown once, under the last category section,
                     // rather than repeated under every one.
                     if index == purchasableByCategory.count - 1 {
-                        Text("Drag the ☰ handle onto another item to reorder it there, or onto a different category header to move it there for good. Manage your standing staples from the toolbar.")
+                        Text("Drag the ☰ handle onto a different category header to move an item there for good. Tap Edit (top right) to reorder within a category. Manage your standing staples from the toolbar.")
                     }
                 }
                 .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                    // Catches a drop that lands on the header or on empty
-                    // space in the section, rather than directly on a row —
-                    // just moves the item into this category, appended at
-                    // the end, since there's no specific row to place it
-                    // relative to.
+                    // Dropping the ☰ handle anywhere in this section — the
+                    // header or a row, it's all the same target — moves
+                    // that item into this category, appended at the end.
+                    // Fine-tuning exactly where within the category is what
+                    // Edit mode's reorder handles (`.onMove` above) are for.
                     handleCategoryDrop(providers, assigningTo: category)
                 }
             }
@@ -295,45 +301,24 @@ struct GroceryListView: View {
         match.orderIndex = highestInCategory + 1
     }
 
-    /// Reads the dragged item's name back out of the drop payload and
-    /// inserts it immediately before `targetItem` — reordering within the
-    /// same category, or moving it into a different one and placing it at
-    /// that exact spot, in one gesture.
-    private func handleReorderDrop(
-        _ providers: [NSItemProvider],
-        targetItem: GroceryItem,
-        targetCategory: GroceryCategory
-    ) -> Bool {
-        guard let provider = providers.first else { return false }
-        guard provider.canLoadObject(ofClass: NSString.self) else { return false }
-        provider.loadObject(ofClass: NSString.self) { reading, _ in
-            guard let name = reading as? String else { return }
-            Task { @MainActor in
-                reorder(name, toJustBefore: targetItem, in: targetCategory)
-            }
+    /// Reorders items within one category using SwiftUI's own List-editing
+    /// mechanism (`.onMove`, active while the toolbar's Edit button is on)
+    /// rather than a second custom drag-and-drop scheme layered on top of
+    /// the cross-category one — two independent `.onDrop` targets on the
+    /// same row/section (one for "reorder here," one for "recategorize
+    /// here") raced each other for which handled a given drop, which is
+    /// what caused a dragged item to visually move and then snap back:
+    /// the section-level handler was winning and re-appending the item to
+    /// the end of its *current* category instead of the row-level one
+    /// placing it at the intended position. `.onMove` has none of that
+    /// ambiguity — there's exactly one handler, driven directly by the
+    /// system's own reorder UI.
+    private func moveWithinCategory(_ categoryItems: [GroceryItem], from offsets: IndexSet, to destination: Int) {
+        var reordered = categoryItems
+        reordered.move(fromOffsets: offsets, toOffset: destination)
+        for (index, item) in reordered.enumerated() {
+            item.orderIndex = Double(index)
         }
-        return true
-    }
-
-    private func reorder(_ name: String, toJustBefore targetItem: GroceryItem, in category: GroceryCategory) {
-        let key = GroceryListBuilder.canonicalKey(for: name)
-        guard let dragged = purchasableItems.first(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }),
-              dragged.id != targetItem.id else { return }
-
-        if dragged.category != category {
-            dragged.category = category
-            dragged.categoryManuallySet = true
-        }
-
-        // Fractional indexing: the new value just needs to land strictly
-        // between the sibling before `targetItem` and `targetItem` itself,
-        // so every other row's `orderIndex` can stay untouched.
-        let siblings = purchasableItems
-            .filter { $0.category == category && $0.id != dragged.id }
-            .sorted { $0.orderIndex < $1.orderIndex }
-        guard let targetPosition = siblings.firstIndex(where: { $0.id == targetItem.id }) else { return }
-        let precedingOrderIndex = targetPosition > 0 ? siblings[targetPosition - 1].orderIndex : targetItem.orderIndex - 1
-        dragged.orderIndex = (precedingOrderIndex + targetItem.orderIndex) / 2
     }
 
     // MARK: - "My Grocery Layout" view
