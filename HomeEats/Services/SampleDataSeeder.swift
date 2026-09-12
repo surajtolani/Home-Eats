@@ -12,6 +12,7 @@ enum SampleDataSeeder {
         seedSettingsIfNeeded(context: context)
         seedLibraryRecipesIfNeeded(context: context)
         seedStaplesIfNeeded(context: context)
+        seedDefaultLayoutAislesIfNeeded(context: context)
     }
 
     private static func seedSettingsIfNeeded(context: ModelContext) {
@@ -63,6 +64,27 @@ enum SampleDataSeeder {
         ]
         for (name, category) in starterStaples {
             context.insert(StapleItem(name: name, category: category))
+        }
+    }
+
+    /// Seeds one "My Layout" aisle per `GroceryCategory`, in the same
+    /// walking order "By Category" already sorts by, so "My Layout" opens
+    /// grouped the same way "By Category" is instead of dumping every item
+    /// into "Unsorted" until someone manually places it there one at a
+    /// time. Only runs while `StoreAisle` is completely empty — a household
+    /// that's already started defining their own aisles (even just one)
+    /// keeps exactly what they made instead of this splicing ten more in
+    /// alongside it.
+    private static func seedDefaultLayoutAislesIfNeeded(context: ModelContext) {
+        let descriptor = FetchDescriptor<StoreAisle>()
+        guard (try? context.fetch(descriptor))?.isEmpty ?? true else { return }
+
+        for category in GroceryCategory.allCases.sorted(by: { $0.sortIndex < $1.sortIndex }) {
+            context.insert(StoreAisle(
+                name: category.displayName,
+                sortIndex: category.sortIndex,
+                linkedCategory: category
+            ))
         }
     }
 

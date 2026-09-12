@@ -368,7 +368,7 @@ struct GroceryListView: View {
                 let (category, categoryItems) = entry
                 Section {
                     ForEach(categoryItems) { item in
-                        row(for: item)
+                        row(for: item, moveMenu: moveToCategoryMenu(for: item))
                             .contextMenu { moveToCategoryMenu(for: item) }
                     }
                     .onMove { source, destination in
@@ -380,7 +380,7 @@ struct GroceryListView: View {
                     // Only shown once, under the last category section,
                     // rather than repeated under every one.
                     if index == purchasableByCategory.count - 1 {
-                        Text("Drag the ≡ handle to reorder within a category. Touch and hold an item to move it to a different category for good. Manage your standing staples from the toolbar.")
+                        Text("Drag the ≡ handle to reorder within a category. Tap the ⋯ on an item (or touch and hold it) to move it to a different category for good. Manage your standing staples from the toolbar.")
                     }
                 }
             }
@@ -440,35 +440,38 @@ struct GroceryListView: View {
         // Aisle layout is only meaningful for things you're actually
         // buying — a still-pending suggestion or something you rejected
         // shouldn't show up sorted into an aisle.
-        let unassigned = layoutSorted(purchasableItems.filter { aisleID(for: $0) == nil })
+        let unassigned = layoutSorted(purchasableItems.filter { resolvedAisleID(for: $0) == nil })
 
-        Section {
-            if unassigned.isEmpty {
-                Text("Everything's sorted into an aisle.").foregroundStyle(.secondary)
+        // "Unsorted" only ever holds something that's either explicitly been
+        // put there (picking "Unsorted" from the move menu) or whose
+        // category's starter aisle got deleted out from under it — a fresh
+        // item defaults into the aisle mirroring its `GroceryCategory` (see
+        // `resolvedAisleID`), the same grouping "By Category" already shows,
+        // rather than landing here first.
+        if !unassigned.isEmpty {
+            Section {
+                ForEach(unassigned) { item in
+                    row(for: item, moveMenu: moveToAisleMenu(for: item))
+                        .contextMenu { moveToAisleMenu(for: item) }
+                }
+                .onMove { source, destination in
+                    moveWithinAisle(unassigned, from: source, to: destination)
+                }
+            } header: {
+                Text("Unsorted")
+            } footer: {
+                Text("Tap the ⋯ on an item (or touch and hold it) to place it into an aisle below.")
             }
-            ForEach(unassigned) { item in
-                row(for: item)
-                    .contextMenu { moveToAisleMenu(for: item) }
-            }
-            .onMove { source, destination in
-                moveWithinAisle(unassigned, from: source, to: destination)
-            }
-        } header: {
-            Text("Unsorted")
-        } footer: {
-            Text(aisles.isEmpty
-                 ? "Add your store's aisles from the toolbar, then touch and hold an item to place it there."
-                 : "Touch and hold an item to place it into an aisle below for good.")
         }
 
         ForEach(aisles) { aisle in
-            let aisleItems = layoutSorted(purchasableItems.filter { aisleID(for: $0) == aisle.id })
+            let aisleItems = layoutSorted(purchasableItems.filter { resolvedAisleID(for: $0) == aisle.id })
             Section(aisle.name) {
                 if aisleItems.isEmpty {
-                    Text("Touch and hold an item above to move it here.").font(.brandCaption).foregroundStyle(.tertiary)
+                    Text("Nothing here yet.").font(.brandCaption).foregroundStyle(.tertiary)
                 }
                 ForEach(aisleItems) { item in
-                    row(for: item)
+                    row(for: item, moveMenu: moveToAisleMenu(for: item))
                         .contextMenu { moveToAisleMenu(for: item) }
                 }
                 .onMove { source, destination in
@@ -487,12 +490,12 @@ struct GroceryListView: View {
     }
 
     /// Lands an item at the end of whichever aisle group (or "Unsorted",
-    /// `aisleID == nil`) it was just assigned to via the context menu —
-    /// same idea as `moveToCategory`'s "lands at the end of its new
-    /// category" behavior, so a menu-driven move doesn't leave the item at
-    /// some arbitrary/stale position.
+    /// `aisleID == nil`) it was just assigned to via the move menu — same
+    /// idea as `moveToCategory`'s "lands at the end of its new category"
+    /// behavior, so a menu-driven move doesn't leave the item at some
+    /// arbitrary/stale position.
     private func placeAtEndOfLayoutGroup(_ item: GroceryItem, aisleID: UUID?) {
-        let siblings = purchasableItems.filter { self.aisleID(for: $0) == aisleID && $0.id != item.id }
+        let siblings = purchasableItems.filter { resolvedAisleID(for: $0) == aisleID && $0.id != item.id }
         let maxIndex = siblings.map(\.layoutOrderIndex).max() ?? 0
         item.layoutOrderIndex = maxIndex + 1
     }
@@ -509,10 +512,10 @@ struct GroceryListView: View {
     private func moveToAisleMenu(for item: GroceryItem) -> some View {
         Menu {
             Button {
-                unassign([item.name])
+                markExplicitlyUnsorted([item.name])
                 placeAtEndOfLayoutGroup(item, aisleID: nil)
             } label: {
-                if aisleID(for: item) == nil {
+                if resolvedAisleID(for: item) == nil {
                     Label("Unsorted", systemImage: "checkmark")
                 } else {
                     Text("Unsorted")
@@ -523,7 +526,7 @@ struct GroceryListView: View {
                     assign([item.name], to: aisle)
                     placeAtEndOfLayoutGroup(item, aisleID: aisle.id)
                 } label: {
-                    if aisleID(for: item) == aisle.id {
+                    if resolvedAisleID(for: item) == aisle.id {
                         Label(aisle.name, systemImage: "checkmark")
                     } else {
                         Text(aisle.name)
@@ -535,28 +538,46 @@ struct GroceryListView: View {
         }
     }
 
-    private func aisleID(for item: GroceryItem) -> UUID? {
+    /// Where an item actually lands in "My Layout": an explicit choice
+    /// (`ItemAisleAssignment`, including one that explicitly points at
+    /// "Unsorted" — see that model's doc comment on `aisleID`) always wins;
+    /// absent that, it falls back to whichever aisle mirrors the item's own
+    /// `GroceryCategory` — the ten starter aisles `SampleDataSeeder` seeds
+    /// once, so "My Layout" defaults to the exact same grouping "By
+    /// Category" uses instead of everything piling up in "Unsorted." Only
+    /// an item whose category's starter aisle was itself deleted (or one
+    /// explicitly sent to "Unsorted") ever resolves to `nil`.
+    private func resolvedAisleID(for item: GroceryItem) -> UUID? {
         let key = GroceryListBuilder.canonicalKey(for: item.name)
-        return aisleAssignments.first { GroceryListBuilder.canonicalKey(for: $0.canonicalItemName) == key }?.aisleID
+        if let assignment = aisleAssignments.first(where: { GroceryListBuilder.canonicalKey(for: $0.canonicalItemName) == key }) {
+            return assignment.aisleID
+        }
+        return aisles.first { $0.linkedCategory == item.category }?.id
     }
 
     private func assign(_ names: [String], to aisle: StoreAisle) {
         for name in names {
-            let key = GroceryListBuilder.canonicalKey(for: name)
-            if let existing = aisleAssignments.first(where: { GroceryListBuilder.canonicalKey(for: $0.canonicalItemName) == key }) {
-                existing.aisleID = aisle.id
-            } else {
-                modelContext.insert(ItemAisleAssignment(canonicalItemName: name, aisleID: aisle.id))
-            }
+            setAisleAssignment(name: name, aisleID: aisle.id)
         }
     }
 
-    private func unassign(_ names: [String]) {
+    /// Explicitly pins an item to "Unsorted" — distinct from simply having
+    /// never been assigned, which instead falls back to the item's category
+    /// aisle (see `resolvedAisleID`). Without persisting this as its own
+    /// choice, picking "Unsorted" for an item whose category already has a
+    /// starter aisle could never actually stick.
+    private func markExplicitlyUnsorted(_ names: [String]) {
         for name in names {
-            let key = GroceryListBuilder.canonicalKey(for: name)
-            if let existing = aisleAssignments.first(where: { GroceryListBuilder.canonicalKey(for: $0.canonicalItemName) == key }) {
-                modelContext.delete(existing)
-            }
+            setAisleAssignment(name: name, aisleID: nil)
+        }
+    }
+
+    private func setAisleAssignment(name: String, aisleID: UUID?) {
+        let key = GroceryListBuilder.canonicalKey(for: name)
+        if let existing = aisleAssignments.first(where: { GroceryListBuilder.canonicalKey(for: $0.canonicalItemName) == key }) {
+            existing.aisleID = aisleID
+        } else {
+            modelContext.insert(ItemAisleAssignment(canonicalItemName: name, aisleID: aisleID))
         }
     }
 
@@ -665,11 +686,21 @@ struct GroceryListView: View {
 
     // MARK: - Shared
 
-    private func row(for item: GroceryItem) -> some View {
+    /// `moveMenu` is rendered as an always-visible ⋯ button on the row
+    /// itself, not just the `.contextMenu` long-press each call site also
+    /// attaches — a `List` in a permanently-active `EditMode` (this screen's
+    /// `editMode` never leaves `.active`, so the drag-to-reorder handle is
+    /// always present) doesn't reliably surface a row's long-press context
+    /// menu on top of that, which made "touch and hold to move it" silently
+    /// do nothing. The button works regardless of edit mode, so moving an
+    /// item between categories/aisles no longer depends on a gesture that
+    /// edit mode was swallowing.
+    private func row(for item: GroceryItem, moveMenu: some View) -> some View {
         GroceryItemRow(
             item: item,
             productOption: productOption(for: item),
-            onTapProduct: { productPickerItem = item }
+            onTapProduct: { productPickerItem = item },
+            moveMenu: AnyView(moveMenu)
         )
     }
 
@@ -762,6 +793,10 @@ private struct GroceryItemRow: View {
     @Bindable var item: GroceryItem
     let productOption: ProductOption?
     let onTapProduct: () -> Void
+    /// The "Move to Category"/"Move to Aisle" menu, shown as its own
+    /// always-tappable button rather than relying solely on `.contextMenu`
+    /// (long press) — see `GroceryListView.row(for:moveMenu:)` for why.
+    let moveMenu: AnyView
 
     @Environment(\.modelContext) private var modelContext
     @Query private var historicalItems: [HistoricalGroceryItem]
@@ -788,6 +823,14 @@ private struct GroceryItemRow: View {
             }
 
             Spacer()
+
+            // `moveMenu` (built by `moveToCategoryMenu`/`moveToAisleMenu`) is
+            // already a complete, labeled `Menu` — shown directly rather
+            // than nested inside a second wrapping `Menu`, which would just
+            // add a pointless extra submenu tap to get to the same list.
+            moveMenu
+                .labelStyle(.iconOnly)
+                .foregroundStyle(.secondary)
 
             QuantityStepper(count: $item.quantityCount, onDeleteAtMinimum: deleteItem)
 
