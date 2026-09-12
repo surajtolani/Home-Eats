@@ -3,6 +3,7 @@ import Foundation
 enum RecipeImportError: LocalizedError {
     case invalidURL
     case network(Error)
+    case blocked
     case noRecipeFound
 
     var errorDescription: String? {
@@ -11,6 +12,8 @@ enum RecipeImportError: LocalizedError {
             return "That doesn't look like a valid web address."
         case .network:
             return "Couldn't load that page. Check your connection and try again."
+        case .blocked:
+            return "That site blocked the request. You can still add the recipe manually."
         case .noRecipeFound:
             return "Couldn't find a recipe on that page. You can still add it manually."
         }
@@ -30,19 +33,42 @@ enum RecipeImportService {
         }
 
         let html: String
+        let statusCode: Int
         do {
             var request = URLRequest(url: url)
+            // A real mobile Safari UA, not one that names this app —
+            // recipe sites commonly sit behind a WAF (Cloudflare, Sucuri,
+            // ...) that blocks anything that doesn't look like an actual
+            // browser, which otherwise silently produces a page with no
+            // embedded recipe data at all (indistinguishable, before this
+            // fix, from the page genuinely not having one). Other headers a
+            // real browser always sends along with a User-Agent, for the
+            // same reason.
             request.setValue(
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) HomeEatsApp/1.0",
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
                 forHTTPHeaderField: "User-Agent"
             )
-            let (data, _) = try await URLSession.shared.data(for: request)
+            request.setValue(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                forHTTPHeaderField: "Accept"
+            )
+            request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
             html = String(data: data, encoding: .utf8) ?? ""
         } catch {
             throw RecipeImportError.network(error)
         }
 
         guard let parsed = SchemaOrgRecipeParser.parse(html: html) else {
+            // A blocked request (bot-protection challenge page, a 403/503
+            // from the site's WAF) reads very differently to the user than
+            // a page that's genuinely just missing a recipe — worth telling
+            // them apart rather than always saying "couldn't find a
+            // recipe," which reads as our bug rather than the site's.
+            if statusCode == 403 || statusCode == 503 {
+                throw RecipeImportError.blocked
+            }
             throw RecipeImportError.noRecipeFound
         }
 

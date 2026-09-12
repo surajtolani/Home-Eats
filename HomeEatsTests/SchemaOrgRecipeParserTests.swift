@@ -68,6 +68,21 @@ final class SchemaOrgRecipeParserTests: XCTestCase {
         XCTAssertNil(SchemaOrgRecipeParser.parse(html: html))
     }
 
+    func testDecodesHTMLEntityEncodedQuotesInJSONLD() {
+        // A handful of page builders HTML-entity-encode the quotes inside an
+        // embedded JSON-LD block even though it's meant to be raw JSON —
+        // left alone this silently fails to parse as JSON at all, which
+        // looks identical to the page just not having a recipe.
+        let html = """
+        <script type="application/ld+json">
+        {&quot;@type&quot;: &quot;Recipe&quot;, &quot;name&quot;: &quot;Entity Recipe&quot;, &quot;recipeIngredient&quot;: [&quot;1 cup rice&quot;]}
+        </script>
+        """
+        let parsed = SchemaOrgRecipeParser.parse(html: html)
+        XCTAssertEqual(parsed?.name, "Entity Recipe")
+        XCTAssertEqual(parsed?.ingredientLines, ["1 cup rice"])
+    }
+
     func testParsesISO8601Duration() {
         XCTAssertEqual(SchemaOrgRecipeParser.parseISO8601Duration("PT1H30M"), 90)
         XCTAssertEqual(SchemaOrgRecipeParser.parseISO8601Duration("PT45M"), 45)

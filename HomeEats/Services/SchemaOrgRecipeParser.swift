@@ -39,8 +39,26 @@ enum SchemaOrgRecipeParser {
         let matches = regex.matches(in: html, range: range)
         return matches.compactMap { match in
             guard match.numberOfRanges > 1, let r = Range(match.range(at: 1), in: html) else { return nil }
-            return String(html[r]).replacingOccurrences(of: "&amp;", with: "&")
+            return decodeHTMLEntities(String(html[r]))
         }
+    }
+
+    /// A few page builders/CMSes HTML-entity-encode characters inside an
+    /// embedded JSON-LD block (quotes especially) even though it's meant to
+    /// be raw JSON — left alone, that silently breaks `JSONSerialization`
+    /// parsing (a caught error, not a crash), which looks identical to the
+    /// page just not having a recipe at all. `&amp;` has to run last since
+    /// it's a prefix of how the others were originally escaped.
+    private static func decodeHTMLEntities(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#34;", with: "\"")
+            .replacingOccurrences(of: "&#039;", with: "'")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&amp;", with: "&")
     }
 
     static func findRecipeObjects(in json: Any) -> [[String: Any]] {

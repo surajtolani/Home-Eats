@@ -121,7 +121,7 @@ struct RestaurantListView: View {
             cuisine: result.cuisine,
             priceRange: result.priceRange,
             rating: result.rating.map { Int($0.rounded()) },
-            websiteURL: result.mapsURLString,
+            websiteURL: result.websiteURLString,
             address: result.address,
             googlePhotoNames: result.photoNames,
             googlePlaceID: result.isGoogleSourced ? result.id : nil,
@@ -214,6 +214,11 @@ final class RestaurantSearchModel: ObservableObject {
         let priceRange: String?
         let rating: Double?
         let mapsURLString: String?
+        /// The place's actual business website — what "Website" should
+        /// open, as opposed to `mapsURLString` which opens Google/Apple
+        /// Maps. `nil` when no site is on file, in which case no Website
+        /// button is shown at all rather than falling back to the map link.
+        let websiteURLString: String?
         /// Only ever non-empty for a Google-sourced result — see
         /// `GooglePlacesService.PlaceResult.photoNames`.
         let photoNames: [String]
@@ -260,6 +265,7 @@ final class RestaurantSearchModel: ObservableObject {
                             priceRange: $0.priceRange,
                             rating: $0.rating,
                             mapsURLString: $0.mapsURLString,
+                            websiteURLString: $0.websiteURLString,
                             photoNames: $0.photoNames,
                             coordinate: $0.coordinate,
                             isGoogleSourced: true
@@ -292,7 +298,14 @@ final class RestaurantSearchModel: ObservableObject {
                     cuisine: cuisineLabel(for: item),
                     priceRange: nil,
                     rating: nil,
-                    mapsURLString: item.url?.absoluteString,
+                    // MapKit doesn't expose a separate "open in Maps" link
+                    // the way Google does — there's nothing to put here.
+                    mapsURLString: nil,
+                    // For a MapKit point of interest, `.url` is the
+                    // business's own website (not an Apple Maps link), so
+                    // it maps directly to "Website" rather than to
+                    // `mapsURLString`.
+                    websiteURLString: item.url?.absoluteString,
                     photoNames: [],
                     coordinate: item.placemark.coordinate,
                     isGoogleSourced: false

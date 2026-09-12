@@ -97,6 +97,7 @@ app.get("/restaurants/search", async (req, res) => {
           "places.priceLevel",
           "places.primaryTypeDisplayName",
           "places.googleMapsUri",
+          "places.websiteUri",
           "places.location",
           "places.photos",
         ].join(","),
@@ -119,6 +120,11 @@ app.get("/restaurants/search", async (req, res) => {
       priceRange: place.priceLevel ? (PRICE_LEVEL_MAP[place.priceLevel] ?? null) : null,
       cuisine: place.primaryTypeDisplayName?.text ?? null,
       mapsURL: place.googleMapsUri ?? null,
+      // The place's actual business website, distinct from `mapsURL` — a
+      // link to Google Maps. Not every place has one on file; a `null`
+      // here means the app shows no Website button rather than falling
+      // back to the Maps link (see RestaurantListView.addFromSearch).
+      websiteURL: place.websiteUri ?? null,
       latitude: place.location?.latitude ?? null,
       longitude: place.location?.longitude ?? null,
       // Stable resource names like "places/ID/photos/REF" for every photo
@@ -204,6 +210,7 @@ app.get("/restaurants/details", async (req, res) => {
           "nationalPhoneNumber",
           "regularOpeningHours.weekdayDescriptions",
           "reviews",
+          "websiteUri",
         ].join(","),
       },
     });
@@ -231,6 +238,7 @@ app.get("/restaurants/details", async (req, res) => {
       phoneNumber: place.nationalPhoneNumber ?? null,
       openingHours: place.regularOpeningHours?.weekdayDescriptions ?? [],
       reviews,
+      websiteURL: place.websiteUri ?? null,
     });
   } catch (error) {
     console.error("Place details request threw", error);

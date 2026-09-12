@@ -11,7 +11,15 @@ enum IngredientLineParser {
         "kilogram", "kilograms", "kg", "milliliter", "milliliters", "ml", "liter", "liters", "l",
         "clove", "cloves", "can", "cans", "package", "packages", "pinch", "pinches",
         "slice", "slices", "piece", "pieces", "bunch", "bunches", "stick", "sticks",
-        "quart", "quarts", "pint", "pints", "gallon", "gallons", "dash", "dashes"
+        "quart", "quarts", "pint", "pints", "gallon", "gallons", "dash", "dashes",
+        // Common count-nouns recipes use in place of a real unit ("1 loaf
+        // brioche bread", "2 heads garlic") — without these, the noun stays
+        // stuck at the front of the ingredient *name* instead of being
+        // recognized as the measurement, which is exactly what let "loaf"
+        // through into "Loaf Brioche Bread" on the grocery list.
+        "loaf", "loaves", "head", "heads", "bag", "bags", "box", "boxes",
+        "jar", "jars", "bottle", "bottles", "sprig", "sprigs", "stalk", "stalks",
+        "bar", "bars", "container", "containers", "packet", "packets", "envelope", "envelopes"
     ]
 
     /// Maps every singular/plural/abbreviated spelling of a unit to one
@@ -39,7 +47,19 @@ enum IngredientLineParser {
         "quart": "quarts", "quarts": "quarts",
         "pint": "pints", "pints": "pints",
         "gallon": "gallons", "gallons": "gallons",
-        "dash": "dashes", "dashes": "dashes"
+        "dash": "dashes", "dashes": "dashes",
+        "loaf": "loaves", "loaves": "loaves",
+        "head": "heads", "heads": "heads",
+        "bag": "bags", "bags": "bags",
+        "box": "boxes", "boxes": "boxes",
+        "jar": "jars", "jars": "jars",
+        "bottle": "bottles", "bottles": "bottles",
+        "sprig": "sprigs", "sprigs": "sprigs",
+        "stalk": "stalks", "stalks": "stalks",
+        "bar": "bars", "bars": "bars",
+        "container": "containers", "containers": "containers",
+        "packet": "packets", "packets": "packets",
+        "envelope": "envelopes", "envelopes": "envelopes"
     ]
 
     static func canonicalUnit(_ unit: String) -> String {
@@ -101,9 +121,39 @@ enum IngredientLineParser {
                 previousWasDigit = character.isNumber
             }
         }
-        return result
+        result = result
             .replacingOccurrences(of: "\u{00A0}", with: " ")
             .replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+        return collapseDoubledParens(result)
+    }
+
+    /// Collapses "((...))"-style doubled/nested parenthetical wrapping down
+    /// to a single pair, e.g. "bread ((Cut into thick slices))" ->
+    /// "bread (Cut into thick slices)". Some source sites' structured data
+    /// wraps an already-parenthesized note in an extra pair when it's
+    /// concatenated together, which otherwise leaves a stray, unmatched ")"
+    /// behind once `IngredientNameCleaner` strips just the inner pair — see
+    /// its doc comment. Collapsing here, before anything else touches the
+    /// line, means every downstream consumer (the recipe's own display,
+    /// the grocery list) sees one well-formed pair no matter the source.
+    private static func collapseDoubledParens(_ text: String) -> String {
+        var result = text
+        while let collapsed = matchOnce(#"\(\s*\("#, in: result, replacement: "(") {
+            result = collapsed
+        }
+        while let collapsed = matchOnce(#"\)\s*\)"#, in: result, replacement: ")") {
+            result = collapsed
+        }
+        // Tidy up the whitespace a collapse can leave just inside the
+        // parens ("( sifted )" -> "(sifted)").
+        result = result.replacingOccurrences(of: #"\(\s+"#, with: "(", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"\s+\)"#, with: ")", options: .regularExpression)
+        return result
+    }
+
+    private static func matchOnce(_ pattern: String, in text: String, replacement: String) -> String? {
+        guard text.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return text.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
     }
 
     /// Consumes a leading quantity like "2", "1.5", "1/2", or "1 1/2" from the

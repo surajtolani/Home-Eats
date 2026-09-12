@@ -250,6 +250,12 @@ struct RestaurantDetailView: View {
         defer { isLoadingDetails = false }
         do {
             details = try await GooglePlacesService.placeDetails(placeID: placeID)
+            // Backfills a website for a restaurant saved before this field
+            // existed, or one added when Google had no site on file yet —
+            // never overwrites a website the user has since edited by hand.
+            if (restaurant.websiteURL?.isEmpty ?? true), let websiteURL = details?.websiteURL, !websiteURL.isEmpty {
+                restaurant.websiteURL = websiteURL
+            }
         } catch {
             detailsErrorMessage = "Couldn't load hours, phone, or reviews right now."
         }

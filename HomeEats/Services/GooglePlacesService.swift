@@ -22,6 +22,10 @@ enum GooglePlacesService {
         let priceRange: String?
         let cuisine: String?
         let mapsURLString: String?
+        /// The place's actual business website, if Google has one on file —
+        /// distinct from `mapsURLString` (a Google Maps link). `nil` when
+        /// Google doesn't have a website for this place.
+        let websiteURLString: String?
         let coordinate: CLLocationCoordinate2D?
         /// Stable Google photo resource names ("places/ID/photos/REF"),
         /// every one this place has — pass each to `photoURL(for:)` to
@@ -43,6 +47,7 @@ enum GooglePlacesService {
         /// one per day — shown as-is rather than re-parsed.
         let openingHours: [String]
         let reviews: [Review]
+        let websiteURL: String?
 
         struct Review: Decodable, Identifiable {
             let authorName: String
@@ -97,6 +102,7 @@ enum GooglePlacesService {
                 priceRange: (raw.priceRange?.isEmpty ?? true) ? nil : raw.priceRange,
                 cuisine: raw.cuisine,
                 mapsURLString: raw.mapsURL,
+                websiteURLString: raw.websiteURL,
                 coordinate: coordinate,
                 photoNames: raw.photoNames ?? []
             )
@@ -156,6 +162,7 @@ enum GooglePlacesService {
         let priceRange: String?
         let cuisine: String?
         let mapsURL: String?
+        let websiteURL: String?
         let latitude: Double?
         let longitude: Double?
         let photoNames: [String]?

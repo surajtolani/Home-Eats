@@ -88,4 +88,32 @@ final class IngredientLineParserTests: XCTestCase {
         XCTAssertNil(entry.quantity)
         XCTAssertEqual(entry.displayText, "Salt to taste")
     }
+
+    // MARK: - Count-noun units ("loaf", "head", ...)
+
+    func testRecognizesLoafAsAUnit() {
+        let entry = IngredientLineParser.parse("1 loaf brioche bread (Cut into thick slices)")
+        XCTAssertEqual(entry.quantity, 1)
+        XCTAssertEqual(entry.unit, "loaf")
+        XCTAssertEqual(entry.name, "brioche bread (Cut into thick slices)")
+    }
+
+    func testRecognizesHeadAsAUnit() {
+        let entry = IngredientLineParser.parse("2 heads garlic")
+        XCTAssertEqual(entry.quantity, 2)
+        XCTAssertEqual(entry.unit, "heads")
+        XCTAssertEqual(entry.name, "garlic")
+    }
+
+    // MARK: - Doubled/nested parentheses
+
+    func testCollapsesDoubledParens() {
+        let entry = IngredientLineParser.parse("1 loaf brioche bread ((Cut into thick slices))")
+        XCTAssertEqual(entry.name, "brioche bread (Cut into thick slices)")
+    }
+
+    func testCollapsesDoubledParensAcrossWhitespace() {
+        let entry = IngredientLineParser.parse("1 cup flour ( ( sifted ) )")
+        XCTAssertEqual(entry.name, "flour (sifted)")
+    }
 }

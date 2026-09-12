@@ -21,6 +21,22 @@ enum IngredientNameCleaner {
         #",?\s+if desired\.?$"#
     ]
 
+    /// Prep/action words that, right after a comma, mean everything from
+    /// there on is a trailing instruction to cut ("chicken breast, diced" ->
+    /// "chicken breast") rather than part of the ingredient name itself. A
+    /// comma can just as easily separate two leading descriptors instead
+    /// ("skinless, boneless chicken thighs") — only cutting when the text
+    /// right after the comma actually starts with one of these is what
+    /// keeps that case intact instead of truncating down to "Skinless".
+    private static let prepWordsAfterComma: Set<String> = [
+        "diced", "sliced", "chopped", "minced", "peeled", "seeded", "crushed",
+        "grated", "melted", "softened", "beaten", "drained", "rinsed",
+        "shredded", "julienned", "cubed", "halved", "quartered", "trimmed",
+        "cut", "zested", "juiced", "mashed", "toasted", "roasted", "cooked",
+        "divided", "packed", "sifted", "washed", "patted", "torn", "crumbled",
+        "finely", "coarsely", "roughly", "thinly", "thickly", "freshly"
+    ]
+
     /// Ingredients that never belong on a shopping list — not real
     /// purchasable grocery items, just things every kitchen already has.
     /// Matched after cleaning + `GroceryListBuilder.canonicalKey`, so
@@ -38,15 +54,40 @@ enum IngredientNameCleaner {
         var result = rawName
 
         // Parenthetical asides: "(to cook in)", "(optional)", "(for serving)".
-        result = result.replacingOccurrences(
-            of: #"\s*\([^)]*\)"#, with: "", options: .regularExpression
-        )
+        // Looped rather than a single pass: `IngredientLineParser.normalize`
+        // already collapses doubled/nested parens before this ever runs,
+        // but a name built or edited some other way could still carry more
+        // than one parenthetical, and `[^)]*` only ever strips one level
+        // per pass.
+        while result.range(of: #"\s*\([^)]*\)"#, options: .regularExpression) != nil {
+            result = result.replacingOccurrences(
+                of: #"\s*\([^)]*\)"#, with: "", options: .regularExpression
+            )
+        }
+        // A stray, unmatched paren can still be left behind — e.g. a
+        // trailing ")" with no opening "(" on this side of a comma-split
+        // that already happened above, or source text that was simply
+        // malformed to begin with. Not a real ingredient character, so it's
+        // always safe to drop rather than show it on the shopping list.
+        result = result.replacingOccurrences(of: "(", with: "")
+        result = result.replacingOccurrences(of: ")", with: "")
 
-        // Everything after the first comma is almost always a prep
-        // instruction ("diced", "cut into thick slices", "melted"), not
-        // part of the ingredient itself.
+        // A comma right before a recognized prep/action word is a trailing
+        // instruction ("chicken breast, diced", "onion, cut into thick
+        // slices") and everything from there on gets dropped. A comma
+        // *not* followed by one of those is far more likely separating
+        // leading descriptors instead ("skinless, boneless chicken
+        // thighs") — cutting there would wrongly truncate the name down to
+        // just "Skinless", so it's left alone.
         if let commaIndex = result.firstIndex(of: ",") {
-            result = String(result[result.startIndex..<commaIndex])
+            let afterComma = result[result.index(after: commaIndex)...]
+                .trimmingCharacters(in: .whitespaces)
+            let firstWord = afterComma
+                .prefix(while: { $0.isLetter })
+                .lowercased()
+            if prepWordsAfterComma.contains(firstWord) {
+                result = String(result[result.startIndex..<commaIndex])
+            }
         }
 
         // Catches the same phrases when they show up without a comma.
