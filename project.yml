@@ -61,6 +61,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: family.homeeats.app
         PRODUCT_NAME: "Home Eats"
+        # Pinned so Xcode's Signing & Capabilities team selection survives
+        # `xcodegen generate` — without this, regenerating the project (e.g.
+        # after pulling new files) silently reverts to no team selected,
+        # which is the "Signing for HomeEats requires a development team"
+        # error. CODE_SIGN_STYLE: Automatic lets Xcode still manage
+        # provisioning profiles itself once this team is set.
+        DEVELOPMENT_TEAM: N9Z99NUSB9
+        CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "0.1.0"
         # Apple requires every new TestFlight/App Store upload to have a
         # strictly higher build number than the last one uploaded for this
