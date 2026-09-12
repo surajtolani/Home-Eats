@@ -1,5 +1,18 @@
 import CoreLocation
 
+/// `CLLocationCoordinate2D` doesn't conform to `Equatable` on its own (it's
+/// a plain C struct bridged from CoreLocation) — needed here so
+/// `RestaurantListView` can `.onChange(of: locationProvider.coordinate)` to
+/// notice a fresh fix and forward it into `RestaurantSearchModel`. Just
+/// compares the two doubles directly; exact equality is fine since this is
+/// never used for "did the user move" comparisons, only "did a new location
+/// value just get published."
+extension CLLocationCoordinate2D: Equatable {
+    public static func == (lhs: CLLocationCoordinate2D, rhs: CLLocationCoordinate2D) -> Bool {
+        lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude
+    }
+}
+
 /// A lightweight, one-shot "where is the user right now" helper — just
 /// enough to bias a restaurant search toward nearby results, not a full
 /// location-tracking subsystem. Requests "when in use" permission on first
