@@ -33,6 +33,12 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # Without this, App Store Connect requires all 4 orientations to be
+        # declared (to support iPad Split View/Slide Over multitasking),
+        # even for an iPhone-only, portrait-only app like this one. This
+        # tells Apple the app doesn't support multitasking at all, which is
+        # true by design here — not a workaround, the accurate declaration.
+        UIRequiresFullScreen: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         CFBundleDisplayName: Home Eats
