@@ -12,7 +12,13 @@ settings:
   base:
     SWIFT_VERSION: 5.0
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-    TARGETED_DEVICE_FAMILY: "1"
+    # "1,2" = iPhone + iPad, so the same build installs and runs on either —
+    # still portrait-only/UIRequiresFullScreen everywhere, so on iPad this
+    # runs full-screen in the standard iPhone-compatibility scaled window
+    # rather than a native iPad layout (nothing here has been built with
+    # size classes/adaptive layout for a real iPad-optimized UI yet). Fine
+    # for functional testing; a proper iPad layout is separate, later work.
+    TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_PREVIEWS: YES
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     DEVELOPMENT_ASSET_PATHS: ""
