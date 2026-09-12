@@ -11,12 +11,20 @@ import SwiftData
 struct DayDetailView: View {
     let date: Date
 
+    // Owned here rather than inside `DaySlotsView` — see the note above
+    // `DaySlotsView.activeSheet` for why, and why `.sheet(item:)` is
+    // attached to this `Form` itself instead of to anything nested inside it.
+    @State private var activeSheet: SheetAction?
+
     var body: some View {
         Form {
-            DaySlotsView(date: date)
+            DaySlotsView(date: date, activeSheet: $activeSheet)
         }
         .navigationTitle(date.formatted(Date.weekdayFull))
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $activeSheet) { action in
+            MealSheetContent(action: action, date: date, activeSheet: $activeSheet)
+        }
     }
 }
 
@@ -40,7 +48,45 @@ struct DaySlotsView: View {
     @Query(sort: \MealSuggestion.createdAt) private var allSuggestions: [MealSuggestion]
     @Query(sort: \FamilyMember.createdAt) private var members: [FamilyMember]
 
-    @State private var activeSheet: SheetAction?
+    /// Which sheet slot/meal action is pending, if any — owned by whichever
+    /// screen embeds this view (`DayDetailView`'s `Form`, or
+    /// `CalendarPlanView`'s `List`), not by this view itself.
+    ///
+    /// This used to be a plain `@State` here, with `.sheet(item:)` attached
+    /// directly to this view's own `body` (below). That worked fine pushed
+    /// inside `DayDetailView`'s `Form`, but flashed-then-immediately-dismissed
+    /// the first time it was tapped from `CalendarPlanView`'s inline day
+    /// panel — exactly the "pops up and disappears, works the second time"
+    /// symptom, for a plain button this time, not a `Menu` one (that's the
+    /// unrelated race `presentAfterMenuDismiss` fixes, above).
+    ///
+    /// The mechanism: `CalendarPlanView` embeds this view's content directly
+    /// as rows inside a `List` that also carries
+    /// `.animation(.default, value: selectedDate)` on the whole `List`, to
+    /// animate the day panel sliding to a new day's plan. A `.sheet`
+    /// modifier attached to content nested *inside* that `List`'s row
+    /// content — rather than on the `List` itself — presents by asking the
+    /// row's own hosting controller to present modally; but that same
+    /// `List`, being backed by `UICollectionView`, can concurrently run an
+    /// animated batch-update pass over its rows whenever *any* dependency
+    /// tracked by the animated `List` changes state, and the two animated
+    /// transactions (UIKit's modal-presentation animation and the list's row
+    /// batch-update animation) race. When the list's batch update wins, the
+    /// presenting row gets invalidated/re-laid-out mid-presentation and the
+    /// sheet is torn back down before it finishes appearing — resetting
+    /// `activeSheet` to `nil` in the process, which is why tapping the exact
+    /// same button again works: that second tap has no competing batch
+    /// update in flight. `DayDetailView`'s plain `Form` has no `.animation`
+    /// modifier, so it never raced and never showed the bug.
+    ///
+    /// The fix is to stop presenting from inside the animated `List`'s row
+    /// content at all: each caller now owns `activeSheet` itself and attaches
+    /// `.sheet(item:)` to its own `Form`/`List` root (outside any row/section
+    /// content, and outside the `.animation` modifier's subtree), passing a
+    /// binding down into this view instead. This view only ever *sets* the
+    /// binding; the sheet's content is built by `MealSheetContent`, below,
+    /// which each caller instantiates from its own `.sheet(item:)`.
+    @Binding var activeSheet: SheetAction?
 
     private var normalizedDate: Date { PlannedMeal.normalize(date) }
 
@@ -55,11 +101,10 @@ struct DaySlotsView: View {
     }
 
     var body: some View {
+        // No `.sheet` here anymore — see `activeSheet` above for why. Each
+        // caller attaches it to its own `Form`/`List` root instead.
         ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
             slotSection(slot)
-        }
-        .sheet(item: $activeSheet) { action in
-            sheetContent(for: action)
         }
     }
 
@@ -146,8 +191,98 @@ struct DaySlotsView: View {
         }
     }
 
-    @ViewBuilder
-    private func sheetContent(for action: SheetAction) -> some View {
+    private func toggleVote(on suggestion: MealSuggestion) {
+        guard let memberID = activeUserSession.activeMemberID else { return }
+        suggestion.toggleVote(for: memberID)
+    }
+
+    /// "Use This" on a suggestion — decides it the same way `MealSheetContent`
+    /// decides a freshly-picked recipe/restaurant (via the same shared
+    /// `decideMeal` helper), just triggered directly by this row's button
+    /// rather than from inside a picker sheet's `onPick`.
+    private func adopt(_ suggestion: MealSuggestion) {
+        let reminder = decideMeal(
+            slot: suggestion.slot,
+            date: date,
+            recipe: suggestion.recipe,
+            restaurant: suggestion.restaurant,
+            isOrderIn: suggestion.isOrderIn,
+            decidedByMemberID: activeUserSession.activeMemberID,
+            modelContext: modelContext
+        )
+        modelContext.delete(suggestion)
+        if let reminder {
+            Task { @MainActor in
+                activeSheet = .setOrderReminder(reminder.meal, reminder.restaurant)
+            }
+        }
+    }
+
+    /// Withdraws a suggestion you (or anyone) proposed — for when whoever
+    /// suggested it changes their mind, rather than leaving it sitting
+    /// there to be voted on or adopted.
+    private func removeSuggestion(_ suggestion: MealSuggestion) {
+        modelContext.delete(suggestion)
+    }
+}
+
+/// Creates and inserts a `PlannedMeal` for a decided slot — shared by
+/// `DaySlotsView.adopt(_:)` (adopting an existing suggestion directly) and
+/// `MealSheetContent`'s own picker callbacks (deciding a freshly-picked
+/// recipe/restaurant), so the two paths can't drift apart. Returns the
+/// meal + restaurant to offer a reminder for when this decision is an
+/// order-in; the caller is responsible for actually presenting that
+/// reminder sheet, deferred to the next run loop turn when called from
+/// inside a picker sheet's `onPick` — that callback runs immediately
+/// before that sheet's own `dismiss()`, and changing `activeSheet`
+/// synchronously in the same tick would race it.
+@discardableResult
+private func decideMeal(
+    slot: MealSlot,
+    date: Date,
+    recipe: Recipe? = nil,
+    restaurant: Restaurant? = nil,
+    isOrderIn: Bool = false,
+    decidedByMemberID: UUID?,
+    modelContext: ModelContext
+) -> (meal: PlannedMeal, restaurant: Restaurant)? {
+    let meal = PlannedMeal(
+        date: PlannedMeal.normalize(date),
+        slot: slot,
+        recipe: recipe,
+        restaurant: restaurant,
+        isOrderIn: isOrderIn,
+        decidedByMemberID: decidedByMemberID
+    )
+    modelContext.insert(meal)
+    if isOrderIn, let restaurant {
+        return (meal, restaurant)
+    }
+    return nil
+}
+
+/// Builds the actual sheet content for a `SheetAction`, and performs the
+/// data mutations (creating a `PlannedMeal` or `MealSuggestion`) each picker's
+/// `onPick` triggers. Pulled out of `DaySlotsView` so it can be handed
+/// straight to whichever caller's own `.sheet(item:)` builds it — see the
+/// note on `DaySlotsView.activeSheet` for why that modifier no longer lives
+/// on `DaySlotsView` itself. Declared as its own `View` (not a free function)
+/// specifically so its `@Environment`/`@Query` properties get populated the
+/// normal way, by SwiftUI actually mounting it as the sheet's root content —
+/// calling methods directly on a `DaySlotsView` value built outside the view
+/// hierarchy wouldn't reliably see the right `modelContext` et al.
+struct MealSheetContent: View {
+    let action: SheetAction
+    let date: Date
+    @Binding var activeSheet: SheetAction?
+
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var activeUserSession: ActiveUserSession
+    @Query(sort: \FamilyMember.createdAt) private var members: [FamilyMember]
+
+    private var normalizedDate: Date { PlannedMeal.normalize(date) }
+
+    var body: some View {
         switch action {
         case .addRecipe(let slot):
             RecipePickerSheet { recipe in
@@ -181,26 +316,18 @@ struct DaySlotsView: View {
     }
 
     private func decide(slot: MealSlot, recipe: Recipe? = nil, restaurant: Restaurant? = nil, isOrderIn: Bool = false) {
-        let meal = PlannedMeal(
-            date: normalizedDate,
+        let reminder = decideMeal(
             slot: slot,
+            date: date,
             recipe: recipe,
             restaurant: restaurant,
             isOrderIn: isOrderIn,
-            decidedByMemberID: activeUserSession.activeMemberID
+            decidedByMemberID: activeUserSession.activeMemberID,
+            modelContext: modelContext
         )
-        modelContext.insert(meal)
-
-        // Immediately offer to set a reminder for an order-in meal — the
-        // whole point of ordering in is placing the order by some specific
-        // time, easy to forget once the day gets busy. Deferred to the next
-        // run loop turn rather than set synchronously here, since this
-        // closure runs from inside `RestaurantPickerSheet`'s `onPick`,
-        // immediately followed by that sheet's own `dismiss()` — changing
-        // `activeSheet` in the same tick would race that dismissal.
-        if isOrderIn, let restaurant {
+        if let reminder {
             Task { @MainActor in
-                activeSheet = .setOrderReminder(meal, restaurant)
+                activeSheet = .setOrderReminder(reminder.meal, reminder.restaurant)
             }
         }
     }
@@ -217,29 +344,16 @@ struct DaySlotsView: View {
         )
         modelContext.insert(suggestion)
     }
-
-    private func toggleVote(on suggestion: MealSuggestion) {
-        guard let memberID = activeUserSession.activeMemberID else { return }
-        suggestion.toggleVote(for: memberID)
-    }
-
-    private func adopt(_ suggestion: MealSuggestion) {
-        decide(slot: suggestion.slot, recipe: suggestion.recipe, restaurant: suggestion.restaurant, isOrderIn: suggestion.isOrderIn)
-        modelContext.delete(suggestion)
-    }
-
-    /// Withdraws a suggestion you (or anyone) proposed — for when whoever
-    /// suggested it changes their mind, rather than leaving it sitting
-    /// there to be voted on or adopted.
-    private func removeSuggestion(_ suggestion: MealSuggestion) {
-        modelContext.delete(suggestion)
-    }
 }
 
 /// Identifies which sheet is presented, and with what context, from a single
 /// `@State` var rather than a pile of booleans (each day has 4 slots × 4
 /// possible add/suggest actions, plus per-meal logging).
-private enum SheetAction: Identifiable {
+///
+/// Internal (not `private`) — both `DayDetailView` and `CalendarPlanView`
+/// (in a different file) own their own `@State` of this type and pass a
+/// binding down into `DaySlotsView`.
+enum SheetAction: Identifiable {
     case addRecipe(MealSlot)
     case addRestaurant(MealSlot)
     case orderIn(MealSlot)

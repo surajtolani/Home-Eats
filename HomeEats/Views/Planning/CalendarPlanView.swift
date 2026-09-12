@@ -26,6 +26,20 @@ struct CalendarPlanView: View {
     @State private var displayedMonth: Date = Calendar.current.startOfMonth(for: .now)
     @State private var selectedDate: Date = Calendar.current.startOfDay(for: .now)
     @State private var viewMode: PlanViewMode = .calendar
+    /// Owned here, not inside `DaySlotsView` — and `.sheet(item:)` below is
+    /// attached to `calendarWithAgenda`'s `List` itself, not to any content
+    /// nested inside it. See the long note on `DaySlotsView.activeSheet` in
+    /// DayDetailView.swift: presenting from inside this `List`'s own row
+    /// content raced the `.animation(.default, value: selectedDate)` below
+    /// (a `List`, backed by `UICollectionView`, can run an animated batch
+    /// update over its rows concurrently with a `.sheet`'s own UIKit
+    /// presentation animation when both are triggered close together, and
+    /// the sheet loses that race — flashing on screen for a frame and being
+    /// torn back down, "add a recipe" reopening fine on a second tap since
+    /// there's no competing batch update the second time). Presenting from
+    /// the `List`'s own root instead of its row content sidesteps that race
+    /// entirely.
+    @State private var activeSheet: SheetAction?
     /// Weeks away from the current week, for the Weekly agenda's own
     /// prev/next navigation — independent of Calendar mode's month/date
     /// state, since the two views page through time on different units.
@@ -115,7 +129,7 @@ struct CalendarPlanView: View {
                     .listRowSeparator(.hidden)
             }
 
-            DaySlotsView(date: selectedDate)
+            DaySlotsView(date: selectedDate, activeSheet: $activeSheet)
         }
         .listStyle(.plain)
         // Re-animates the day panel's content sliding to a new day's plan
@@ -124,6 +138,11 @@ struct CalendarPlanView: View {
         // date in the grid above — one consistent transition regardless of
         // which of the three actually changed it.
         .animation(.default, value: selectedDate)
+        // Deliberately attached out here, to the `List` itself, rather than
+        // to any content declared inside it — see `activeSheet` above.
+        .sheet(item: $activeSheet) { action in
+            MealSheetContent(action: action, date: selectedDate, activeSheet: $activeSheet)
+        }
     }
 
     /// The selected day's own big header, styled like "Plan the Week"'s
