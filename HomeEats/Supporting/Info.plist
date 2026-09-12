@@ -11,6 +11,8 @@
     </dict>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <key>NSCameraUsageDescription</key>
+    <string>Home Eats uses your camera to photograph a recipe (a cookbook page, a recipe card, a handwritten note) so it can be added to your recipe box.</string>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UISupportedInterfaceOrientations</key>

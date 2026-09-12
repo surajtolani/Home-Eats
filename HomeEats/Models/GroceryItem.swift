@@ -31,7 +31,11 @@ final class GroceryItem {
     /// Human-readable combined quantity, e.g. "3 cups" or "2 (from 2 recipes)".
     var quantityText: String
     var isChecked: Bool
-    /// Which week (Sunday start date, normalized) this line belongs to.
+    /// Vestigial: the grocery list used to be regenerated fresh per calendar
+    /// week, and this recorded which one a line belonged to. The list is now
+    /// a single persistent, standing list — nothing reads this for
+    /// filtering anymore — kept only so existing rows don't need a
+    /// migration; new rows just default to their creation time.
     var weekStartDate: Date
     /// Recipes that contributed to this line, for provenance ("needed for: Tacos, Chili").
     var sourceRecipeIDs: [UUID]
@@ -64,7 +68,7 @@ final class GroceryItem {
         section: GroceryListSection,
         quantityText: String = "",
         isChecked: Bool = false,
-        weekStartDate: Date,
+        weekStartDate: Date = .now,
         sourceRecipeIDs: [UUID] = [],
         selectedProductOptionID: UUID? = nil,
         isManuallyAdded: Bool = false,

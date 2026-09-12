@@ -17,6 +17,7 @@ struct RecipeAIImportView: View {
     @State private var isExtracting = false
     @State private var errorMessage: String?
     @State private var draft: RecipeDraft?
+    @State private var showCamera = false
 
     private var canExtract: Bool {
         imageData != nil || !notesText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -32,17 +33,34 @@ struct RecipeAIImportView: View {
                     }
                 }
                 Section("Photo") {
-                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                        if let imageData, let uiImage = UIImage(data: imageData) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxHeight: 200)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        } else {
-                            Label("Add a Photo", systemImage: "camera")
+                    if let imageData, let uiImage = UIImage(data: imageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 200)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Button("Remove Photo", role: .destructive) {
+                            self.imageData = nil
+                            selectedPhotoItem = nil
                         }
                     }
+                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                        Button {
+                            showCamera = true
+                        } label: {
+                            Label(imageData == nil ? "Take a Photo" : "Retake Photo", systemImage: "camera")
+                        }
+                    }
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        Label(imageData == nil ? "Choose From Library" : "Choose a Different Photo", systemImage: "photo.on.rectangle")
+                    }
+                } footer: {
+                    // `allowsEditing` on the camera capture gives a built-in
+                    // crop/rotate step — handy for trimming a whole cookbook
+                    // page photo down to just the dish's own picture, and it
+                    // also guarantees the result comes back right-side-up
+                    // regardless of how the phone was held for the shot.
+                    Text("Taking a photo lets you crop and straighten it right after — handy for a cookbook page where you only want the dish photo, not the whole spread.")
                 }
                 Section {
                     TextEditor(text: $notesText)
@@ -99,6 +117,15 @@ struct RecipeAIImportView: View {
                         imageData = ImageResizing.downsized(data, maxDimension: 1000)
                     }
                 }
+            }
+            .fullScreenCover(isPresented: $showCamera) {
+                CameraImagePicker { captured in
+                    showCamera = false
+                    guard let captured else { return }
+                    selectedPhotoItem = nil
+                    imageData = ImageResizing.downsized(captured, maxDimension: 1000)
+                }
+                .ignoresSafeArea()
             }
         }
     }

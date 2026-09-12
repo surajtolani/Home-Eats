@@ -1,11 +1,9 @@
 import SwiftUI
 import SwiftData
 
-/// Adds a one-off item straight to this week's list — for the "oh, we also
+/// Adds a one-off item straight to the grocery list — for the "oh, we also
 /// need X" case that doesn't belong in a recipe or the standing staples list.
 struct AddGroceryItemSheet: View {
-    let weekStart: Date
-
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
@@ -32,7 +30,7 @@ struct AddGroceryItemSheet: View {
                     }
                 }
                 Picker("List", selection: $section) {
-                    Text("This Week").tag(GroceryListSection.thisWeek)
+                    Text("Grocery List").tag(GroceryListSection.thisWeek)
                     Text("Staples").tag(GroceryListSection.staples)
                 }
                 .pickerStyle(.segmented)
@@ -61,7 +59,6 @@ struct AddGroceryItemSheet: View {
             category: category,
             section: section,
             quantityText: quantityText,
-            weekStartDate: weekStart,
             isManuallyAdded: true
         )
         modelContext.insert(item)
