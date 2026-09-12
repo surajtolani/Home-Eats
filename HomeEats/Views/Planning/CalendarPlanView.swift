@@ -261,9 +261,11 @@ struct CalendarPlanView: View {
             Spacer()
             Text(weekRangeText)
                 .font(.brandTitle2.bold())
+                .foregroundStyle(Color.brandForest)
             Spacer()
             Button { weekOffset += 1 } label: { Image(systemName: "chevron.right") }
         }
+        .foregroundStyle(Color.brandForest)
         .buttonStyle(.borderless)
     }
 
@@ -274,6 +276,7 @@ struct CalendarPlanView: View {
             Section {
                 weekHeader
                     .listRowSeparator(.hidden)
+                    .padding(.vertical, 4)
 
                 ForEach(days, id: \.self) { day in
                     NavigationLink {
@@ -286,6 +289,8 @@ struct CalendarPlanView: View {
                             isPast: day < today
                         )
                     }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowSeparator(.hidden)
                 }
             }
         }
@@ -376,43 +381,83 @@ private struct AgendaDayRow: View {
     let suggestionCount: Int
     let isPast: Bool
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(date.formatted(Date.weekdayFull)).font(.brandHeadline)
-                Text(date.formatted(Date.monthDay)).font(.brandCaption).foregroundStyle(.secondary)
-                if Calendar.current.isDateInToday(date) {
-                    Text("Today")
-                        .font(.brandCaption2.bold())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                }
-            }
+    private var isEmpty: Bool { meals.isEmpty && suggestionCount == 0 }
 
-            if meals.isEmpty && suggestionCount == 0 {
-                Text("Not planned").font(.brandSubheadline).foregroundStyle(.secondary)
-            } else {
-                ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
-                    let slotMeals = meals.filter { $0.slot == slot }
-                    if !slotMeals.isEmpty {
-                        HStack(spacing: 4) {
-                            Image(systemName: slot.symbolName)
-                                .font(.brandCaption2)
-                                .foregroundStyle(.secondary)
-                            Text(slotMeals.map(\.displayTitle).joined(separator: ", "))
-                                .font(.brandSubheadline)
-                        }
+    /// The same per-kind icon/color convention as the day screen's own
+    /// `PlannedMealRow` and `SuggestionRow` — a recipe, an eat-out plan, and
+    /// an order-in plan all read distinctly here too, and it's the same
+    /// palette as the calendar grid's own legend dots above.
+    private func iconName(for meal: PlannedMeal) -> String {
+        if meal.recipe != nil { return "frying.pan" }
+        return meal.isOrderingIn ? "bag" : "fork.knife"
+    }
+    private func iconColor(for meal: PlannedMeal) -> Color {
+        if meal.recipe != nil { return .brandForest }
+        return meal.isOrderingIn ? .brandHoney : .brandTerracotta
+    }
+
+    /// The card's own leading accent color — whichever kind of meal shows
+    /// up first for the day (by slot order), or sage if nothing's decided
+    /// yet but a suggestion is pending, or a neutral gray with nothing at
+    /// all going on.
+    private var accentColor: Color {
+        if let firstMeal = meals.sorted(by: { $0.slot.sortIndex < $1.slot.sortIndex }).first {
+            return iconColor(for: firstMeal)
+        }
+        return suggestionCount > 0 ? .brandSage : Color.secondary.opacity(0.3)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(accentColor)
+                .frame(width: 4)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(date.formatted(Date.weekdayFull)).font(.brandHeadline)
+                    Text(date.formatted(Date.monthDay)).font(.brandCaption).foregroundStyle(.secondary)
+                    if Calendar.current.isDateInToday(date) {
+                        Text("Today")
+                            .font(.brandCaption2.bold())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.brandForest))
                     }
                 }
-                if suggestionCount > 0 {
-                    Text("\(suggestionCount) suggestion(s) pending")
-                        .font(.brandCaption)
+
+                if isEmpty {
+                    Label("Not planned", systemImage: "circle.dashed")
+                        .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
+                } else {
+                    ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
+                        let slotMeals = meals.filter { $0.slot == slot }
+                        if !slotMeals.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: iconName(for: slotMeals[0]))
+                                    .font(.brandCaption2)
+                                    .foregroundStyle(iconColor(for: slotMeals[0]))
+                                Text(slotMeals.map(\.displayTitle).joined(separator: ", "))
+                                    .font(.brandSubheadline)
+                            }
+                        }
+                    }
+                    if suggestionCount > 0 {
+                        Label("\(suggestionCount) suggestion(s) pending", systemImage: "hand.thumbsup")
+                            .font(.brandCaption)
+                            .foregroundStyle(Color.brandSage)
+                    }
                 }
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Calendar.current.isDateInToday(date) ? Color.brandForest.opacity(0.08) : Color.secondary.opacity(0.06))
+        )
         .opacity(isPast ? 0.45 : 1)
     }
 }
