@@ -47,18 +47,74 @@ enum SchemaOrgRecipeParser {
     /// embedded JSON-LD block (quotes especially) even though it's meant to
     /// be raw JSON — left alone, that silently breaks `JSONSerialization`
     /// parsing (a caught error, not a crash), which looks identical to the
-    /// page just not having a recipe at all. `&amp;` has to run last since
-    /// it's a prefix of how the others were originally escaped.
-    private static func decodeHTMLEntities(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#34;", with: "\"")
-            .replacingOccurrences(of: "&#039;", with: "'")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&apos;", with: "'")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&amp;", with: "&")
+    /// page just not having a recipe at all. Beyond that structural case,
+    /// WordPress (which most recipe blogs, including Love and Lemons, run
+    /// on) also runs post content through its own "smart" typography pass
+    /// before it ever reaches the page — curly quotes, en/em dashes, and
+    /// spelled-out fraction glyphs come out the other side as literal
+    /// `&#8217;`-style numeric entities even inside an otherwise
+    /// well-formed JSON-LD block, so an ingredient can come through as
+    /// "Trader Joe&#8217;s Butter" instead of "Trader Joe's Butter" unless
+    /// something on this side decodes it back. `&amp;`/`&#38;` have to run
+    /// last since they're a prefix of how a double-escaped entity
+    /// (`&amp;quot;`) was originally produced.
+    static func decodeHTMLEntities(_ text: String) -> String {
+        var result = text
+        for (entity, replacement) in namedHTMLEntityReplacements {
+            result = result.replacingOccurrences(of: "&\(entity);", with: replacement)
+        }
+        // Catches everything the named table above doesn't — any
+        // `&#8217;` (decimal) or `&#x2019;` (hex) numeric reference,
+        // decoded to its actual Unicode character.
+        result = decodeNumericHTMLEntities(in: result)
+        result = result.replacingOccurrences(of: "&amp;", with: "&")
+        return result
+    }
+
+    /// Common named entities recipe pages actually emit. Order matters:
+    /// multi-character entities that share a prefix with a later one
+    /// (`&apos;` vs. the bare ampersand `&amp;`) are listed before `&amp;`,
+    /// which is applied separately, last, in `decodeHTMLEntities` above.
+    private static let namedHTMLEntityReplacements: [(String, String)] = [
+        ("quot", "\""), ("apos", "'"), ("lt", "<"), ("gt", ">"),
+        ("nbsp", "\u{00A0}"),
+        ("lsquo", "\u{2018}"), ("rsquo", "\u{2019}"),
+        ("ldquo", "\u{201C}"), ("rdquo", "\u{201D}"),
+        ("ndash", "\u{2013}"), ("mdash", "\u{2014}"), ("hellip", "\u{2026}"),
+        ("deg", "\u{00B0}"),
+        ("frac12", "\u{00BD}"), ("frac14", "\u{00BC}"), ("frac34", "\u{00BE}"),
+        ("frac13", "\u{2153}"), ("frac23", "\u{2154}")
+    ]
+
+    /// Decodes every `&#NNN;` (decimal) and `&#xHHHH;` (hex) numeric
+    /// character reference to its actual Unicode character. A malformed or
+    /// out-of-range reference is left exactly as it was rather than dropped,
+    /// so a parsing mistake here never silently eats real text.
+    private static func decodeNumericHTMLEntities(in text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"&#(x[0-9A-Fa-f]+|\d+);"#, options: [.caseInsensitive]) else {
+            return text
+        }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return text }
+
+        var result = ""
+        var cursor = 0
+        for match in matches {
+            result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            let codeText = ns.substring(with: match.range(at: 1))
+            let scalarValue = codeText.lowercased().hasPrefix("x")
+                ? UInt32(codeText.dropFirst(), radix: 16)
+                : UInt32(codeText)
+            if let scalarValue, let scalar = Unicode.Scalar(scalarValue) {
+                result.append(Character(scalar))
+            } else {
+                result += ns.substring(with: match.range)
+            }
+            cursor = match.range.location + match.range.length
+        }
+        result += ns.substring(from: cursor)
+        return result
     }
 
     static func findRecipeObjects(in json: Any) -> [[String: Any]] {
@@ -72,10 +128,16 @@ enum SchemaOrgRecipeParser {
             return false
         }
 
+        // Walks *every* nested value, not just `@graph` — Yoast/RankMath-
+        // style SEO plugins commonly nest the actual `Recipe` node under a
+        // `WebPage`'s `mainEntity`, or other structures entirely, rather
+        // than as a sibling entry in `@graph`. Recursing into every value
+        // (not just a specific known key) means wherever a site's plugin
+        // happens to bury the `Recipe` node, this still finds it.
         func walk(_ node: Any) {
             if let dict = node as? [String: Any] {
                 if typeMatches(dict) { results.append(dict) }
-                if let graph = dict["@graph"] { walk(graph) }
+                for value in dict.values { walk(value) }
             } else if let array = node as? [Any] {
                 array.forEach(walk)
             }

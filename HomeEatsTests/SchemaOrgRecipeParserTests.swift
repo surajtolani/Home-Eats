@@ -83,6 +83,42 @@ final class SchemaOrgRecipeParserTests: XCTestCase {
         XCTAssertEqual(parsed?.ingredientLines, ["1 cup rice"])
     }
 
+    /// Regression test: WordPress (which most recipe blogs run on, Love and
+    /// Lemons included) runs post content through its own typography pass
+    /// before it's ever rendered, so curly quotes/apostrophes commonly come
+    /// through as literal numeric HTML entities even inside an otherwise
+    /// well-formed embedded JSON-LD block.
+    func testDecodesNumericHTMLEntitiesInIngredientText() {
+        let html = """
+        <script type="application/ld+json">
+        {"@type": "Recipe", "name": "Trader Joe&#8217;s Chia Pudding", "recipeIngredient": ["2 tbsp Trader Joe&#8217;s chia seeds", "1&#189; cups almond milk"], "recipeInstructions": "Stir &amp; chill."}
+        </script>
+        """
+        let parsed = SchemaOrgRecipeParser.parse(html: html)
+        XCTAssertEqual(parsed?.name, "Trader Joe\u{2019}s Chia Pudding")
+        XCTAssertEqual(parsed?.ingredientLines, ["2 tbsp Trader Joe\u{2019}s chia seeds", "1\u{00BD} cups almond milk"])
+        XCTAssertEqual(parsed?.instructions, ["Stir & chill."])
+    }
+
+    /// Regression test: Yoast/RankMath-style SEO plugins often nest the
+    /// actual `Recipe` node under a `WebPage`'s `mainEntity` rather than as
+    /// a sibling entry directly inside `@graph`.
+    func testFindsRecipeNestedUnderMainEntity() {
+        let html = """
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@graph": [
+          {"@type": "WebPage", "name": "Some Page", "mainEntity": {
+            "@type": "Recipe", "name": "Main Entity Recipe", "recipeIngredient": ["1 cup oats"]
+          }},
+          {"@type": "Organization", "name": "Some Blog"}
+        ]}
+        </script>
+        """
+        let parsed = SchemaOrgRecipeParser.parse(html: html)
+        XCTAssertEqual(parsed?.name, "Main Entity Recipe")
+        XCTAssertEqual(parsed?.ingredientLines, ["1 cup oats"])
+    }
+
     func testParsesISO8601Duration() {
         XCTAssertEqual(SchemaOrgRecipeParser.parseISO8601Duration("PT1H30M"), 90)
         XCTAssertEqual(SchemaOrgRecipeParser.parseISO8601Duration("PT45M"), 45)
