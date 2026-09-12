@@ -7,7 +7,7 @@ import CoreLocation
 /// compares the two doubles directly; exact equality is fine since this is
 /// never used for "did the user move" comparisons, only "did a new location
 /// value just get published."
-extension CLLocationCoordinate2D: Equatable {
+extension CLLocationCoordinate2D: @retroactive Equatable {
     public static func == (lhs: CLLocationCoordinate2D, rhs: CLLocationCoordinate2D) -> Bool {
         lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude
     }
