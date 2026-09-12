@@ -23,12 +23,14 @@ final class Restaurant {
     var address: String?
     var isFavorite: Bool
     var createdAt: Date
-    /// A stable Google Places photo resource name ("places/ID/photos/REF"),
+    /// Stable Google Places photo resource names ("places/ID/photos/REF"),
     /// captured when this restaurant was added from a Google search result
-    /// — `GooglePlacesService.photoURL(for:)` turns it into an actual
-    /// image URL on demand rather than downloading/storing the image
-    /// itself, so it costs nothing until someone actually views it.
-    var googlePhotoName: String?
+    /// — `GooglePlacesService.photoURL(for:)` turns each one into an
+    /// actual image URL on demand rather than downloading/storing the
+    /// images themselves, so browsing them costs nothing until someone
+    /// actually swipes to a given photo. Empty for a restaurant added
+    /// manually or via the MapKit fallback.
+    var googlePhotoNames: [String] = []
     /// Google's own place ID, captured when added from a Google search
     /// result — lets the detail page fetch that place's hours/phone/
     /// reviews later via `GooglePlacesService.placeDetails(placeID:)`. Not
@@ -54,7 +56,7 @@ final class Restaurant {
         address: String? = nil,
         isFavorite: Bool = false,
         createdAt: Date = .now,
-        googlePhotoName: String? = nil,
+        googlePhotoNames: [String] = [],
         googlePlaceID: String? = nil,
         latitude: Double? = nil,
         longitude: Double? = nil
@@ -69,7 +71,7 @@ final class Restaurant {
         self.address = address
         self.isFavorite = isFavorite
         self.createdAt = createdAt
-        self.googlePhotoName = googlePhotoName
+        self.googlePhotoNames = googlePhotoNames
         self.googlePlaceID = googlePlaceID
         self.latitude = latitude
         self.longitude = longitude

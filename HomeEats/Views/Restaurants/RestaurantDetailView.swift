@@ -25,19 +25,11 @@ struct RestaurantDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if let googlePhotoName = restaurant.googlePhotoName,
-                   let url = GooglePlacesService.photoURL(for: googlePhotoName, maxWidthPx: 900) {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFill()
-                        } else {
-                            Color.secondary.opacity(0.12)
-                        }
-                    }
-                    .frame(height: 200)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                if !restaurant.googlePhotoNames.isEmpty {
+                    PhotoCarousel(photoNames: restaurant.googlePhotoNames)
+                        .frame(height: 200)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
 
                 header
@@ -261,6 +253,33 @@ struct RestaurantDetailView: View {
         } catch {
             detailsErrorMessage = "Couldn't load hours, phone, or reviews right now."
         }
+    }
+}
+
+/// A swipeable photo gallery — Google Maps-style paging with dot
+/// indicators — for every photo Google has on file for this restaurant,
+/// each fetched (via the backend proxy) only once actually swiped to.
+private struct PhotoCarousel: View {
+    let photoNames: [String]
+
+    var body: some View {
+        TabView {
+            ForEach(photoNames, id: \.self) { photoName in
+                if let url = GooglePlacesService.photoURL(for: photoName, maxWidthPx: 900) {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFill()
+                        } else {
+                            Color.secondary.opacity(0.12)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                }
+            }
+        }
+        .tabViewStyle(.page)
+        .indexViewStyle(.page(backgroundDisplayMode: .always))
     }
 }
 

@@ -23,12 +23,12 @@ enum GooglePlacesService {
         let cuisine: String?
         let mapsURLString: String?
         let coordinate: CLLocationCoordinate2D?
-        /// A stable Google photo resource name ("places/ID/photos/REF"), if
-        /// this place has one — pass it to `photoURL(for:)` to build the
-        /// actual image URL. Not the image itself: fetching real photo
-        /// bytes is a separate, billed Google request, only worth making
-        /// for a place someone actually adds.
-        let photoName: String?
+        /// Stable Google photo resource names ("places/ID/photos/REF"),
+        /// every one this place has — pass each to `photoURL(for:)` to
+        /// build its actual image URL. Not the images themselves: fetching
+        /// real photo bytes is a separate, billed Google request per
+        /// photo, only worth making for a place someone actually adds.
+        let photoNames: [String]
     }
 
     /// The extra detail (beyond what a search result already carries) shown
@@ -98,7 +98,7 @@ enum GooglePlacesService {
                 cuisine: raw.cuisine,
                 mapsURLString: raw.mapsURL,
                 coordinate: coordinate,
-                photoName: raw.photoName
+                photoNames: raw.photoNames ?? []
             )
         }
     }
@@ -158,6 +158,6 @@ enum GooglePlacesService {
         let mapsURL: String?
         let latitude: Double?
         let longitude: Double?
-        let photoName: String?
+        let photoNames: [String]?
     }
 }

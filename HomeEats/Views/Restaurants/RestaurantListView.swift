@@ -34,7 +34,7 @@ struct RestaurantListView: View {
                             RestaurantDetailView(restaurant: restaurant)
                         } label: {
                             HStack {
-                                RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoName, size: 44)
+                                RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoNames.first, size: 44)
                                 VStack(alignment: .leading) {
                                     HStack {
                                         Text(restaurant.name).foregroundStyle(.primary)
@@ -123,7 +123,7 @@ struct RestaurantListView: View {
             rating: result.rating.map { Int($0.rounded()) },
             websiteURL: result.mapsURLString,
             address: result.address,
-            googlePhotoName: result.photoName,
+            googlePhotoNames: result.photoNames,
             googlePlaceID: result.isGoogleSourced ? result.id : nil,
             latitude: result.coordinate?.latitude,
             longitude: result.coordinate?.longitude
@@ -140,7 +140,7 @@ private struct SearchResultRow: View {
 
     var body: some View {
         HStack {
-            RestaurantThumbnail(googlePhotoName: result.photoName, size: 40)
+            RestaurantThumbnail(googlePhotoName: result.photoNames.first, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(result.name)
                 if let address = result.address {
@@ -214,9 +214,9 @@ final class RestaurantSearchModel: ObservableObject {
         let priceRange: String?
         let rating: Double?
         let mapsURLString: String?
-        /// Only ever set for a Google-sourced result — see
-        /// `GooglePlacesService.PlaceResult.photoName`.
-        let photoName: String?
+        /// Only ever non-empty for a Google-sourced result — see
+        /// `GooglePlacesService.PlaceResult.photoNames`.
+        let photoNames: [String]
         let coordinate: CLLocationCoordinate2D?
         /// Whether `id` is a real Google place ID (safe to keep and later
         /// use for `GooglePlacesService.placeDetails(placeID:)`) as opposed
@@ -260,7 +260,7 @@ final class RestaurantSearchModel: ObservableObject {
                             priceRange: $0.priceRange,
                             rating: $0.rating,
                             mapsURLString: $0.mapsURLString,
-                            photoName: $0.photoName,
+                            photoNames: $0.photoNames,
                             coordinate: $0.coordinate,
                             isGoogleSourced: true
                         )
@@ -293,7 +293,7 @@ final class RestaurantSearchModel: ObservableObject {
                     priceRange: nil,
                     rating: nil,
                     mapsURLString: item.url?.absoluteString,
-                    photoName: nil,
+                    photoNames: [],
                     coordinate: item.placemark.coordinate,
                     isGoogleSourced: false
                 )

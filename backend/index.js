@@ -121,13 +121,14 @@ app.get("/restaurants/search", async (req, res) => {
       mapsURL: place.googleMapsUri ?? null,
       latitude: place.location?.latitude ?? null,
       longitude: place.location?.longitude ?? null,
-      // A stable resource name like "places/ID/photos/REF" for the place's
-      // first photo, if it has one — not the image itself (that's a
-      // separate, billed request, only worth making for a place someone
-      // actually adds; see GET /restaurants/photo below). This reference
-      // name doesn't expire, unlike the signed media URL it's later
-      // exchanged for, so it's safe to store on the saved Restaurant.
-      photoName: place.photos?.[0]?.name ?? null,
+      // Stable resource names like "places/ID/photos/REF" for every photo
+      // Google has for the place (up to the 10 Text Search returns), not
+      // the images themselves — those are a separate, billed request per
+      // photo, only worth making for a place someone actually adds and
+      // views (see GET /restaurants/photo below). These reference names
+      // don't expire, unlike the signed media URLs they're later exchanged
+      // for, so they're safe to store on the saved Restaurant.
+      photoNames: (place.photos || []).map((photo) => photo.name).filter(Boolean),
     }));
 
     res.json({ results });
@@ -141,8 +142,9 @@ app.get("/restaurants/search", async (req, res) => {
 // Fetches an actual photo's bytes from Google using the server-side key and
 // streams them back — the app never talks to Google directly (same reason
 // as every other route here) and can just point an AsyncImage straight at
-// this URL. `name` is the stable "places/ID/photos/REF" string returned as
-// `photoName` from /restaurants/search (or saved on a Restaurant).
+// this URL. `name` is one of the stable "places/ID/photos/REF" strings
+// returned in `photoNames` from /restaurants/search (or saved on a
+// Restaurant) — call this once per photo, not all at once.
 app.get("/restaurants/photo", async (req, res) => {
   const name = (req.query.name || "").toString().trim();
   if (!name) {

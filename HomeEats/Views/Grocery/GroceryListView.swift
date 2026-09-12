@@ -234,8 +234,7 @@ struct GroceryListView: View {
                 let (category, categoryItems) = entry
                 Section {
                     ForEach(categoryItems) { item in
-                        row(for: item)
-                            .onDrag { NSItemProvider(object: item.name as NSString) }
+                        draggableRow(for: item)
                             .onDrop(of: [.plainText], isTargeted: nil) { providers in
                                 handleReorderDrop(providers, targetItem: item, targetCategory: category)
                             }
@@ -246,7 +245,7 @@ struct GroceryListView: View {
                     // Only shown once, under the last category section,
                     // rather than repeated under every one.
                     if index == purchasableByCategory.count - 1 {
-                        Text("Drag an item onto another item to reorder it there, or onto a different category header to move it there for good. Manage your standing staples from the toolbar.")
+                        Text("Drag the ☰ handle onto another item to reorder it there, or onto a different category header to move it there for good. Manage your standing staples from the toolbar.")
                     }
                 }
                 .onDrop(of: [.plainText], isTargeted: nil) { providers in
@@ -351,14 +350,14 @@ struct GroceryListView: View {
                 Text("Everything's sorted into an aisle.").foregroundStyle(.secondary)
             }
             ForEach(unassigned) { item in
-                row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
+                draggableRow(for: item)
             }
         } header: {
             Text("Unsorted")
         } footer: {
             Text(aisles.isEmpty
-                 ? "Add your store's aisles from the toolbar, then drag items onto them."
-                 : "Drag an item onto an aisle below to place it there for good.")
+                 ? "Add your store's aisles from the toolbar, then drag the ☰ handle onto them."
+                 : "Drag the ☰ handle onto an aisle below to place it there for good.")
         }
         .onDrop(of: [.plainText], isTargeted: nil) { providers in
             handleDrop(providers, assigningTo: nil)
@@ -371,7 +370,7 @@ struct GroceryListView: View {
                     Text("Drop items here").font(.brandCaption).foregroundStyle(.tertiary)
                 }
                 ForEach(aisleItems) { item in
-                    row(for: item).onDrag { NSItemProvider(object: item.name as NSString) }
+                    draggableRow(for: item)
                 }
             }
             .onDrop(of: [.plainText], isTargeted: nil) { providers in
@@ -506,6 +505,24 @@ struct GroceryListView: View {
             productOption: productOption(for: item),
             onTapProduct: { productPickerItem = item }
         )
+    }
+
+    /// `row(for:)` with a dedicated drag handle in front of it. The row
+    /// itself is packed with buttons (checkbox, quantity stepper, product
+    /// photo) — attaching `.onDrag` to the whole row meant a touch almost
+    /// always landed on one of those first, so the drag gesture rarely
+    /// actually got a chance to start. Isolating `.onDrag` to just this
+    /// small handle (nothing else is under it) is what actually makes
+    /// dragging a row work reliably.
+    private func draggableRow(for item: GroceryItem) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+                .onDrag { NSItemProvider(object: item.name as NSString) }
+            row(for: item)
+        }
     }
 
     private var weekNavigator: some View {
