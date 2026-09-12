@@ -99,24 +99,80 @@ enum GooglePlacesService {
         }
 
         let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
-        return decoded.results.map { raw in
-            var coordinate: CLLocationCoordinate2D?
-            if let latitude = raw.latitude, let longitude = raw.longitude {
-                coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-            }
-            return PlaceResult(
-                id: raw.id,
-                name: raw.name,
-                address: raw.address,
-                rating: raw.rating,
-                priceRange: (raw.priceRange?.isEmpty ?? true) ? nil : raw.priceRange,
-                cuisine: raw.cuisine,
-                mapsURLString: raw.mapsURL,
-                websiteURLString: raw.websiteURL,
-                coordinate: coordinate,
-                photoNames: raw.photoNames ?? []
-            )
+        return decoded.results.map(makePlaceResult)
+    }
+
+    /// The free-text, "casual pizza near Greenwich" version of `search` —
+    /// the backend asks Claude to pull a concrete search query and any
+    /// specific place named out of the sentence, geocodes that place if
+    /// there was one, and searches there (falling back to `near` — the
+    /// app's best guess at the user's current location — only if the
+    /// sentence didn't name a place of its own).
+    static func searchNatural(
+        _ query: String,
+        near coordinate: CLLocationCoordinate2D? = nil
+    ) async throws -> NaturalSearchResult {
+        guard isConfigured, let base = URL(string: baseURLString) else {
+            throw ServiceError.notConfigured
         }
+        var request = URLRequest(url: base.appendingPathComponent("restaurants/search-natural"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["query": query]
+        if let coordinate {
+            body["lat"] = coordinate.latitude
+            body["lng"] = coordinate.longitude
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw ServiceError.requestFailed
+        }
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw ServiceError.requestFailed
+        }
+
+        let decoded = try JSONDecoder().decode(NaturalSearchResponse.self, from: data)
+        return NaturalSearchResult(
+            results: decoded.results.map(makePlaceResult),
+            interpretedQuery: decoded.interpretedQuery,
+            interpretedLocation: decoded.interpretedLocation
+        )
+    }
+
+    struct NaturalSearchResult {
+        let results: [PlaceResult]
+        /// What the backend actually searched for, after Claude cleaned up
+        /// the sentence — handy to show back to the user as confirmation
+        /// ("Searching for \"casual pizza\"…").
+        let interpretedQuery: String
+        /// A specific place Claude picked out of the sentence, if any
+        /// ("Greenwich, CT") — `nil` when the request didn't name one and
+        /// the app's own location was used instead.
+        let interpretedLocation: String?
+    }
+
+    private static func makePlaceResult(from raw: RawResult) -> PlaceResult {
+        var coordinate: CLLocationCoordinate2D?
+        if let latitude = raw.latitude, let longitude = raw.longitude {
+            coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+        return PlaceResult(
+            id: raw.id,
+            name: raw.name,
+            address: raw.address,
+            rating: raw.rating,
+            priceRange: (raw.priceRange?.isEmpty ?? true) ? nil : raw.priceRange,
+            cuisine: raw.cuisine,
+            mapsURLString: raw.mapsURL,
+            websiteURLString: raw.websiteURL,
+            coordinate: coordinate,
+            photoNames: raw.photoNames ?? []
+        )
     }
 
     /// Fetches a restaurant's hours/phone/reviews for its detail page.
@@ -162,6 +218,12 @@ enum GooglePlacesService {
 
     private struct SearchResponse: Decodable {
         let results: [RawResult]
+    }
+
+    private struct NaturalSearchResponse: Decodable {
+        let results: [RawResult]
+        let interpretedQuery: String
+        let interpretedLocation: String?
     }
 
     private struct RawResult: Decodable {

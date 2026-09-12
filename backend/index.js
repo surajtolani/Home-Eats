@@ -67,6 +67,112 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, googleKeyConfigured: Boolean(GOOGLE_PLACES_API_KEY) });
 });
 
+// Shared mapping from a Places API (New) place object to the shape both
+// /restaurants/search and /restaurants/search-natural return — kept in one
+// place so the two never drift apart.
+function mapPlaceResult(place) {
+  return {
+    id: place.id,
+    name: place.displayName?.text ?? "Unknown",
+    address: place.formattedAddress ?? null,
+    rating: typeof place.rating === "number" ? place.rating : null,
+    priceRange: place.priceLevel ? (PRICE_LEVEL_MAP[place.priceLevel] ?? null) : null,
+    cuisine: place.primaryTypeDisplayName?.text ?? null,
+    mapsURL: place.googleMapsUri ?? null,
+    // The place's actual business website, distinct from `mapsURL` — a
+    // link to Google Maps. Not every place has one on file; a `null`
+    // here means the app shows no Website button rather than falling
+    // back to the Maps link (see RestaurantListView.addFromSearch).
+    websiteURL: place.websiteUri ?? null,
+    latitude: place.location?.latitude ?? null,
+    longitude: place.location?.longitude ?? null,
+    // Stable resource names like "places/ID/photos/REF" for every photo
+    // Google has for the place (up to the 10 Text Search returns), not
+    // the images themselves — those are a separate, billed request per
+    // photo, only worth making for a place someone actually adds and
+    // views (see GET /restaurants/photo below). These reference names
+    // don't expire, unlike the signed media URLs they're later exchanged
+    // for, so they're safe to store on the saved Restaurant.
+    photoNames: (place.photos || []).map((photo) => photo.name).filter(Boolean),
+  };
+}
+
+const PLACE_SEARCH_FIELD_MASK = [
+  "places.id",
+  "places.displayName",
+  "places.formattedAddress",
+  "places.rating",
+  "places.priceLevel",
+  "places.primaryTypeDisplayName",
+  "places.googleMapsUri",
+  "places.websiteUri",
+  "places.location",
+  "places.photos",
+].join(",");
+
+// Runs a Places Text Search and returns the mapped result array — shared by
+// /restaurants/search and /restaurants/search-natural. `locationBias`, when
+// given, is a {latitude, longitude} to search near (see either route for
+// where that comes from).
+async function searchPlaces(textQuery, locationBias) {
+  const body = { textQuery };
+  if (locationBias) {
+    // A 50km bias radius is generous enough to still find a place a short
+    // drive away without it, but tight enough that "pizza" close to the
+    // target consistently outranks "pizza" three states over.
+    body.locationBias = {
+      circle: { center: locationBias, radius: 50000 },
+    };
+    body.rankPreference = "DISTANCE";
+  }
+
+  const response = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+      // Places API (New) requires an explicit field mask on every
+      // request — it's how Google bills you only for what you actually
+      // asked for, rather than every field on the place.
+      "X-Goog-FieldMask": PLACE_SEARCH_FIELD_MASK,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error("Places API error", response.status, detail);
+    throw new Error("places_search_failed");
+  }
+
+  const data = await response.json();
+  return (data.places || []).map(mapPlaceResult);
+}
+
+// Turns a place name/neighborhood/city/address into coordinates via
+// Google's Geocoding API — a separate API from Places, but billed to the
+// same Google Cloud project/key as long as Geocoding API is also enabled
+// there (see backend/README.md). Returns null on any failure (not found,
+// API not enabled, network error) rather than throwing — a natural-language
+// search with an ungeocodable location still runs, just without location
+// bias, rather than failing outright.
+async function geocode(locationText) {
+  try {
+    const url =
+      "https://maps.googleapis.com/maps/api/geocode/json" +
+      `?address=${encodeURIComponent(locationText)}&key=${GOOGLE_PLACES_API_KEY}`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const location = data.results?.[0]?.geometry?.location;
+    if (!location) return null;
+    return { latitude: location.lat, longitude: location.lng };
+  } catch (error) {
+    console.error("Geocoding request threw", error);
+    return null;
+  }
+}
+
 // GET /restaurants/search?q=<free text query>
 // Mirrors what the app needs for RestaurantListView's search-and-add flow:
 // name, address, a map link, plus the descriptors MapKit's free search
@@ -88,75 +194,99 @@ app.get("/restaurants/search", async (req, res) => {
   const lng = parseFloat(req.query.lng);
   const hasLocation = Number.isFinite(lat) && Number.isFinite(lng);
 
-  const body = { textQuery: query };
-  if (hasLocation) {
-    // A 50km bias radius is generous enough to still find a place a short
-    // drive away without it, but tight enough that "pizza" close to the
-    // user consistently outranks "pizza" three states over.
-    body.locationBias = {
-      circle: { center: { latitude: lat, longitude: lng }, radius: 50000 },
-    };
-    body.rankPreference = "DISTANCE";
+  try {
+    const results = await searchPlaces(query, hasLocation ? { latitude: lat, longitude: lng } : null);
+    res.json({ results });
+  } catch (error) {
+    console.error("Places API request threw", error);
+    res.status(502).json({ error: "Places API request failed." });
+  }
+});
+
+// POST /restaurants/search-natural
+// Body: { query: string, lat?: number, lng?: number } — the free-text,
+// natural-language version of /restaurants/search ("casual pizza place
+// near Greenwich", "somewhere kid-friendly for a quick lunch"). Google's
+// Text Search already understands plenty of this on its own (a query like
+// that mostly just works if handed straight to /restaurants/search), so
+// what Claude actually adds here is: pulling out a *specific* location
+// mentioned in the sentence (so the search can be biased there via
+// geocoding, even if it's nowhere near the user's actual current
+// location — "near Greenwich" while sitting in Boston, say) and turning a
+// vaguer, more conversational ask into concrete search terms. `lat`/`lng`
+// are the same "user's current location" fallback /restaurants/search
+// takes, used only when the sentence itself didn't name a place.
+const NaturalSearchQuerySchema = z.object({
+  // A concise query for a restaurant search API: cuisine, food type, and
+  // any vibe/descriptive words ("casual", "romantic", "kid-friendly",
+  // "quick") — but with location words stripped out, since that part is
+  // handled separately via `locationText`.
+  searchQuery: z.string(),
+  // A specific place actually named in the request — a neighborhood, city,
+  // landmark, or address ("Greenwich", "near the train station downtown").
+  // `null` when nothing specific was named (including "near me"/"nearby"),
+  // in which case the app's own current location is used instead, same as
+  // plain search.
+  locationText: z.string().nullable(),
+});
+
+app.post("/restaurants/search-natural", async (req, res) => {
+  const query = (req.body?.query || "").toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: "Missing required field 'query'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+  const client = anthropicClient(res);
+  if (!client) return;
+
+  const lat = parseFloat(req.body?.lat);
+  const lng = parseFloat(req.body?.lng);
+  const hasUserLocation = Number.isFinite(lat) && Number.isFinite(lng);
+
+  let interpreted;
+  try {
+    const response = await client.messages.parse({
+      model: "claude-opus-5",
+      max_tokens: 1000,
+      output_config: { format: zodOutputFormat(NaturalSearchQuerySchema), effort: "low" },
+      messages: [
+        {
+          role: "user",
+          content:
+            "A user typed this into a restaurant search box. Extract a good search " +
+            `query for it, and any specific location they named. Request: "${query}"`,
+        },
+      ],
+    });
+    if (!response.parsed_output) {
+      return res.status(422).json({ error: "Couldn't understand that search." });
+    }
+    interpreted = response.parsed_output;
+  } catch (error) {
+    console.error("Natural search parse failed", error);
+    return res.status(502).json({ error: "Couldn't understand that search." });
+  }
+
+  // A named location wins over the user's actual current location — asking
+  // for something "near Greenwich" while physically somewhere else should
+  // search near Greenwich, not near the user.
+  let locationBias = null;
+  if (interpreted.locationText) {
+    locationBias = await geocode(interpreted.locationText);
+  }
+  if (!locationBias && hasUserLocation) {
+    locationBias = { latitude: lat, longitude: lng };
   }
 
   try {
-    const response = await fetch("https://places.googleapis.com/v1/places:searchText", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-        // Places API (New) requires an explicit field mask on every
-        // request — it's how Google bills you only for what you actually
-        // asked for, rather than every field on the place.
-        "X-Goog-FieldMask": [
-          "places.id",
-          "places.displayName",
-          "places.formattedAddress",
-          "places.rating",
-          "places.priceLevel",
-          "places.primaryTypeDisplayName",
-          "places.googleMapsUri",
-          "places.websiteUri",
-          "places.location",
-          "places.photos",
-        ].join(","),
-      },
-      body: JSON.stringify(body),
+    const results = await searchPlaces(interpreted.searchQuery, locationBias);
+    res.json({
+      results,
+      interpretedQuery: interpreted.searchQuery,
+      interpretedLocation: interpreted.locationText,
     });
-
-    if (!response.ok) {
-      const detail = await response.text();
-      console.error("Places API error", response.status, detail);
-      return res.status(502).json({ error: "Places API request failed." });
-    }
-
-    const data = await response.json();
-    const results = (data.places || []).map((place) => ({
-      id: place.id,
-      name: place.displayName?.text ?? "Unknown",
-      address: place.formattedAddress ?? null,
-      rating: typeof place.rating === "number" ? place.rating : null,
-      priceRange: place.priceLevel ? (PRICE_LEVEL_MAP[place.priceLevel] ?? null) : null,
-      cuisine: place.primaryTypeDisplayName?.text ?? null,
-      mapsURL: place.googleMapsUri ?? null,
-      // The place's actual business website, distinct from `mapsURL` — a
-      // link to Google Maps. Not every place has one on file; a `null`
-      // here means the app shows no Website button rather than falling
-      // back to the Maps link (see RestaurantListView.addFromSearch).
-      websiteURL: place.websiteUri ?? null,
-      latitude: place.location?.latitude ?? null,
-      longitude: place.location?.longitude ?? null,
-      // Stable resource names like "places/ID/photos/REF" for every photo
-      // Google has for the place (up to the 10 Text Search returns), not
-      // the images themselves — those are a separate, billed request per
-      // photo, only worth making for a place someone actually adds and
-      // views (see GET /restaurants/photo below). These reference names
-      // don't expire, unlike the signed media URLs they're later exchanged
-      // for, so they're safe to store on the saved Restaurant.
-      photoNames: (place.photos || []).map((photo) => photo.name).filter(Boolean),
-    }));
-
-    res.json({ results });
   } catch (error) {
     console.error("Places API request threw", error);
     res.status(502).json({ error: "Places API request failed." });

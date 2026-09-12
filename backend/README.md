@@ -11,16 +11,20 @@ for the client side of this.
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and
    create a new project (or reuse one).
 2. **APIs & Services → Library** → search for and enable **"Places API
-   (New)"**.
+   (New)"**. Also search for and enable **"Geocoding API"** — used by
+   `/restaurants/search-natural` (see below) to turn a place named in a
+   sentence ("near Greenwich") into coordinates; skip it if you don't plan
+   to use that feature, everything else here works without it.
 3. **Billing** → attach a billing account. Google requires this even for
    free-tier usage — new accounts get recurring free monthly credit, but a
    card must be on file. Set a budget alert here too, so you notice if
    usage ever spikes unexpectedly.
 4. **APIs & Services → Credentials → Create Credentials → API key.**
 5. **Restrict the key**: click into it, under "API restrictions" choose
-   "Restrict key" and select only "Places API (New)". Since this key lives
-   on your server (not the app), you do *not* need an iOS bundle ID
-   restriction here — restrict by API only.
+   "Restrict key" and select "Places API (New)" and "Geocoding API" (only
+   the ones you actually enabled above). Since this key lives on your
+   server (not the app), you do *not* need an iOS bundle ID restriction
+   here — restrict by API only.
 
 ## 1b. Get a Claude API key
 
@@ -46,6 +50,9 @@ Check it's working:
 ```bash
 curl "http://localhost:4000/health"
 curl "http://localhost:4000/restaurants/search?q=pizza+near+me"
+curl -X POST "http://localhost:4000/restaurants/search-natural" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "casual pizza place near Greenwich"}'
 curl -X POST "http://localhost:4000/recipes/extract" \
   -H "Content-Type: application/json" \
   -d '{"notesText": "Grandma'\''s pancakes: 2 cups flour, 2 eggs, 1.5 cups milk. Mix and cook on a griddle."}'
@@ -78,6 +85,10 @@ sync). That's the only change needed on the app side:
 - `RestaurantListView`'s search automatically starts using Google's richer
   results (rating, price, cuisine) instead of falling back to Apple's free
   MapKit search, which can't provide any of those three.
+- The ✨ button next to search opens "Ask for a Restaurant" — a free-text,
+  natural-language search ("casual pizza near Greenwich"), backed by both
+  Claude and Google Places together. Needs both keys configured; if either
+  is missing, that button is disabled instead of half-working.
 - Recipes gets a "From a Photo or Notes" import option and a "Recommend a
   Meal" screen, both backed by Claude.
 
@@ -101,3 +112,8 @@ sync). That's the only change needed on the app side:
   (Claude Opus 5 — see the model table in the Anthropic Console for current
   pricing). Fine for household-scale use; if this app ever gets real
   traction, add per-user rate limiting here before that happens.
+- `/restaurants/search-natural` costs more than a plain search: one small
+  Claude call to interpret the sentence, plus a Places Text Search, plus a
+  Geocoding API call whenever the sentence names a specific place. Still
+  fine for household-scale, occasional use — just not something to wire up
+  to fire on every keystroke the way plain search does.

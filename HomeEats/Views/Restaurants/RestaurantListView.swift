@@ -8,6 +8,7 @@ struct RestaurantListView: View {
     @Query(sort: \Restaurant.name) private var restaurants: [Restaurant]
 
     @State private var showEditor = false
+    @State private var showNaturalSearch = false
     @State private var searchText = ""
     @StateObject private var searchModel = RestaurantSearchModel()
     @StateObject private var locationProvider = UserLocationProvider()
@@ -81,6 +82,15 @@ struct RestaurantListView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    showNaturalSearch = true
+                } label: {
+                    Image(systemName: "sparkles")
+                }
+                .disabled(!GooglePlacesService.isConfigured || !ClaudeRecipeService.isConfigured)
+                .accessibilityLabel("Ask for a Restaurant")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
                     showEditor = true
                 } label: {
                     Image(systemName: "plus")
@@ -89,6 +99,9 @@ struct RestaurantListView: View {
         }
         .sheet(isPresented: $showEditor) {
             RestaurantEditorView()
+        }
+        .sheet(isPresented: $showNaturalSearch) {
+            NaturalLanguageRestaurantSearchView(userCoordinate: locationProvider.coordinate)
         }
     }
 
@@ -123,21 +136,29 @@ struct RestaurantListView: View {
     }
 
     private func addFromSearch(_ result: RestaurantSearchModel.Result) {
-        let restaurant = Restaurant(
-            name: result.name,
-            cuisine: result.cuisine,
-            priceRange: result.priceRange,
-            rating: result.rating.map { Int($0.rounded()) },
-            websiteURL: result.websiteURLString,
-            address: result.address,
-            googlePhotoNames: result.photoNames,
-            googlePlaceID: result.isGoogleSourced ? result.id : nil,
-            latitude: result.coordinate?.latitude,
-            longitude: result.coordinate?.longitude
-        )
-        modelContext.insert(restaurant)
+        modelContext.insert(result.makeRestaurant())
         searchText = ""
         searchModel.clear()
+    }
+}
+
+extension RestaurantSearchModel.Result {
+    /// Builds a `Restaurant` ready to insert from this search result —
+    /// shared by both the plain search-as-you-type flow and the
+    /// natural-language "Ask for a Restaurant" flow.
+    func makeRestaurant() -> Restaurant {
+        Restaurant(
+            name: name,
+            cuisine: cuisine,
+            priceRange: priceRange,
+            rating: rating.map { Int($0.rounded()) },
+            websiteURL: websiteURLString,
+            address: address,
+            googlePhotoNames: photoNames,
+            googlePlaceID: isGoogleSourced ? id : nil,
+            latitude: coordinate?.latitude,
+            longitude: coordinate?.longitude
+        )
     }
 }
 
@@ -201,6 +222,156 @@ struct RestaurantThumbnail: View {
                 Image(systemName: "fork.knife")
                     .foregroundStyle(.secondary)
             }
+    }
+}
+
+/// "Casual pizza place near Greenwich," "somewhere kid-friendly for a quick
+/// lunch" — a free-text description instead of a name, backed by
+/// `GooglePlacesService.searchNatural` (the backend asks Claude to turn the
+/// sentence into a concrete search + any place actually named in it). A
+/// separate sheet from the plain search-as-you-type bar, since this is a
+/// deliberate "search for this" action (with a real network round trip to
+/// Claude) rather than something to fire on every keystroke.
+struct NaturalLanguageRestaurantSearchView: View {
+    /// The app's best guess at the user's current location, if available —
+    /// used only when the sentence itself doesn't name a specific place.
+    let userCoordinate: CLLocationCoordinate2D?
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    @State private var queryText = ""
+    @State private var isSearching = false
+    @State private var errorMessage: String?
+    @State private var results: [RestaurantSearchModel.Result] = []
+    @State private var interpretedQuery: String?
+    @State private var interpretedLocation: String?
+    @State private var hasSearchedOnce = false
+
+    private var canSearch: Bool {
+        !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if !GooglePlacesService.isConfigured || !ClaudeRecipeService.isConfigured {
+                    Section {
+                        Text("This feature isn't set up yet — see backend/README.md to enable it.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    TextField(
+                        "e.g. casual pizza place near Greenwich",
+                        text: $queryText,
+                        axis: .vertical
+                    )
+                    .lineLimit(2...4)
+                } header: {
+                    Text("Describe what you're looking for")
+                } footer: {
+                    Text("Cuisine, vibe, or occasion, and a specific area if you have one in mind — \"quiet date-night spot near the harbor,\" \"quick kid-friendly lunch downtown.\"")
+                }
+                Section {
+                    Button {
+                        Task { await search() }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if isSearching {
+                                ProgressView()
+                            } else {
+                                Text("Search")
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(isSearching || !canSearch || !GooglePlacesService.isConfigured || !ClaudeRecipeService.isConfigured)
+                }
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage).foregroundStyle(.red)
+                    }
+                }
+                if let interpretedQuery {
+                    Section {
+                        // Shows what was actually searched for once Claude's
+                        // cleaned up the sentence — confirms the request was
+                        // understood the way it was meant, especially for a
+                        // named location that might have been misread.
+                        Label {
+                            if let interpretedLocation {
+                                Text("Searching for \"\(interpretedQuery)\" near \(interpretedLocation)")
+                            } else {
+                                Text("Searching for \"\(interpretedQuery)\"")
+                            }
+                        } icon: {
+                            Image(systemName: "sparkles")
+                        }
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                if !results.isEmpty {
+                    Section("Results") {
+                        ForEach(results) { result in
+                            SearchResultRow(result: result) {
+                                addFromSearch(result)
+                            }
+                        }
+                    }
+                } else if hasSearchedOnce && !isSearching {
+                    Section {
+                        Text("No matches found.").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Ask for a Restaurant")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func search() async {
+        errorMessage = nil
+        isSearching = true
+        defer {
+            isSearching = false
+            hasSearchedOnce = true
+        }
+        do {
+            let response = try await GooglePlacesService.searchNatural(queryText, near: userCoordinate)
+            interpretedQuery = response.interpretedQuery
+            interpretedLocation = response.interpretedLocation
+            results = response.results.map {
+                RestaurantSearchModel.Result(
+                    id: $0.id,
+                    name: $0.name,
+                    address: $0.address,
+                    cuisine: $0.cuisine,
+                    priceRange: $0.priceRange,
+                    rating: $0.rating,
+                    mapsURLString: $0.mapsURLString,
+                    websiteURLString: $0.websiteURLString,
+                    photoNames: $0.photoNames,
+                    coordinate: $0.coordinate,
+                    isGoogleSourced: true
+                )
+            }
+        } catch {
+            results = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func addFromSearch(_ result: RestaurantSearchModel.Result) {
+        modelContext.insert(result.makeRestaurant())
+        dismiss()
     }
 }
 
