@@ -36,14 +36,14 @@ struct RecommendMealView: View {
                     Button {
                         Task { await fetchSuggestions() }
                     } label: {
-                        if isLoading {
-                            HStack {
-                                Spacer()
+                        HStack {
+                            Spacer()
+                            if isLoading {
                                 ProgressView()
-                                Spacer()
+                            } else {
+                                Text("Get Recipe Ideas")
                             }
-                        } else {
-                            Text("Get Recipe Ideas")
+                            Spacer()
                         }
                     }
                     .disabled(isLoading || !ClaudeRecipeService.isConfigured)
@@ -54,14 +54,22 @@ struct RecommendMealView: View {
                     }
                 }
                 if !suggestions.isEmpty {
-                    Section("Ideas") {
+                    Section {
                         ForEach(suggestions) { draft in
-                            SuggestionRow(
-                                draft: draft,
-                                isAdded: addedTitles.contains(draft.title),
-                                onAdd: { add(draft) }
-                            )
+                            NavigationLink {
+                                RecipeDraftPreviewView(
+                                    draft: draft,
+                                    isAdded: addedTitles.contains(draft.title),
+                                    onAdd: { add(draft) }
+                                )
+                            } label: {
+                                SuggestionRow(draft: draft, isAdded: addedTitles.contains(draft.title))
+                            }
                         }
+                    } header: {
+                        Text("Ideas")
+                    } footer: {
+                        Text("Tap an idea to see its full ingredients, instructions, and add it from there.")
                     }
                 }
             }
@@ -100,35 +108,103 @@ struct RecommendMealView: View {
 private struct SuggestionRow: View {
     let draft: RecipeDraft
     let isAdded: Bool
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(draft.title).font(.brandHeadline)
+                if let summary = draft.summary, !summary.isEmpty {
+                    Text(summary).font(.brandCaption).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 8) {
+                    if let servings = draft.servings {
+                        Label("serves \(servings)", systemImage: "person.2")
+                    }
+                    let minutes = (draft.prepMinutes ?? 0) + (draft.cookMinutes ?? 0)
+                    if minutes > 0 {
+                        Label("\(minutes) min", systemImage: "clock")
+                    }
+                }
+                .font(.brandCaption2)
+                .foregroundStyle(.secondary)
+            }
+            if isAdded {
+                Spacer()
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.brandForest)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// Shown before a suggested idea is committed to My Recipes — the full
+/// ingredient list and instructions, same as a saved recipe's own detail
+/// page, so there's something real to decide from beyond just the title and
+/// one-line summary. `ClaudeRecipeService.recommendMeals` doesn't return a
+/// photo for an idea (it's a text suggestion, not a vision lookup, so there
+/// is no real photo of the dish to show) — this shows everything that
+/// actually exists for it.
+private struct RecipeDraftPreviewView: View {
+    let draft: RecipeDraft
+    let isAdded: Bool
     let onAdd: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(draft.title).font(.brandHeadline)
-            if let summary = draft.summary, !summary.isEmpty {
-                Text(summary).font(.brandCaption).foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                if let servings = draft.servings {
-                    Label("serves \(servings)", systemImage: "person.2")
+        Form {
+            Section {
+                Text(draft.title).font(.brandTitle2.bold())
+                if let summary = draft.summary, !summary.isEmpty {
+                    Text(summary).foregroundStyle(.secondary)
                 }
-                let minutes = (draft.prepMinutes ?? 0) + (draft.cookMinutes ?? 0)
-                if minutes > 0 {
-                    Label("\(minutes) min", systemImage: "clock")
+                HStack(spacing: 12) {
+                    if let servings = draft.servings {
+                        Label("serves \(servings)", systemImage: "person.2")
+                    }
+                    let minutes = (draft.prepMinutes ?? 0) + (draft.cookMinutes ?? 0)
+                    if minutes > 0 {
+                        Label("\(minutes) min", systemImage: "clock")
+                    }
                 }
+                .font(.brandCaption)
+                .foregroundStyle(.secondary)
             }
-            .font(.brandCaption2)
-            .foregroundStyle(.secondary)
 
-            Button {
-                onAdd()
-            } label: {
-                Label(isAdded ? "Added" : "Add to My Recipes", systemImage: isAdded ? "checkmark" : "plus")
+            if !draft.ingredientLines.isEmpty {
+                Section("Ingredients") {
+                    ForEach(draft.ingredientLines, id: \.self) { line in
+                        Text(line)
+                    }
+                }
             }
-            .buttonStyle(.bordered)
-            .disabled(isAdded)
-            .padding(.top, 2)
+
+            if !draft.instructions.isEmpty {
+                Section("Instructions") {
+                    ForEach(Array(draft.instructions.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(index + 1).").foregroundStyle(.secondary)
+                            Text(step)
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button {
+                    onAdd()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label(isAdded ? "Added" : "Add to My Recipes", systemImage: isAdded ? "checkmark" : "plus")
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.brandForest)
+                .disabled(isAdded)
+            }
         }
-        .padding(.vertical, 4)
+        .navigationTitle(draft.title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
