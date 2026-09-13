@@ -5,15 +5,27 @@
 // itself (never trusts the mount path alone), same rigor as the rest of
 // this codebase's group routes.
 //
-// v1 deliberately has no group-scoped "My Layout" custom-aisle subsystem —
-// see the GroupGroceryItem doc comment in prisma/schema.prisma — group
-// lists only support category-grouped ordering (`orderIndex`), matching
-// the iOS "By Category" view mode.
-//
 // Roles here are more fine-grained than the meal plan's route-level
 // MANAGER/PARTICIPANT split — see each route's own comment below for the
 // specific, sometimes field-level, reasoning (POST's section restriction,
 // PATCH's field-by-field split, DELETE's section-dependent rule).
+//
+// Phase 4 ("My Layout" / staples / history): sibling routers
+// routes/groupGroceryAisles.js (mounted at .../grocery/aisles) and
+// routes/groupGroceryStaples.js (mounted at .../grocery/staples) add the
+// group-scoped counterparts of the local `StoreAisle`/`ItemAisleAssignment`
+// and `StapleItem` models — see those files' own doc comments, and
+// prisma/schema.prisma's GroupStoreAisle/GroupStapleItem/
+// GroupGroceryHistoryEntry doc comments for the full data-model reasoning.
+// The item-to-aisle assignment itself (`aisleId`/`aisleManuallySet`) folds
+// into this file's own PATCH /:id below instead of living in the aisles
+// router, since it's a field on *this* file's model — see that route's
+// comment for why it's open to any member. The "history" (past-groceries
+// quick-add) endpoint also lives here rather than in a Phase-4-only file,
+// since its one write trigger is a transition inside this file's own PATCH
+// /:id handler — see GroupGroceryHistoryEntry's doc comment in
+// prisma/schema.prisma for why it's a small durable table rather than a
+// query derived from this table.
 "use strict";
 
 const express = require("express");
@@ -55,10 +67,30 @@ function serializeItem(item) {
     quantityText: item.quantityText,
     isChecked: item.isChecked,
     orderIndex: item.orderIndex,
+    // "My Layout" placement — see prisma/schema.prisma's GroupGroceryItem
+    // doc comment. A client should ignore `aisleId` entirely while
+    // `aisleManuallySet` is false and instead fall back to whichever
+    // GroupStoreAisle has `linkedCategory === category`, exactly like the
+    // local `resolvedAisleID` does — this route never computes that
+    // fallback itself (same "client groups/filters locally" philosophy as
+    // GET / not pre-splitting by category/section).
+    aisleId: item.aisleId,
+    aisleManuallySet: item.aisleManuallySet,
     addedByUserId: item.addedByUserId,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   };
+}
+
+// Lowercased/trimmed dedupe key for GroupGroceryHistoryEntry — deliberately
+// simpler than the iOS canonicalizer's pluralization-aware
+// `GroceryListBuilder.canonicalKey` (see that model's doc comment in
+// prisma/schema.prisma for why porting that logic server-side isn't worth
+// it here): this only needs to stop the exact same typed name (modulo case/
+// whitespace) from creating two history rows, not to unify "carrot"/
+// "carrots" the way the recipe-ingredient pipeline does.
+function normalizeHistoryName(name) {
+  return name.trim().toLowerCase();
 }
 
 const GROCERY_CATEGORIES = [
@@ -86,6 +118,36 @@ router.get("/", asyncHandler(async (req, res) => {
     orderBy: [{ category: "asc" }, { orderIndex: "asc" }],
   });
   res.json({ items: items.map(serializeItem) });
+}));
+
+// GET /groups/:groupId/grocery/history — "things this group has bought
+// before," for one-tap re-adding (the group-scoped counterpart of the
+// local "From Your Past Groceries" section). Sourced from
+// GroupGroceryHistoryEntry, not a live query over GroupGroceryItem — see
+// that model's doc comment in prisma/schema.prisma for why a derived query
+// can't correctly serve this (in short: a bought item's row is routinely
+// deleted once it's off the list, which would make a derived query lose
+// exactly the names this endpoint most needs to remember). Each row here
+// was written once, automatically, the moment some GroupGroceryItem with
+// that name was first checked off (see PATCH /:id below) — nothing here
+// needs its own create/update/delete endpoints; it's a read-only catalog
+// that fills itself in from ordinary list use, same as the local one.
+// Any member may read it — same "routine, not a planning decision" bucket
+// as the rest of this file's any-member actions.
+router.get("/history", asyncHandler(async (req, res) => {
+  if (!(await requireMembership(req, res))) return;
+
+  const entries = await prisma.groupGroceryHistoryEntry.findMany({
+    where: { groupId: req.params.groupId },
+    orderBy: { name: "asc" },
+  });
+  res.json({
+    items: entries.map((entry) => ({
+      name: entry.name,
+      category: entry.category,
+      addedAt: entry.createdAt,
+    })),
+  });
 }));
 
 const CreateItemSchema = z
@@ -180,12 +242,26 @@ router.patch("/:id/accept", asyncHandler(async (req, res) => {
 //   like editing the plan itself (the same category POST's section rule
 //   already gates who can add straight onto the real list) — so they get
 //   the same MANAGER-only treatment as adding an item directly.
+// - `aisleId` (Phase 4, "My Layout" placement): any member, same bucket as
+//   isChecked/orderIndex. Moving an item to a different aisle doesn't
+//   change what's on the list or how it's categorized (`category` stays
+//   whatever it was) — it only changes where this one shopper's copy of
+//   the list puts it while walking the store, the exact "routine,
+//   day-to-day use" carve-out this split already draws on for
+//   isChecked/orderIndex. Sending `aisleId` at all (including explicitly
+//   `null`) always sets `aisleManuallySet: true` too — see
+//   GroupGroceryItem's doc comment in prisma/schema.prisma for why `null`
+//   has to be a real, persisted choice ("Unsorted") rather than
+//   indistinguishable from "never touched". A given `aisleId` must name a
+//   `GroupStoreAisle` belonging to this same group (400 otherwise, same
+//   "must reference something the caller can actually use" shape as
+//   groupMealPlan.js's `recipeId` check).
 //
-// A PARTICIPANT's request touching only isChecked/orderIndex succeeds; one
-// that ALSO includes any of the MANAGER-only fields is rejected outright
-// (400) rather than silently applying the allowed subset and dropping the
-// rest — so a client always gets an explicit signal instead of a
-// partially-applied update it might not notice.
+// A PARTICIPANT's request touching only isChecked/orderIndex/aisleId
+// succeeds; one that ALSO includes any of the MANAGER-only fields is
+// rejected outright (400) rather than silently applying the allowed subset
+// and dropping the rest — so a client always gets an explicit signal
+// instead of a partially-applied update it might not notice.
 const UpdateItemSchema = z
   .object({
     name: z.string().trim().min(1, "name can't be empty.").max(200).optional(),
@@ -194,6 +270,7 @@ const UpdateItemSchema = z
     section: z.enum(GROCERY_SECTIONS).optional(),
     isChecked: z.boolean().optional(),
     orderIndex: z.number().finite().optional(),
+    aisleId: z.string().uuid().nullable().optional(),
   })
   .strict();
 
@@ -213,7 +290,7 @@ router.patch("/:id", asyncHandler(async (req, res) => {
     const touchedManagerOnlyField = MANAGER_ONLY_FIELDS.find((field) => data[field] !== undefined);
     if (touchedManagerOnlyField) {
       return res.status(403).json({
-        error: `Only a group manager can change ${touchedManagerOnlyField}. Members can update isChecked and orderIndex.`,
+        error: `Only a group manager can change ${touchedManagerOnlyField}. Members can update isChecked, orderIndex, and aisleId.`,
       });
     }
   }
@@ -223,6 +300,18 @@ router.patch("/:id", asyncHandler(async (req, res) => {
     return res.status(404).json({ error: "Grocery item not found." });
   }
 
+  // `"aisleId" in req.body` (via `!== undefined` on the parsed result,
+  // since zod's `.optional()` maps a missing key to `undefined` but leaves
+  // an explicit `null` alone) is what lets a caller distinguish "don't
+  // touch aisle placement" from "explicitly set it to Unsorted" — see the
+  // route's own comment above.
+  if (data.aisleId !== undefined && data.aisleId !== null) {
+    const aisle = await prisma.groupStoreAisle.findUnique({ where: { id: data.aisleId } });
+    if (!aisle || aisle.groupId !== req.params.groupId) {
+      return res.status(400).json({ error: "aisleId must reference an aisle that exists in this group." });
+    }
+  }
+
   const updates = {};
   if (data.name !== undefined) updates.name = data.name;
   if (data.category !== undefined) updates.category = data.category;
@@ -230,8 +319,44 @@ router.patch("/:id", asyncHandler(async (req, res) => {
   if (data.section !== undefined) updates.section = data.section;
   if (data.isChecked !== undefined) updates.isChecked = data.isChecked;
   if (data.orderIndex !== undefined) updates.orderIndex = data.orderIndex;
+  if (data.aisleId !== undefined) {
+    updates.aisleId = data.aisleId;
+    updates.aisleManuallySet = true;
+  }
 
-  const item = await prisma.groupGroceryItem.update({ where: { id: existing.id }, data: updates });
+  // Recording history is a side effect of THIS update, not a separate
+  // request, so it has to land in the same transaction as the item update
+  // itself — otherwise a crash between the two could update isChecked
+  // without ever recording the history entry. `becameChecked` is computed
+  // from `existing` (fetched above, before this update) vs. the new value,
+  // exactly mirroring the local `GroceryItemRow.setChecked` -> `guard
+  // checked else { return }` -> `recordAsHistorical()` trigger: only a
+  // false -> true transition counts, so unchecking, or an update that
+  // doesn't touch isChecked at all, never (re)writes a history row.
+  const becameChecked = data.isChecked === true && existing.isChecked === false;
+
+  const item = await prisma.$transaction(async (tx) => {
+    const updated = await tx.groupGroceryItem.update({ where: { id: existing.id }, data: updates });
+    if (becameChecked) {
+      const normalizedName = normalizeHistoryName(updated.name);
+      // Upsert, not create: a name already known (this group has bought
+      // "milk" before, checked off again this time) is a no-op here rather
+      // than a unique-constraint error, matching the local
+      // `recordAsHistorical`'s own `guard !alreadyKnown else { return }`.
+      await tx.groupGroceryHistoryEntry.upsert({
+        where: { groupId_normalizedName: { groupId: req.params.groupId, normalizedName } },
+        update: {},
+        create: {
+          groupId: req.params.groupId,
+          name: updated.name,
+          normalizedName,
+          category: updated.category,
+        },
+      });
+    }
+    return updated;
+  });
+
   res.json({ item: serializeItem(item) });
 }));
 

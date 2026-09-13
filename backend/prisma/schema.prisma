@@ -61,6 +61,10 @@ model User {
   mealSuggestionVotes     MealSuggestionVote[]
   addedGroceryItems       GroupGroceryItem[]
 
+  // Group grocery "My Layout" / staples (Phase 4) — see the doc comments on
+  // GroupStoreAisle and GroupStapleItem below.
+  addedGroupStaples GroupStapleItem[]
+
   @@index([phoneNumber])
 }
 
@@ -122,6 +126,13 @@ model Group {
   plannedMeals    PlannedMeal[]
   mealSuggestions MealSuggestion[]
   groceryItems    GroupGroceryItem[]
+
+  // Group grocery "My Layout" / staples / history (Phase 4) — see the doc
+  // comments on GroupStoreAisle, GroupStapleItem, and
+  // GroupGroceryHistoryEntry below.
+  storeAisles    GroupStoreAisle[]
+  staples        GroupStapleItem[]
+  groceryHistory GroupGroceryHistoryEntry[]
 }
 
 // MANAGER/PARTICIPANT — the two-tier permission model added in Phase 3 for
@@ -370,9 +381,9 @@ model PlannedMeal {
   decidedByUserId String
   decidedAt       DateTime @default(now())
 
-  group         Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  group         Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
   recipe        Recipe? @relation(fields: [recipeId], references: [id], onDelete: SetNull)
-  decidedByUser User   @relation("PlannedMealDecidedBy", fields: [decidedByUserId], references: [id], onDelete: Cascade)
+  decidedByUser User    @relation("PlannedMealDecidedBy", fields: [decidedByUserId], references: [id], onDelete: Cascade)
 
   @@index([groupId])
   @@index([groupId, date])
@@ -482,29 +493,215 @@ enum GroupGrocerySection {
 // reusing `GroceryItem`) to keep it visibly distinct from the iOS
 // `GroceryItem` SwiftData model it parallels: this is deliberately a
 // smaller shape — no `weekStartDate`/`selectedProductOptionID`/
-// `quantityCount`/`categoryManuallySet`/`layoutOrderIndex`, since v1 has no
-// group-scoped "My Layout" custom-aisle subsystem at all (see
-// backend/README.md) — group lists only support category-grouped ordering,
-// matching the iOS "By Category" view mode. `orderIndex` is a `Float` (not
-// `Int`) for the same reason as the iOS model's own `orderIndex`: reordering
-// can slot an item between two existing ones (new value = the average of
-// its neighbors) without renumbering every other row in the category.
+// `quantityCount`/`categoryManuallySet`/`layoutOrderIndex`. `orderIndex` is
+// a `Float` (not `Int`) for the same reason as the iOS model's own
+// `orderIndex`: reordering can slot an item between two existing ones (new
+// value = the average of its neighbors) without renumbering every other row
+// in the category.
+//
+// UPDATE (Phase 4): this originally had no group-scoped "My Layout"
+// counterpart at all — see the superseded note that used to live here, and
+// backend/README.md's "Group grocery list" section, which predates this.
+// `aisleId`/`aisleManuallySet` below are that counterpart, added alongside
+// GroupStoreAisle rather than as a separate join table — see that model's
+// doc comment for the full reasoning (in short: unlike the iOS
+// `ItemAisleAssignment`, which is keyed by canonical item *name* so a
+// placement survives an item's `GroceryItem` row being regenerated,
+// `GroupGroceryItem` rows are never regenerated — they live exactly as long
+// as the row itself, created once by POST and only ever mutated or deleted
+// — so a plain FK column directly on this row loses nothing a name-keyed
+// join would have given us, while avoiding porting the iOS canonicalizer's
+// pluralization logic server-side just to key a join table).
 model GroupGroceryItem {
-  id            String              @id @default(uuid())
-  groupId       String
-  name          String
-  category      GroceryCategory
-  section       GroupGrocerySection
-  quantityText  String              @default("")
-  isChecked     Boolean             @default(false)
-  orderIndex    Float               @default(0)
-  addedByUserId String
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
+  id               String              @id @default(uuid())
+  groupId          String
+  name             String
+  category         GroceryCategory
+  section          GroupGrocerySection
+  quantityText     String              @default("")
+  isChecked        Boolean             @default(false)
+  orderIndex       Float               @default(0)
+  // Where this item sits in "My Layout" — mirrors the iOS
+  // `ItemAisleAssignment.aisleID` field exactly (including `null` being a
+  // meaningful, explicit "put this in Unsorted" rather than "no opinion").
+  // The `null`-is-meaningful vs. `null`-is-"never chosen" ambiguity a plain
+  // nullable FK can't express on its own is resolved by `aisleManuallySet`
+  // below, the same way iOS resolves it by row-existence instead (see
+  // GroupStoreAisle's doc comment for the full reasoning on why this file
+  // uses a flag instead of that same row-existence trick).
+  aisleId          String?
+  // False until someone explicitly places this item (including explicitly
+  // choosing "Unsorted", i.e. `aisleId: null` with this `true`) — while
+  // false, `aisleId` is not meaningful and a client should fall back to
+  // whichever `GroupStoreAisle` has `linkedCategory == category`, exactly
+  // like `GroceryListView.resolvedAisleID` does locally. This is what makes
+  // a fresh group's "My Layout" open already grouped by category instead of
+  // one giant "Unsorted" bucket, without this table needing to know that
+  // fallback itself (see the GroupStoreAisle doc comment for where the
+  // fallback aisles actually come from).
+  aisleManuallySet Boolean             @default(false)
+  addedByUserId    String
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  group       Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  addedByUser User             @relation(fields: [addedByUserId], references: [id], onDelete: Cascade)
+  // `onDelete: SetNull` is a backstop only — deleting an aisle should also
+  // flip `aisleManuallySet` back to `false` on every item that pointed at
+  // it (so those items fall back to their category's default aisle again,
+  // not silently become "explicitly Unsorted"), and a plain FK action can't
+  // touch that second column. routes/groupGroceryAisles.js's DELETE handler
+  // does that reset itself, inside the same transaction as the aisle
+  // delete; this `SetNull` only matters if some future code path deletes a
+  // `GroupStoreAisle` row without going through that route.
+  aisle       GroupStoreAisle? @relation(fields: [aisleId], references: [id], onDelete: SetNull)
+
+  @@index([groupId])
+  @@index([groupId, section])
+  @@index([groupId, aisleId])
+}
+
+// --- Group grocery "My Layout" / staples / history (Phase 4) -----------
+// Group-scoped counterparts of the local, on-device-only `StoreAisle`/
+// `ItemAisleAssignment`, `StapleItem`, and `HistoricalGroceryItem` SwiftData
+// models — see backend/README.md's "Group grocery list" section for the
+// full picture, HomeEats/Models/StoreAisle.swift /
+// HomeEats/Models/StapleItem.swift / HomeEats/Models/HistoricalGroceryItem.swift
+// for what each is mirroring, and routes/groupGroceryAisles.js /
+// routes/groupGroceryStaples.js for the API (the history endpoint lives in
+// routes/groupGrocery.js itself instead — see GroupGroceryHistoryEntry's
+// doc comment below for why).
+//
+// A group's "My Layout" — a household-defined arrangement of the shared
+// list into the aisles of their actual store, independent of the fixed
+// `GroceryCategory` list — same idea as iOS `StoreAisle`, just scoped to a
+// `Group` instead of one phone's local storage. `linkedCategory` is set
+// only for the ten starter aisles this feature seeds once per group (see
+// the seeding note below); renaming a starter aisle keeps its automatic
+// membership since matching is by `linkedCategory`, not `name` — same
+// reasoning as the iOS doc comment on this field.
+//
+// **Default seeding, and how it differs from iOS's mechanism (read this
+// before wiring up the iOS side later):** locally, `SampleDataSeeder` seeds
+// the ten starter aisles once, up front, the moment the app launches for
+// the first time — there's a single on-device process with an obvious
+// "first launch" moment to hook. A multi-tenant backend has no equivalent
+// moment for "this group's first use" to hook automatically (there's
+// deliberately no seeding added to `POST /groups` in routes/groups.js — see
+// this task's own constraints on which files may change). Instead,
+// `GET /groups/:groupId/grocery/aisles` seeds this group's ten starter
+// aisles the first time *it* is called for a group with zero
+// `GroupStoreAisle` rows — same "only while completely empty" guard as
+// `seedDefaultLayoutAislesIfNeeded`, just lazily triggered by the first
+// read instead of by process launch. Practically this means: a group whose
+// "My Layout" tab is never opened has zero aisle rows (fine — nothing reads
+// them), and the *first* `GET .../grocery/aisles` call for a group
+// populates the same ten aisles iOS would have seeded on first launch, in
+// the same order. This is the one piece of this feature that a later
+// iOS-wiring task needs to actually call (not just read the response of)
+// for the "My Layout" tab to open pre-grouped instead of empty — flagged
+// here and in backend/README.md.
+model GroupStoreAisle {
+  id             String           @id @default(uuid())
+  groupId        String
+  name           String
+  // A `Float`, not the iOS model's `Int` — deliberately matching this
+  // codebase's own established `GroupGroceryItem.orderIndex` convention
+  // (reorder-by-inserting-between-neighbors, no bulk renumber-everything
+  // endpoint needed) rather than iOS's `AislesManagerView.move`, which
+  // renumbers every row 0..n-1 on every drag. Both land on the same visible
+  // ordering; this just needs one PATCH per move instead of one per row.
+  sortIndex      Float            @default(0)
+  linkedCategory GroceryCategory?
+  createdAt      DateTime         @default(now())
+
+  group Group              @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  items GroupGroceryItem[]
+
+  @@index([groupId])
+  @@index([groupId, sortIndex])
+}
+
+// A group's standing "staples" list — recurring items the household always
+// needs (milk, paper towels, ...), independent of any recipe. Mirrors the
+// iOS `StapleItem` model field-for-field. `isActive` is carried over for
+// interface parity with iOS (and because a household may still want to
+// "pause" a staple without deleting its `defaultQuantityText`/history), but
+// see routes/groupGroceryStaples.js's own doc comment for why toggling it
+// currently has no downstream effect here — deliberately, matching what the
+// local app itself actually does today.
+//
+// Distinct from the pre-existing `GroupGrocerySection.STAPLES` value on
+// `GroupGroceryItem` (Phase 3, unchanged by this feature): that's a tag on
+// one specific line already on the live list (mirroring iOS's
+// `GroceryListSection.staples`, still reachable from `AddGroceryItemSheet`
+// today); this is the separate standing *template* list those lines get
+// manually copied from (mirroring iOS's separate `StapleItem` model) — the
+// same two-concepts-coexisting shape iOS itself has, not a rename or a
+// replacement of the Phase 3 section value.
+model GroupStapleItem {
+  id                  String          @id @default(uuid())
+  groupId             String
+  name                String
+  category            GroceryCategory
+  defaultQuantityText String?
+  isActive            Boolean         @default(true)
+  addedByUserId       String
+  createdAt           DateTime        @default(now())
 
   group       Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
   addedByUser User  @relation(fields: [addedByUserId], references: [id], onDelete: Cascade)
 
   @@index([groupId])
-  @@index([groupId, section])
+}
+
+// "Things this group has bought before," for one-tap re-adding — the
+// group-scoped counterpart of the iOS `HistoricalGroceryItem` catalog.
+//
+// **Why this is its own table instead of a query derived from
+// `GroupGroceryItem`** (the simpler default this feature's spec correctly
+// prefers, and the one to reach for first for anything not already proven
+// otherwise): `GroupGroceryItem` rows are ordinary, hard-deleted when
+// they're removed from the list — and per `routes/groupGrocery.js`'s own
+// `DELETE` doc comment, "we bought it" is an established, everyday reason a
+// `THIS_WEEK`/`STAPLES` row gets deleted, not an edge case. A query over
+// *currently-existing* rows would therefore lose an item's name from
+// "history" at the exact moment someone finishes buying it and clears it
+// off the list — the one moment this feature most needs to remember it. A
+// derived query genuinely can't express "remember this even after the row
+// it came from is gone," so a small durable table earns its keep here
+// rather than being redundant bookkeeping to keep in sync — it's populated
+// automatically, at exactly one trigger point (see below), by the same
+// request that would otherwise lose the information, so there's no
+// separate sync step to drift.
+//
+// The trigger, mirroring iOS's own `GroceryItemRow.recordAsHistorical`
+// exactly: `routes/groupGrocery.js`'s `PATCH .../grocery/:id` writes one of
+// these (upserted, so it's a no-op if already known) whenever `isChecked`
+// transitions `false` -> `true` on a `GroupGroceryItem` — "checked off" is
+// this app's stand-in for "actually bought," same as locally. Recording on
+// `isChecked` rather than on every create/delete deliberately keeps a
+// `SUGGESTED` item that got rejected (deleted without ever being checked
+// off) out of "history" — it was proposed, never bought, and shouldn't come
+// back as a one-tap "we've bought this before" suggestion.
+//
+// `normalizedName` (lowercased/trimmed) backs `@@unique([groupId,
+// normalizedName])`, giving a real DB-level guarantee against the same item
+// getting two entries — a deliberately simpler dedupe than the iOS
+// canonicalizer's pluralization-aware `canonicalKey` (which is what the
+// `GroupGroceryItem`/`GroupStoreAisle` doc comments above explain avoiding
+// porting server-side); `name` keeps the first-seen display casing, same
+// as iOS's own `HistoricalGroceryItem.name`.
+model GroupGroceryHistoryEntry {
+  id             String          @id @default(uuid())
+  groupId        String
+  name           String
+  normalizedName String
+  category       GroceryCategory
+  createdAt      DateTime        @default(now())
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, normalizedName])
+  @@index([groupId])
 }

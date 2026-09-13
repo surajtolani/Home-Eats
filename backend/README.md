@@ -315,8 +315,17 @@ response has the shape `{ "error": "..." }`.
 | GET | `/groups/:groupId/grocery` | required (member) | — | `{ items: [...] }` — every item on the group's shared list; client groups/filters by category/section locally. |
 | POST | `/groups/:groupId/grocery` | required (any member); role-gated on `section` | `{ name, category, section, quantityText?, orderIndex? }` | `category` is one of `PRODUCE`/`DAIRY_AND_EGGS`/`MEAT_AND_SEAFOOD`/`BAKERY`/`PANTRY`/`FROZEN`/`BEVERAGES`/`SNACKS`/`HOUSEHOLD`/`OTHER`; `section` is `SUGGESTED`/`THIS_WEEK`/`STAPLES`. A `PARTICIPANT` may only create with `section: SUGGESTED` (`403` for any other section — the "suggest an item" path); a `MANAGER` may create with any section (the "add directly to the real list" path). |
 | PATCH | `/groups/:groupId/grocery/:id/accept` | **MANAGER only** | — | Moves a `SUGGESTED` item to `THIS_WEEK`. `403` for a `PARTICIPANT`, `409` if the item isn't currently `SUGGESTED`. |
-| PATCH | `/groups/:groupId/grocery/:id` | required (any member); field-gated by role | Any subset of `{ name, category, quantityText, section, isChecked, orderIndex }` | **Asymmetric on purpose** — see "Group grocery list" below. Any member may set `isChecked`/`orderIndex` (routine day-to-day list use). Only a `MANAGER` may set `name`/`category`/`quantityText`/`section` (editing what's on the list). A request from a `PARTICIPANT` that touches even one manager-only field is rejected wholesale (`403`) — nothing is partially applied. |
+| PATCH | `/groups/:groupId/grocery/:id` | required (any member); field-gated by role | Any subset of `{ name, category, quantityText, section, isChecked, orderIndex, aisleId }` | **Asymmetric on purpose** — see "Group grocery list" below. Any member may set `isChecked`/`orderIndex`/`aisleId` (routine day-to-day list use, including "My Layout" placement). Only a `MANAGER` may set `name`/`category`/`quantityText`/`section` (editing what's on the list). A request from a `PARTICIPANT` that touches even one manager-only field is rejected wholesale (`403`) — nothing is partially applied. `aisleId` may be `null` (explicitly "Unsorted") or a `GroupStoreAisle` id belonging to this same group (`400` if it names an aisle in another group, or one that doesn't exist); sending it at all — including `null` — also sets `aisleManuallySet: true` on the item (see "My Layout" below). Checking an item off (`isChecked` `false` -> `true`) also records a `GroupGroceryHistoryEntry` for it — see "Grocery history" below. |
 | DELETE | `/groups/:groupId/grocery/:id` | depends on the item's current `section` | — | `SUGGESTED`: **MANAGER, or the item's own original suggester** (rejecting a suggestion) — anyone else gets `403`. `THIS_WEEK`/`STAPLES`: **any member** (routine list maintenance — "we bought it" / "we don't need it") — no extra check. |
+| GET | `/groups/:groupId/grocery/history` | required (member) | — | `{ items: [{ name, category, addedAt }] }` — every distinct item name this group has ever checked off, alphabetical. See "Grocery history" below for why this is a durable log, not a live query. |
+| GET | `/groups/:groupId/grocery/aisles` | required (member) | — | `{ aisles: [...] }` — every `GroupStoreAisle` for the group, sorted by `sortIndex`. Seeds ten starter aisles (one per `GroceryCategory`) the first time this is called for a group with none yet — see "My Layout" below. |
+| POST | `/groups/:groupId/grocery/aisles` | required (any member) | `{ name }` | Creates a custom aisle, appended to the end of the walking order (`sortIndex` = current max + 1). `linkedCategory` is always `null` for a manually-created aisle — only the seeded starters get one. |
+| PATCH | `/groups/:groupId/grocery/aisles/:id` | required (any member) | Any subset of `{ name, sortIndex }` | Rename and/or reposition — including a starter aisle, same as the local app. `404` if the aisle doesn't belong to this group. |
+| DELETE | `/groups/:groupId/grocery/aisles/:id` | required (any member) | — | Deletes the aisle. Every `GroupGroceryItem` that was manually placed there has both `aisleId` reset to `null` **and** `aisleManuallySet` reset to `false` (not just the former) — so those items fall back to their category's default aisle again, not "explicitly Unsorted". |
+| GET | `/groups/:groupId/grocery/staples` | required (member) | — | `{ staples: [...] }` — every `GroupStapleItem` for the group (active and inactive), alphabetical. |
+| POST | `/groups/:groupId/grocery/staples` | required (any member) | `{ name, category, defaultQuantityText?, isActive? }` | Creates a standing staple; `isActive` defaults `true`. |
+| PATCH | `/groups/:groupId/grocery/staples/:id` | required (any member) | Any subset of `{ name, category, defaultQuantityText, isActive }` | No manager-only field split, unlike the grocery-item `PATCH` above — see "Staples" below for why. |
+| DELETE | `/groups/:groupId/grocery/staples/:id` | required (any member) | — | — |
 
 ## 6. Recipe sharing
 
@@ -421,15 +430,10 @@ outright" relationship to `Group` as the meal plan above. See
 `prisma/schema.prisma`'s `GroupGroceryItem` doc comment for the full data
 model and `routes/groupGrocery.js` for the API.
 
-**No group-scoped "My Layout."** v1 only supports category-grouped
-ordering (`category` + `orderIndex`), matching the local app's "By
-Category" view mode — the local app's separate custom-aisle subsystem
-(`StoreAisle`/`ItemAisleAssignment`, its "My Layout" view mode) has no
-group-scoped counterpart here at all. `category`'s values mirror the iOS
-`GroceryCategory` enum's case names exactly (see
-`HomeEats/Models/GroceryCategory.swift`) — `produce` → `PRODUCE`,
-`dairyAndEggs` → `DAIRY_AND_EGGS`, and so on — so a later iOS-wiring task
-has a direct mapping.
+`category`'s values mirror the iOS `GroceryCategory` enum's case names
+exactly (see `HomeEats/Models/GroceryCategory.swift`) — `produce` →
+`PRODUCE`, `dairyAndEggs` → `DAIRY_AND_EGGS`, and so on — so a later
+iOS-wiring task has a direct mapping.
 
 **No `REJECTED` section, on purpose.** `section` is `SUGGESTED` /
 `THIS_WEEK` / `STAPLES` — deliberately matching the local app's *current*
@@ -470,6 +474,136 @@ suggestion; removing a `THIS_WEEK`/`STAPLES` item is routine maintenance
 ("we bought it" / "we don't need it after all") open to any member. The
 rule is decided by the item's section *at delete time*, not by who added
 it.
+
+### "My Layout" (group-scoped aisles)
+
+`GroupStoreAisle` (see `routes/groupGroceryAisles.js`) is the group-scoped
+counterpart of the local `StoreAisle` model — a household-defined
+arrangement of the shared list into the aisles of their actual store,
+independent of `category`. `GroupGroceryItem` carries the placement itself
+directly (`aisleId` + `aisleManuallySet`), rather than a separate join
+table keyed by item name the way the local `ItemAisleAssignment` is: local
+keys by name because a `GroceryItem` row can, in principle, get
+regenerated; a `GroupGroceryItem` row never does — it lives exactly as
+long as it exists, created once by `POST` and only ever mutated or
+deleted — so a plain FK column on the row loses nothing while avoiding
+porting the iOS canonicalizer's pluralization-aware name-matching logic
+server-side. `aisleManuallySet` is what stands in for the local model's
+"row exists vs. doesn't" trick for distinguishing "never placed" from
+"explicitly placed in Unsorted" (`aisleId: null` with `aisleManuallySet:
+true`) — a client should ignore `aisleId` entirely while
+`aisleManuallySet` is `false` and fall back to whichever aisle has
+`linkedCategory === category`, exactly like the local
+`GroceryListView.resolvedAisleID` does. This backend never computes that
+fallback itself, same "client groups/filters locally" philosophy as `GET
+/groups/:groupId/grocery` not pre-splitting by category/section.
+
+**Default seeding — read this before wiring up the iOS side.** Locally,
+`SampleDataSeeder` seeds ten starter aisles (one per `GroceryCategory`,
+matching "By Category"'s own grouping and ordering) once, at first app
+launch — a single on-device process has an obvious "first launch" hook. A
+multi-tenant backend has no equivalent moment, and this task's constraints
+rule out adding seeding to `POST /groups` in `routes/groups.js`. Instead,
+**`GET /groups/:groupId/grocery/aisles` seeds a group's ten starter
+aisles the first time it's called for a group with zero `GroupStoreAisle`
+rows** — same "only while completely empty" guard as the iOS seeder, just
+lazily triggered by the first read instead of by process launch. A group
+whose "My Layout" is never opened simply has zero aisle rows (nothing
+reads them); the first call for a given group populates the same ten
+aisles, in the same order, iOS would have. **This means a later iOS-wiring
+task needs to actually call `GET .../grocery/aisles` (not just read some
+other response) for "My Layout" to open pre-grouped instead of empty** —
+if that call is skipped, every group will appear to start with everything
+in "Unsorted" again, exactly the bug this feature exists to avoid.
+
+Aisle CRUD (create/rename/reposition/delete) and item-to-aisle placement
+(`PATCH .../grocery/:id`'s `aisleId`) are both **open to any member**, not
+`MANAGER`-only — a deliberate call: neither changes what's actually on the
+list (`category` is untouched by either), only how it's arranged for
+walking the store, the same "routine, day-to-day use" bucket
+`isChecked`/`orderIndex` already sit in above. The local app itself
+doesn't gate aisle management at all (it's single-user), reinforcing that
+this is personal/household organizing, not a planning decision. Deleting
+an aisle resets both `aisleId` **and** `aisleManuallySet` to their
+defaults on every item that pointed at it (in the same transaction as the
+delete) — not just `aisleId` — so those items fall back to their
+category's default aisle again rather than reading as "explicitly
+Unsorted".
+
+### Staples
+
+`GroupStapleItem` (see `routes/groupGroceryStaples.js`) is the group-scoped
+counterpart of the local `StapleItem` model — a standing list of recurring
+household items (milk, paper towels, ...), independent of any recipe or
+the current week's list. It's distinct from the pre-existing
+`GroupGrocerySection.STAPLES` value on `GroupGroceryItem` (Phase 3,
+unchanged here): that's a tag on one specific line already on the live
+list; this is the separate template those lines get manually copied
+from — the same two-concepts-coexisting shape the local app itself has
+(`GroceryListSection.staples`, still reachable from `AddGroceryItemSheet`,
+alongside the separate `StapleItem`/`StaplesManagerView`).
+
+Every staples route is **open to any member**, including create/edit/
+delete — not just toggling `isActive`. Reasoning: a staple is a
+reference/template with no direct effect on the live list (see the next
+paragraph), so there's no "what's actually being bought" stake for a
+`MANAGER` gate to protect, unlike `GroupGroceryItem`'s `name`/`category`/
+`quantityText`/`section`. This codebase's own precedent already points the
+same way: `DELETE /groups/:groupId/grocery/:id` already lets **any**
+member delete a `STAPLES`-section item as "routine list maintenance" — a
+`GroupStapleItem` is a lower-stakes version of that same idea (a template,
+not a live list line), so gating it more tightly would be the
+inconsistent choice. It reads as closer to "routine household admin" (the
+digital notepad-on-the-fridge, anyone can add to it) than "meal planning."
+Worst case for getting this wrong is clutter, not confusion about what's
+being bought.
+
+`isActive` is carried over field-for-field for iOS interface parity, but
+**toggling it has no downstream effect in this backend** — deliberately,
+matching current local behavior exactly. There is no group-scoped
+"regenerate suggestions from active staples" endpoint, and even locally,
+the one place that *could* merge active staples into suggestions
+(`GroceryListBuilder.regenerate`) is never actually called with real
+staples — `GroceryListView.generateSuggestions` always passes `[]`, per
+that file's own doc comment, so a short meal-plan result doesn't get
+buried in unrelated staples. Wiring staples into suggestion-generation
+here would make this backend do something the local app itself
+deliberately doesn't do yet, so this endpoint stores/returns `isActive`
+faithfully and stops there.
+
+### Grocery history (past-groceries quick-add)
+
+`GET /groups/:groupId/grocery/history` is the group-scoped counterpart of
+the local "From Your Past Groceries" section, backed by a new
+`GroupGroceryHistoryEntry` table — **not** a live query over
+`GroupGroceryItem`, which is the simpler approach this feature's spec
+correctly prefers by default, and the one to reach for first absent a
+concrete reason otherwise.
+
+The reason found here: `GroupGroceryItem` rows are hard-deleted when
+removed from the list, and per this file's own `DELETE` rule above, "we
+bought it" is an everyday, established reason a `THIS_WEEK`/`STAPLES` row
+gets deleted — not an edge case. A query over *currently-existing* rows
+would lose an item's name from "history" at the exact moment someone
+finishes buying it and clears it off the list, which is the one moment
+this feature most needs to remember it for. A derived query can't express
+"remember this even after the row it came from is gone," so a small
+durable table earns its keep rather than being redundant bookkeeping to
+keep in sync — it's populated automatically, at exactly one trigger point,
+by the same request that would otherwise lose the information, so there's
+no separate sync step that could drift.
+
+The trigger mirrors the local `GroceryItemRow.recordAsHistorical` exactly:
+`PATCH /groups/:groupId/grocery/:id` upserts one of these (a no-op if
+already known) whenever `isChecked` transitions `false` -> `true` — inside
+the same transaction as the item update, so a history entry is never
+recorded without the checkbox actually flipping or vice versa. Recording
+only on that transition (not on every create/delete) deliberately keeps a
+`SUGGESTED` item that was rejected without ever being bought out of
+history. Dedup is by `normalizedName` (lowercased/trimmed) rather than the
+iOS canonicalizer's pluralization-aware `canonicalKey` — good enough to
+stop the same typed name (modulo case/whitespace) from creating two rows,
+without porting that algorithm server-side.
 
 ## Notes
 
