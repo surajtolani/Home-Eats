@@ -322,10 +322,6 @@ response has the shape `{ "error": "..." }`.
 | POST | `/groups/:groupId/grocery/aisles` | required (any member) | `{ name }` | Creates a custom aisle, appended to the end of the walking order (`sortIndex` = current max + 1). `linkedCategory` is always `null` for a manually-created aisle — only the seeded starters get one. |
 | PATCH | `/groups/:groupId/grocery/aisles/:id` | required (any member) | Any subset of `{ name, sortIndex }` | Rename and/or reposition — including a starter aisle, same as the local app. `404` if the aisle doesn't belong to this group. |
 | DELETE | `/groups/:groupId/grocery/aisles/:id` | required (any member) | — | Deletes the aisle. Every `GroupGroceryItem` that was manually placed there has both `aisleId` reset to `null` **and** `aisleManuallySet` reset to `false` (not just the former) — so those items fall back to their category's default aisle again, not "explicitly Unsorted". |
-| GET | `/groups/:groupId/grocery/staples` | required (member) | — | `{ staples: [...] }` — every `GroupStapleItem` for the group (active and inactive), alphabetical. |
-| POST | `/groups/:groupId/grocery/staples` | required (any member) | `{ name, category, defaultQuantityText?, isActive? }` | Creates a standing staple; `isActive` defaults `true`. |
-| PATCH | `/groups/:groupId/grocery/staples/:id` | required (any member) | Any subset of `{ name, category, defaultQuantityText, isActive }` | No manager-only field split, unlike the grocery-item `PATCH` above — see "Staples" below for why. |
-| DELETE | `/groups/:groupId/grocery/staples/:id` | required (any member) | — | — |
 
 ## 6. Recipe sharing
 
@@ -563,46 +559,20 @@ delete) — not just `aisleId` — so those items fall back to their
 category's default aisle again rather than reading as "explicitly
 Unsorted".
 
-### Staples
-
-`GroupStapleItem` (see `routes/groupGroceryStaples.js`) is the group-scoped
-counterpart of the local `StapleItem` model — a standing list of recurring
-household items (milk, paper towels, ...), independent of any recipe or
-the current week's list. It's distinct from the pre-existing
-`GroupGrocerySection.STAPLES` value on `GroupGroceryItem` (Phase 3,
-unchanged here): that's a tag on one specific line already on the live
-list; this is the separate template those lines get manually copied
-from — the same two-concepts-coexisting shape the local app itself has
-(`GroceryListSection.staples`, still reachable from `AddGroceryItemSheet`,
-alongside the separate `StapleItem`/`StaplesManagerView`).
-
-Every staples route is **open to any member**, including create/edit/
-delete — not just toggling `isActive`. Reasoning: a staple is a
-reference/template with no direct effect on the live list (see the next
-paragraph), so there's no "what's actually being bought" stake for a
-`MANAGER` gate to protect, unlike `GroupGroceryItem`'s `name`/`category`/
-`quantityText`/`section`. This codebase's own precedent already points the
-same way: `DELETE /groups/:groupId/grocery/:id` already lets **any**
-member delete a `STAPLES`-section item as "routine list maintenance" — a
-`GroupStapleItem` is a lower-stakes version of that same idea (a template,
-not a live list line), so gating it more tightly would be the
-inconsistent choice. It reads as closer to "routine household admin" (the
-digital notepad-on-the-fridge, anyone can add to it) than "meal planning."
-Worst case for getting this wrong is clutter, not confusion about what's
-being bought.
-
-`isActive` is carried over field-for-field for iOS interface parity, but
-**toggling it has no downstream effect in this backend** — deliberately,
-matching current local behavior exactly. There is no group-scoped
-"regenerate suggestions from active staples" endpoint, and even locally,
-the one place that *could* merge active staples into suggestions
-(`GroceryListBuilder.regenerate`) is never actually called with real
-staples — `GroceryListView.generateSuggestions` always passes `[]`, per
-that file's own doc comment, so a short meal-plan result doesn't get
-buried in unrelated staples. Wiring staples into suggestion-generation
-here would make this backend do something the local app itself
-deliberately doesn't do yet, so this endpoint stores/returns `isActive`
-faithfully and stops there.
+**Removed: the group-scoped standing "staples" list.** A `GroupStapleItem`
+model and a `routes/groupGroceryStaples.js` router (mounted at
+`.../grocery/staples`) used to live here — a household's separate standing
+template list of recurring items (milk, paper towels, ...), the group
+counterpart of the local `StapleItem` model. It was removed outright (model,
+migration to drop the table, route file, and the iOS
+`GroupStapleItem`/`GroupStaplesManagerView` side of it) per direct user
+feedback that the concept added nothing useful, not merely hidden behind a
+flag — it had shipped with no real accounts yet using it, so there was
+nothing to migrate off of. This is unrelated to the pre-existing
+`GroupGrocerySection.STAPLES` enum value on `GroupGroceryItem` (see the
+table above and "Group grocery list" below), which is a tag on one specific
+line already on the live list, not a standing template — that tag, and
+everything that depends on it, is untouched.
 
 ### Grocery history (past-groceries quick-add)
 

@@ -71,9 +71,11 @@ model User {
   mealSuggestionVotes     MealSuggestionVote[]
   addedGroceryItems       GroupGroceryItem[]
 
-  // Group grocery "My Layout" / staples (Phase 4) — see the doc comments on
-  // GroupStoreAisle and GroupStapleItem below.
-  addedGroupStaples GroupStapleItem[]
+  // Group grocery "My Layout" aisles (Phase 4) — see the doc comment on
+  // GroupStoreAisle below. (A former sibling relation here,
+  // `addedGroupStaples GroupStapleItem[]`, was removed along with the
+  // standing "staples" template-list feature — see GroupStoreAisle's doc
+  // comment for the removal note.)
 
   @@index([phoneNumber])
 }
@@ -137,11 +139,12 @@ model Group {
   mealSuggestions MealSuggestion[]
   groceryItems    GroupGroceryItem[]
 
-  // Group grocery "My Layout" / staples / history (Phase 4) — see the doc
-  // comments on GroupStoreAisle, GroupStapleItem, and
-  // GroupGroceryHistoryEntry below.
+  // Group grocery "My Layout" / history (Phase 4) — see the doc comments on
+  // GroupStoreAisle and GroupGroceryHistoryEntry below. (A former sibling
+  // relation here, `staples GroupStapleItem[]`, was removed along with the
+  // standing "staples" template-list feature — see GroupStoreAisle's doc
+  // comment for the removal note.)
   storeAisles    GroupStoreAisle[]
-  staples        GroupStapleItem[]
   groceryHistory GroupGroceryHistoryEntry[]
 }
 
@@ -610,16 +613,27 @@ model GroupGroceryItem {
   @@index([groupId, aisleId])
 }
 
-// --- Group grocery "My Layout" / staples / history (Phase 4) -----------
+// --- Group grocery "My Layout" / history (Phase 4) ---------------------
 // Group-scoped counterparts of the local, on-device-only `StoreAisle`/
-// `ItemAisleAssignment`, `StapleItem`, and `HistoricalGroceryItem` SwiftData
-// models — see backend/README.md's "Group grocery list" section for the
-// full picture, HomeEats/Models/StoreAisle.swift /
-// HomeEats/Models/StapleItem.swift / HomeEats/Models/HistoricalGroceryItem.swift
-// for what each is mirroring, and routes/groupGroceryAisles.js /
-// routes/groupGroceryStaples.js for the API (the history endpoint lives in
-// routes/groupGrocery.js itself instead — see GroupGroceryHistoryEntry's
-// doc comment below for why).
+// `ItemAisleAssignment` and `HistoricalGroceryItem` SwiftData models — see
+// backend/README.md's "Group grocery list" section for the full picture,
+// HomeEats/Models/StoreAisle.swift / HomeEats/Models/HistoricalGroceryItem.swift
+// for what each is mirroring, and routes/groupGroceryAisles.js for the API
+// (the history endpoint lives in routes/groupGrocery.js itself instead —
+// see GroupGroceryHistoryEntry's doc comment below for why).
+//
+// A third Phase-4 counterpart used to live here too: `GroupStapleItem`, a
+// group-scoped standing "staples" template list (the group counterpart of
+// the local `StapleItem` model), with its own route file
+// (routes/groupGroceryStaples.js). Removed outright — model, route file,
+// and the iOS `GroupStapleItem`/`GroupStaplesManagerView` side of it — per
+// direct user feedback that the concept added nothing useful ("delete the
+// concept of staples"); see the removal commit and
+// prisma/migrations/*_drop_group_staple_item for the actual table drop.
+// The pre-existing `GroupGrocerySection.STAPLES` enum value below is a
+// separate, unrelated concept (a tag on one specific line already on the
+// live list, mirroring the local `GroceryListSection.staples`) and is
+// untouched by this removal — see that enum's own doc comment.
 //
 // A group's "My Layout" — a household-defined arrangement of the shared
 // list into the aisles of their actual store, independent of the fixed
@@ -669,39 +683,6 @@ model GroupStoreAisle {
 
   @@index([groupId])
   @@index([groupId, sortIndex])
-}
-
-// A group's standing "staples" list — recurring items the household always
-// needs (milk, paper towels, ...), independent of any recipe. Mirrors the
-// iOS `StapleItem` model field-for-field. `isActive` is carried over for
-// interface parity with iOS (and because a household may still want to
-// "pause" a staple without deleting its `defaultQuantityText`/history), but
-// see routes/groupGroceryStaples.js's own doc comment for why toggling it
-// currently has no downstream effect here — deliberately, matching what the
-// local app itself actually does today.
-//
-// Distinct from the pre-existing `GroupGrocerySection.STAPLES` value on
-// `GroupGroceryItem` (Phase 3, unchanged by this feature): that's a tag on
-// one specific line already on the live list (mirroring iOS's
-// `GroceryListSection.staples`, still reachable from `AddGroceryItemSheet`
-// today); this is the separate standing *template* list those lines get
-// manually copied from (mirroring iOS's separate `StapleItem` model) — the
-// same two-concepts-coexisting shape iOS itself has, not a rename or a
-// replacement of the Phase 3 section value.
-model GroupStapleItem {
-  id                  String          @id @default(uuid())
-  groupId             String
-  name                String
-  category            GroceryCategory
-  defaultQuantityText String?
-  isActive            Boolean         @default(true)
-  addedByUserId       String
-  createdAt           DateTime        @default(now())
-
-  group       Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  addedByUser User  @relation(fields: [addedByUserId], references: [id], onDelete: Cascade)
-
-  @@index([groupId])
 }
 
 // "Things this group has bought before," for one-tap re-adding — the

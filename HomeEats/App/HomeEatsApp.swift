@@ -51,12 +51,15 @@ struct HomeEatsApp: App {
             GroupPlannedMeal.self,
             GroupMealSuggestion.self,
             GroupSharedGroceryItem.self,
-            // Phase 4 continued — group-scoped "My Layout" aisles, staples,
-            // and grocery history (see HomeEats/Models/GroupGroceryLayout.swift),
-            // the group counterparts of the personal StoreAisle/StapleItem/
-            // HistoricalGroceryItem models above.
+            // Phase 4 continued — group-scoped "My Layout" aisles and
+            // grocery history (see HomeEats/Models/GroupGroceryLayout.swift),
+            // the group counterparts of the personal StoreAisle/
+            // HistoricalGroceryItem models above. (A third entry used to be
+            // here, GroupStapleItem.self, for the group-scoped standing
+            // "staples" template list — removed outright per user feedback;
+            // see that model's former doc comment, preserved as a note on
+            // GroupStoreAisle in GroupGroceryLayout.swift.)
             GroupStoreAisle.self,
-            GroupStapleItem.self,
             GroupGroceryHistoryEntry.self
         ])
         // Local-first storage per spec: everything lives on-device by

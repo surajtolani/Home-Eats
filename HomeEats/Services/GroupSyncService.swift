@@ -220,11 +220,14 @@ enum GroupSyncService {
         allSucceeded = await pushPlannedMeals(groupID: groupID, modelContext: modelContext) && allSucceeded
         allSucceeded = await pushSuggestions(groupID: groupID, modelContext: modelContext) && allSucceeded
         allSucceeded = await pushGroceryItems(groupID: groupID, modelContext: modelContext) && allSucceeded
-        // Phase 4 — "My Layout" aisles and staples. Grocery history has no
-        // push counterpart at all (see `reconcileGroceryHistory`'s own doc
-        // comment: it's a read-only, server-populated catalog).
+        // Phase 4 — "My Layout" aisles. Grocery history has no push
+        // counterpart at all (see `reconcileGroceryHistory`'s own doc
+        // comment: it's a read-only, server-populated catalog). A former
+        // sibling call here, `pushStaples`, was removed along with the rest
+        // of the standing "staples" template-list feature — see
+        // `GroupStoreAisle`'s doc comment in
+        // HomeEats/Models/GroupGroceryLayout.swift for the removal note.
         allSucceeded = await pushAisles(groupID: groupID, modelContext: modelContext) && allSucceeded
-        allSucceeded = await pushStaples(groupID: groupID, modelContext: modelContext) && allSucceeded
         try? modelContext.save()
         return allSucceeded
     }
@@ -527,30 +530,32 @@ enum GroupSyncService {
     private static func pull(groupID: String, modelContext: ModelContext) async -> Bool {
         async let mealPlanResult = try? AccountsAPIClient.getGroupMealPlan(groupID: groupID)
         async let groceryResult = try? AccountsAPIClient.getGroupGroceryList(groupID: groupID)
-        // Phase 4 — "My Layout" aisles, staples, and grocery history. Fetched
-        // every sync cycle (not only when their screens happen to be on
-        // screen), same "small, household-scale, low-traffic" reasoning the
-        // rest of this file's periodic-resync design already accepts — and,
-        // for aisles specifically, load-bearing: `getGroupGroceryAisles` is
-        // also what lazily seeds a group's ten starter aisles the first time
-        // it's ever called (see that method's own doc comment) — calling it
+        // Phase 4 — "My Layout" aisles and grocery history. Fetched every
+        // sync cycle (not only when their screens happen to be on screen),
+        // same "small, household-scale, low-traffic" reasoning the rest of
+        // this file's periodic-resync design already accepts — and, for
+        // aisles specifically, load-bearing: `getGroupGroceryAisles` is also
+        // what lazily seeds a group's ten starter aisles the first time it's
+        // ever called (see that method's own doc comment) — calling it
         // here, on every sync, means those starter aisles are already seeded
         // and synced locally well before someone first switches "My Layout"
         // on, rather than "My Layout" opening to an empty/all-Unsorted list
-        // for the one sync cycle it would otherwise take to catch up.
+        // for the one sync cycle it would otherwise take to catch up. A
+        // former sibling fetch here, `getGroupGroceryStaples`, was removed
+        // along with the rest of the standing "staples" template-list
+        // feature — see `GroupStoreAisle`'s doc comment in
+        // HomeEats/Models/GroupGroceryLayout.swift for the removal note.
         async let aislesResult = try? AccountsAPIClient.getGroupGroceryAisles(groupID: groupID)
-        async let staplesResult = try? AccountsAPIClient.getGroupGroceryStaples(groupID: groupID)
         async let historyResult = try? AccountsAPIClient.getGroupGroceryHistory(groupID: groupID)
-        let (mealPlan, grocery, aisles, staples, history) = await (
-            mealPlanResult, groceryResult, aislesResult, staplesResult, historyResult
+        let (mealPlan, grocery, aisles, history) = await (
+            mealPlanResult, groceryResult, aislesResult, historyResult
         )
-        guard let mealPlan, let grocery, let aisles, let staples, let history else { return false }
+        guard let mealPlan, let grocery, let aisles, let history else { return false }
 
         await reconcilePlannedMeals(remote: mealPlan.plannedMeals, groupID: groupID, modelContext: modelContext)
         await reconcileSuggestions(remote: mealPlan.suggestions, groupID: groupID, modelContext: modelContext)
         reconcileGroceryItems(remote: grocery.items, groupID: groupID, modelContext: modelContext)
         reconcileAisles(remote: aisles.aisles, groupID: groupID, modelContext: modelContext)
-        reconcileStaples(remote: staples.staples, groupID: groupID, modelContext: modelContext)
         reconcileGroceryHistory(remote: history.items, groupID: groupID, modelContext: modelContext)
         try? modelContext.save()
         return true
@@ -818,119 +823,13 @@ enum GroupSyncService {
         }
     }
 
-    // MARK: - Push + pull + reconcile: staples (Phase 4)
-
-    private static func localStaples(groupID: String, modelContext: ModelContext) -> [GroupStapleItem] {
-        let descriptor = FetchDescriptor<GroupStapleItem>(predicate: #Predicate { $0.groupID == groupID })
-        return (try? modelContext.fetch(descriptor)) ?? []
-    }
-
-    private static func pushStaples(groupID: String, modelContext: ModelContext) async -> Bool {
-        var allOK = true
-        for row in localStaples(groupID: groupID, modelContext: modelContext) {
-            switch row.syncState {
-            case .synced:
-                continue
-            case .pendingCreate:
-                // `POST .../grocery/staples` never accepts `isActive` at all
-                // (see `CreateStapleSchema` in routes/groupGroceryStaples.js
-                // — a freshly created staple is always `isActive: true`
-                // server-side by default), so a local `isActive` that's
-                // already `false` before this create was ever dispatched, or
-                // toggled off while it was still in flight, can't be
-                // communicated by this call, and would otherwise be silently
-                // reset back to `true` the moment the response applies. Same
-                // race class, same fix, as `GroceryCreateReconciliation` (see
-                // that type's own doc comment).
-                do {
-                    let created = try await AccountsAPIClient.createGroupGroceryStaple(
-                        groupID: groupID, name: row.name, category: row.category, defaultQuantityText: row.defaultQuantityText
-                    )
-                    let isActiveDiffersFromResponse = row.isActive != created.isActive
-                    applyRemote(created, to: row, preserveLocalIsActive: isActiveDiffersFromResponse)
-                } catch {
-                    allOK = false
-                }
-            case .pendingUpdate:
-                // Only ever `isActive` in practice — see
-                // `GroupStaplesManagerView` and
-                // `AccountsAPIClient.updateGroupGroceryStaple`'s own doc
-                // comment on why this app's UI never edits a staple's
-                // name/category once created (matching the local, personal
-                // `StaplesManagerView`'s own reference UI exactly).
-                do {
-                    let updated = try await AccountsAPIClient.updateGroupGroceryStaple(
-                        groupID: groupID, id: row.id, isActive: row.isActive
-                    )
-                    applyRemote(updated, to: row)
-                } catch {
-                    allOK = false
-                }
-            case .pendingDelete:
-                if row.isLocalPlaceholderID {
-                    modelContext.delete(row)
-                    continue
-                }
-                do {
-                    try await AccountsAPIClient.deleteGroupGroceryStaple(groupID: groupID, id: row.id)
-                    modelContext.delete(row)
-                } catch {
-                    allOK = false
-                }
-            }
-        }
-        return allOK
-    }
-
-    /// Not `private`, and explicitly `nonisolated` — same reasoning as the
-    /// `RemoteGroupStoreAisle` overload above. `preserveLocalIsActive` (see
-    /// the `.pendingCreate` case in `pushStaples` above for the one caller
-    /// that ever passes `true`) is this model's counterpart of that
-    /// overload's `preserveLocalSortIndex`/the grocery-item overload's
-    /// `preserveLocalCheckedAndOrder` — same fix, same reasoning.
-    nonisolated static func applyRemote(
-        _ remote: RemoteGroupStapleItem, to row: GroupStapleItem, preserveLocalIsActive: Bool = false
-    ) {
-        row.id = remote.id
-        row.name = remote.name
-        row.category = remote.category.localCategory
-        row.defaultQuantityText = remote.defaultQuantityText
-        if !preserveLocalIsActive {
-            row.isActive = remote.isActive
-        }
-        row.addedByUserID = remote.addedByUserID
-        row.syncState = preserveLocalIsActive ? .pendingUpdate : .synced
-    }
-
-    private static func reconcileStaples(remote: [RemoteGroupStapleItem], groupID: String, modelContext: ModelContext) {
-        let localRows = localStaples(groupID: groupID, modelContext: modelContext)
-        var localByID: [String: GroupStapleItem] = [:]
-        for row in localRows where !row.isLocalPlaceholderID { localByID[row.id] = row }
-        let remoteIDs = Set(remote.map(\.id))
-
-        for remoteStaple in remote {
-            let existing = localByID[remoteStaple.id]
-            guard ReconciliationAction.decide(localSyncState: existing?.syncState, presentInPull: true) == .upsertFromServer else { continue }
-
-            if let existing {
-                applyRemote(remoteStaple, to: existing)
-            } else {
-                modelContext.insert(GroupStapleItem(
-                    id: remoteStaple.id, groupID: groupID, name: remoteStaple.name, category: remoteStaple.category.localCategory,
-                    defaultQuantityText: remoteStaple.defaultQuantityText, isActive: remoteStaple.isActive,
-                    addedByUserID: remoteStaple.addedByUserID, createdAt: remoteStaple.createdAt, syncState: .synced
-                ))
-            }
-        }
-
-        for row in localRows where !row.isLocalPlaceholderID && !remoteIDs.contains(row.id) {
-            if ReconciliationAction.decide(localSyncState: row.syncState, presentInPull: false) == .deleteLocal {
-                modelContext.delete(row)
-            }
-        }
-    }
-
     // MARK: - Pull + reconcile: grocery history (Phase 4, read-only)
+    //
+    // (A former sibling section lived here too: "Push + pull + reconcile:
+    // staples", the sync half of the group-scoped standing "staples"
+    // template-list feature — removed outright along with the rest of it
+    // per direct user feedback. See `GroupStoreAisle`'s doc comment in
+    // HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
 
     private static func localGroceryHistory(groupID: String, modelContext: ModelContext) -> [GroupGroceryHistoryEntry] {
         let descriptor = FetchDescriptor<GroupGroceryHistoryEntry>(predicate: #Predicate { $0.groupID == groupID })
@@ -1047,13 +946,16 @@ extension GroupSyncService {
         deleteAllRows(of: GroupSharedGroceryItem.self, modelContext: modelContext)
         // Phase 4 — the same shared-device/wrong-account-attribution risk
         // this method's own doc comment describes applies identically to
-        // these three newer mirrors; `GroupGroceryHistoryEntry` has no
-        // pending state of its own to misattribute, but purging it too keeps
-        // this method's "every group-sync mirror, unconditionally" contract
+        // these newer mirrors; `GroupGroceryHistoryEntry` has no pending
+        // state of its own to misattribute, but purging it too keeps this
+        // method's "every group-sync mirror, unconditionally" contract
         // simple and exhaustive rather than special-casing the one type that
-        // happens not to need it for this particular reason.
+        // happens not to need it for this particular reason. (A former
+        // sibling call here, `deleteAllRows(of: GroupStapleItem.self, ...)`,
+        // was removed along with the rest of the standing "staples"
+        // template-list feature — see `GroupStoreAisle`'s doc comment in
+        // HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
         deleteAllRows(of: GroupStoreAisle.self, modelContext: modelContext)
-        deleteAllRows(of: GroupStapleItem.self, modelContext: modelContext)
         deleteAllRows(of: GroupGroceryHistoryEntry.self, modelContext: modelContext)
         try? modelContext.save()
     }

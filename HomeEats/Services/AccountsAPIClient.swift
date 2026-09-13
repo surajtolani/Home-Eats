@@ -667,59 +667,14 @@ extension AccountsAPIClient {
     }
 }
 
-// MARK: - Group staples (Phase 4 iOS wiring — GET/POST/PATCH/DELETE /groups/:groupId/grocery/staples/*)
-//
-// Mounted at /groups/:groupId/grocery/staples — confirmed against
-// routes/groupGroceryStaples.js. Also any-member throughout, same reasoning
-// as the aisles section above (see that file's own doc comment).
-
-extension AccountsAPIClient {
-    static func getGroupGroceryStaples(groupID: String) async throws -> GroupStaplesResponse {
-        try await send("GET", path: "groups/\(groupID)/grocery/staples")
-    }
-
-    static func createGroupGroceryStaple(
-        groupID: String, name: String, category: GroceryCategory, defaultQuantityText: String? = nil
-    ) async throws -> RemoteGroupStapleItem {
-        struct Response: Decodable { let staple: RemoteGroupStapleItem }
-        var body: [String: Any] = [
-            "name": name,
-            "category": RemoteGroceryCategory(localCategory: category).rawValue
-        ]
-        if let defaultQuantityText, !defaultQuantityText.isEmpty { body["defaultQuantityText"] = defaultQuantityText }
-        let response: Response = try await send("POST", path: "groups/\(groupID)/grocery/staples", body: body)
-        return response.staple
-    }
-
-    /// This app only ever calls this with `isActive` in practice — toggling
-    /// a staple on/off is the one edit `StaplesManagerView`'s own reference
-    /// UI supports (it has no rename/recategorize flow at all, even
-    /// locally: see that view's doc comment — only add, toggle, and
-    /// delete), which `GroupStaplesManagerView` mirrors exactly. The backend
-    /// itself allows any subset of name/category/defaultQuantityText/
-    /// isActive from any member (see routes/groupGroceryStaples.js's own doc
-    /// comment) — `name`/`category` parameters exist here for API
-    /// completeness/symmetry with `updateGroupGroceryItem`, not because any
-    /// current call site uses them.
-    static func updateGroupGroceryStaple(
-        groupID: String, id: String,
-        name: String? = nil, category: GroceryCategory? = nil, isActive: Bool? = nil
-    ) async throws -> RemoteGroupStapleItem {
-        struct Response: Decodable { let staple: RemoteGroupStapleItem }
-        var body: [String: Any] = [:]
-        if let name { body["name"] = name }
-        if let category { body["category"] = RemoteGroceryCategory(localCategory: category).rawValue }
-        if let isActive { body["isActive"] = isActive }
-        let response: Response = try await send("PATCH", path: "groups/\(groupID)/grocery/staples/\(id)", body: body)
-        return response.staple
-    }
-
-    static func deleteGroupGroceryStaple(groupID: String, id: String) async throws {
-        try await sendNoContent("DELETE", path: "groups/\(groupID)/grocery/staples/\(id)")
-    }
-}
-
 // MARK: - Group grocery history (Phase 4 iOS wiring — GET /groups/:groupId/grocery/history)
+//
+// (A third Phase-4 sibling used to be here too: "Group staples"
+// GET/POST/PATCH/DELETE /groups/:groupId/grocery/staples/* — removed
+// outright, along with the backend route file, Prisma model, and every
+// other iOS reference, per direct user feedback that the concept added
+// nothing useful. See `GroupStoreAisle`'s doc comment in
+// HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
 
 extension AccountsAPIClient {
     /// Read-only — see `RemoteGroupGroceryHistoryEntry`'s own doc comment

@@ -13,18 +13,20 @@ struct SettingsView: View {
     @Query private var groupPlannedMeals: [GroupPlannedMeal]
     @Query private var groupMealSuggestions: [GroupMealSuggestion]
     @Query private var groupGroceryItems: [GroupSharedGroceryItem]
-    // Phase 4 — "My Layout" aisles and staples can carry a pending
-    // create/rename/reorder/toggle too (see `GroupStoreAisle`/
-    // `GroupStapleItem`'s own `syncState`), so they have to be checked here
-    // the same as the three models above — otherwise a group member who
-    // only, say, renamed an aisle offline would sign out with no warning at
-    // all, and `GroupSyncService.purgeAllLocalGroupData` (which purges these
-    // two unconditionally, same as the rest) would silently drop it.
+    // Phase 4 — "My Layout" aisles can carry a pending
+    // create/rename/reorder/toggle too (see `GroupStoreAisle`'s own
+    // `syncState`), so they have to be checked here the same as the three
+    // models above — otherwise a group member who only, say, renamed an
+    // aisle offline would sign out with no warning at all, and
+    // `GroupSyncService.purgeAllLocalGroupData` (which purges this
+    // unconditionally, same as the rest) would silently drop it.
     // `GroupGroceryHistoryEntry` has no pending state of its own to lose
     // (see that model's own doc comment), so it's deliberately not queried
-    // here.
+    // here. (A former sibling query here, `groupStaples: [GroupStapleItem]`,
+    // was removed along with the rest of the standing "staples"
+    // template-list feature — see `GroupStoreAisle`'s doc comment in
+    // HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
     @Query private var groupAisles: [GroupStoreAisle]
-    @Query private var groupStaples: [GroupStapleItem]
 
     @State private var reminderTime: Date = Calendar.current.date(
         from: DateComponents(hour: 18, minute: 0)
@@ -41,7 +43,6 @@ struct SettingsView: View {
             || groupMealSuggestions.contains { $0.syncState != .synced }
             || groupGroceryItems.contains { $0.syncState != .synced }
             || groupAisles.contains { $0.syncState != .synced }
-            || groupStaples.contains { $0.syncState != .synced }
     }
 
     // `settings` is read several times per `body` pass (the toggle, the day

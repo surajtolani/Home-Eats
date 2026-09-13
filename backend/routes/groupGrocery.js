@@ -10,13 +10,17 @@
 // specific, sometimes field-level, reasoning (POST's section restriction,
 // PATCH's field-by-field split, DELETE's section-dependent rule).
 //
-// Phase 4 ("My Layout" / staples / history): sibling routers
-// routes/groupGroceryAisles.js (mounted at .../grocery/aisles) and
-// routes/groupGroceryStaples.js (mounted at .../grocery/staples) add the
-// group-scoped counterparts of the local `StoreAisle`/`ItemAisleAssignment`
-// and `StapleItem` models — see those files' own doc comments, and
-// prisma/schema.prisma's GroupStoreAisle/GroupStapleItem/
-// GroupGroceryHistoryEntry doc comments for the full data-model reasoning.
+// Phase 4 ("My Layout" / history): sibling router
+// routes/groupGroceryAisles.js (mounted at .../grocery/aisles) adds the
+// group-scoped counterpart of the local `StoreAisle`/`ItemAisleAssignment`
+// models — see that file's own doc comment, and prisma/schema.prisma's
+// GroupStoreAisle/GroupGroceryHistoryEntry doc comments for the full
+// data-model reasoning. (A third Phase-4 sibling, routes/groupGroceryStaples.js —
+// a group-scoped standing "staples" template list — was removed outright per
+// user feedback; the pre-existing `GroupGrocerySection.STAPLES` value this
+// file's own `section` field can hold is a separate, unrelated concept — a
+// tag on one specific line already on the live list, not that removed
+// feature — and stays exactly as it was.)
 // The item-to-aisle assignment itself (`aisleId`/`aisleManuallySet`) folds
 // into this file's own PATCH /:id below instead of living in the aisles
 // router, since it's a field on *this* file's model — see that route's

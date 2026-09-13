@@ -27,7 +27,6 @@ const recipeLibraryRouter = require("./routes/recipeLibrary");
 const groupMealPlanRouter = require("./routes/groupMealPlan");
 const groupGroceryRouter = require("./routes/groupGrocery");
 const groupGroceryAislesRouter = require("./routes/groupGroceryAisles");
-const groupGroceryStaplesRouter = require("./routes/groupGroceryStaples");
 
 const app = express();
 // Render puts every request through its own reverse proxy, so without this
@@ -122,18 +121,24 @@ app.use("/groups", requireAuth, groupsRouter);
 // file per resource, same organization this codebase already uses for
 // recipe-library vs. groups/friends.
 app.use("/groups/:groupId/meal-plan", requireAuth, groupMealPlanRouter);
-// The two Phase-4 sub-routers below are mounted BEFORE the more general
+// The Phase-4 aisles sub-router below is mounted BEFORE the more general
 // /groups/:groupId/grocery mount, on purpose: Express tries `app.use`
 // mounts in declaration order and matches by path *prefix*, so
-// /groups/:groupId/grocery/aisles and .../staples need to reach their own
-// routers first rather than falling into groupGroceryRouter's own route
-// table (which, as it happens, has no routes that would actually collide
-// with "aisles"/"staples" as a param — but mounting the specific prefixes
-// first avoids relying on that and matches how a reader would expect these
-// three routers to be tried). See routes/groupGroceryAisles.js and
-// routes/groupGroceryStaples.js for the "My Layout" / staples API.
+// /groups/:groupId/grocery/aisles needs to reach its own router first
+// rather than falling into groupGroceryRouter's own route table (which, as
+// it happens, has no routes that would actually collide with "aisles" as a
+// param — but mounting the specific prefix first avoids relying on that and
+// matches how a reader would expect these two routers to be tried). See
+// routes/groupGroceryAisles.js for the "My Layout" API. There used to be a
+// third sibling here, routes/groupGroceryStaples.js (mounted at
+// .../grocery/staples), for a group-scoped standing "staples" template
+// list — removed outright (route file, Prisma model, and its iOS
+// counterpart) per user feedback that the concept added nothing useful;
+// see the removal commit for the full scope. The pre-existing
+// `GroupGrocerySection.STAPLES` tag below (a plain enum value on an
+// ordinary grocery-list line, unrelated to that removed feature) is
+// untouched.
 app.use("/groups/:groupId/grocery/aisles", requireAuth, groupGroceryAislesRouter);
-app.use("/groups/:groupId/grocery/staples", requireAuth, groupGroceryStaplesRouter);
 app.use("/groups/:groupId/grocery", requireAuth, groupGroceryRouter);
 
 // --- Recipe sharing (Phase 2a) ----------------------------------------

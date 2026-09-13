@@ -21,6 +21,16 @@ import SwiftData
 /// `GroupSharedGroceryListView`/`GroupAislesManagerView` never gate any
 /// aisle action on `isManager`, mirroring the backend's own uniform
 /// "any member" rule.
+///
+/// **A former sibling type used to live in this file too**: `GroupStapleItem`,
+/// the group counterpart of the local `StapleItem` model — a standing
+/// "staples" template list, reachable from a `GroupStaplesManagerView`
+/// sheet. Removed outright per direct user feedback that the concept added
+/// nothing useful, along with its backend model/route/migration and every
+/// iOS reference to it — see `backend/README.md`'s "My Layout" section for
+/// the removal note. This is unrelated to `GroupGrocerySection.staples`
+/// (`AccountModels.swift`), a tag on one specific line already on the live
+/// list, which is untouched.
 @Model
 final class GroupStoreAisle {
     /// Same server-id-as-local-id convention as `GroupPlannedMeal.id` — see
@@ -69,66 +79,6 @@ final class GroupStoreAisle {
         self.name = name
         self.sortIndex = sortIndex
         self.linkedCategory = linkedCategory
-        self.createdAt = createdAt
-        self.syncState = syncState
-    }
-
-    static let localPlaceholderIDPrefix = "local-pending-"
-
-    static func newLocalPlaceholderID() -> String {
-        localPlaceholderIDPrefix + UUID().uuidString
-    }
-
-    var isLocalPlaceholderID: Bool {
-        id.hasPrefix(Self.localPlaceholderIDPrefix)
-    }
-}
-
-/// Local, offline-capable mirror of one row from a group's standing staples
-/// list (`GET /groups/:groupId/grocery/staples` — see `serializeStaple(...)`
-/// in backend/routes/groupGroceryStaples.js and `GroupStapleItem` in
-/// prisma/schema.prisma, which this mirrors field-for-field). Parallels the
-/// local, personal `StapleItem` model (`HomeEats/Models/StapleItem.swift`),
-/// untouched per this feature's own scope notes — `GroupStaplesManagerView`
-/// reuses that screen's *visual* language against this new type instead.
-/// Same any-member reasoning as `GroupStoreAisle` above — see
-/// routes/groupGroceryStaples.js's own doc comment.
-@Model
-final class GroupStapleItem {
-    @Attribute(.unique) var id: String
-    var groupID: String
-    var name: String
-    var category: GroceryCategory
-    var defaultQuantityText: String?
-    /// Whether this staple should be included the next time a grocery list
-    /// is generated — carried over field-for-field from the local
-    /// `StapleItem.isActive` for interface parity, though (matching both the
-    /// local app and the backend today) toggling it has no automated
-    /// downstream effect on this group's actual list; see
-    /// routes/groupGroceryStaples.js's own doc comment for why.
-    var isActive: Bool
-    var addedByUserID: String
-    var createdAt: Date
-    var syncState: GroupSyncState
-
-    init(
-        id: String,
-        groupID: String,
-        name: String,
-        category: GroceryCategory,
-        defaultQuantityText: String? = nil,
-        isActive: Bool = true,
-        addedByUserID: String,
-        createdAt: Date = .now,
-        syncState: GroupSyncState = .synced
-    ) {
-        self.id = id
-        self.groupID = groupID
-        self.name = name
-        self.category = category
-        self.defaultQuantityText = defaultQuantityText
-        self.isActive = isActive
-        self.addedByUserID = addedByUserID
         self.createdAt = createdAt
         self.syncState = syncState
     }

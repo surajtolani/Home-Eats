@@ -1,13 +1,17 @@
 import XCTest
 @testable import HomeEats
 
-/// Decoding round-trip tests for the Phase 4 "My Layout" aisle/staple/
-/// history wire types (`RemoteGroupStoreAisle`, `RemoteGroupStapleItem`,
-/// `RemoteGroupGroceryHistoryEntry`) — same discipline as
-/// `GroupSharedPlanDecodingTests`: fixtures hand-checked field by field
-/// against the actual serializer functions in
-/// `backend/routes/groupGroceryAisles.js`/`backend/routes/groupGroceryStaples.js`/
-/// `backend/routes/groupGrocery.js`'s `GET .../grocery/history` handler.
+/// Decoding round-trip tests for the Phase 4 "My Layout" aisle/history wire
+/// types (`RemoteGroupStoreAisle`, `RemoteGroupGroceryHistoryEntry`) — same
+/// discipline as `GroupSharedPlanDecodingTests`: fixtures hand-checked field
+/// by field against the actual serializer functions in
+/// `backend/routes/groupGroceryAisles.js`/`backend/routes/groupGrocery.js`'s
+/// `GET .../grocery/history` handler. (A third wire type used to be covered
+/// here too, `RemoteGroupStapleItem`/`GroupStaplesResponse` — its decoding
+/// and `applyRemote` tests below were removed along with the rest of the
+/// standing "staples" template-list feature; see `GroupStoreAisle`'s doc
+/// comment in HomeEats/Models/GroupGroceryLayout.swift for the removal
+/// note.)
 final class GroupGroceryLayoutDecodingTests: XCTestCase {
     private let decoder = AccountsAPIClient.decoder
 
@@ -38,31 +42,6 @@ final class GroupGroceryLayoutDecodingTests: XCTestCase {
         let custom = response.aisles[1]
         XCTAssertEqual(custom.name, "Aisle 7 - Snacks")
         XCTAssertNil(custom.linkedCategory)
-    }
-
-    // MARK: - Staples (routes/groupGroceryStaples.js)
-
-    func testGroupStaplesResponseDecodesActiveAndInactiveWithOptionalQuantity() throws {
-        // `serializeStaple`.
-        let json = """
-        {
-          "staples": [
-            { "id": "s1", "groupId": "g1", "name": "Milk", "category": "DAIRY_AND_EGGS", "defaultQuantityText": "1 gallon", "isActive": true, "addedByUserId": "u1", "createdAt": "2024-06-01T00:00:00.000Z" },
-            { "id": "s2", "groupId": "g1", "name": "Paper Towels", "category": "HOUSEHOLD", "defaultQuantityText": null, "isActive": false, "addedByUserId": "u2", "createdAt": "2024-06-02T00:00:00.000Z" }
-          ]
-        }
-        """
-        let response = try decoder.decode(GroupStaplesResponse.self, from: data(json))
-        XCTAssertEqual(response.staples.count, 2)
-
-        let milk = response.staples[0]
-        XCTAssertEqual(milk.category, .dairyAndEggs)
-        XCTAssertEqual(milk.defaultQuantityText, "1 gallon")
-        XCTAssertTrue(milk.isActive)
-
-        let paperTowels = response.staples[1]
-        XCTAssertNil(paperTowels.defaultQuantityText)
-        XCTAssertFalse(paperTowels.isActive)
     }
 
     // MARK: - Grocery history (routes/groupGrocery.js's GET .../grocery/history)
@@ -141,12 +120,15 @@ final class GroupGroceryHistoryEntryIDTests: XCTestCase {
     }
 }
 
-/// Unit tests for the new `GroupSyncService.applyRemote` overloads
-/// (`RemoteGroupStoreAisle` -> `GroupStoreAisle`, `RemoteGroupStapleItem` ->
-/// `GroupStapleItem`) — plain field-mapping + `.synced` assignment, exercised
-/// directly against in-memory model instances with no `ModelContext`
-/// needed, same style as `GroupGroceryItemCreateRaceTests`'s own
-/// `applyRemote` coverage.
+/// Unit tests for the `GroupSyncService.applyRemote(_:to: GroupStoreAisle)`
+/// overload — plain field-mapping + `.synced` assignment, exercised directly
+/// against in-memory model instances with no `ModelContext` needed, same
+/// style as `GroupGroceryItemCreateRaceTests`'s own `applyRemote` coverage.
+/// (A second overload used to be covered here too,
+/// `applyRemote(_:to: GroupStapleItem)` — its tests were removed along with
+/// the rest of the standing "staples" template-list feature; see
+/// `GroupStoreAisle`'s doc comment in HomeEats/Models/GroupGroceryLayout.swift
+/// for the removal note.)
 final class GroupGroceryLayoutApplyRemoteTests: XCTestCase {
     func testApplyRemoteAisleUpdatesEveryFieldAndMarksSynced() {
         let local = GroupStoreAisle(
@@ -166,38 +148,22 @@ final class GroupGroceryLayoutApplyRemoteTests: XCTestCase {
         XCTAssertFalse(local.isLocalPlaceholderID)
     }
 
-    func testApplyRemoteStapleUpdatesEveryFieldAndMarksSynced() {
-        let local = GroupStapleItem(
-            id: GroupStapleItem.newLocalPlaceholderID(), groupID: "g1", name: "Old Name",
-            category: .other, isActive: false, addedByUserID: "u1", syncState: .pendingCreate
-        )
-        let remote = RemoteGroupStapleItem(
-            id: "server-staple-1", groupID: "g1", name: "Milk", category: .dairyAndEggs,
-            defaultQuantityText: "1 gallon", isActive: true, addedByUserID: "u1", createdAt: .now
-        )
-        GroupSyncService.applyRemote(remote, to: local)
-        XCTAssertEqual(local.id, "server-staple-1")
-        XCTAssertEqual(local.name, "Milk")
-        XCTAssertEqual(local.category, .dairyAndEggs)
-        XCTAssertEqual(local.defaultQuantityText, "1 gallon")
-        XCTAssertTrue(local.isActive)
-        XCTAssertEqual(local.syncState, .synced)
-    }
-
-    // MARK: - Create-race protection: aisle `sortIndex`, staple `isActive`
+    // MARK: - Create-race protection: aisle `sortIndex`
     //
-    // Regression tests for the same "create call can't communicate field X"
+    // Regression test for the same "create call can't communicate field X"
     // race `GroceryCreateReconciliation` closes for `GroupSharedGroceryItem`
-    // (see its own doc comment), extended to these two Phase 4 models:
-    // `POST .../grocery/aisles` never accepts `sortIndex` (a new aisle
-    // always lands at the end server-side — see routes/groupGroceryAisles.js)
-    // and `POST .../grocery/staples` never accepts `isActive` (always
-    // defaults `true` server-side — see routes/groupGroceryStaples.js), so
-    // a local value that already differs from either the "always appended
-    // at the end"/"always true" default — whether that happened before the
-    // create was ever dispatched, or during its own flight — must win over
-    // the create response, and the row must stay push-able (`.pendingUpdate`,
-    // not `.synced`) so a follow-up `PATCH` actually corrects the server.
+    // (see its own doc comment), extended to this Phase 4 model: `POST
+    // .../grocery/aisles` never accepts `sortIndex` (a new aisle always
+    // lands at the end server-side — see routes/groupGroceryAisles.js), so
+    // a local value that already differs from the "always appended at the
+    // end" default — whether that happened before the create was ever
+    // dispatched, or during its own flight — must win over the create
+    // response, and the row must stay push-able (`.pendingUpdate`, not
+    // `.synced`) so a follow-up `PATCH` actually corrects the server. (A
+    // second model's create-race coverage used to live here too — staple
+    // `isActive` — removed along with the rest of the standing "staples"
+    // template-list feature; see `GroupStoreAisle`'s doc comment in
+    // HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
 
     func testApplyRemoteAisleWithNoLocalReorder_appliesRemoteSortIndexAndMarksSynced() {
         let local = GroupStoreAisle(
@@ -233,34 +199,4 @@ final class GroupGroceryLayoutApplyRemoteTests: XCTestCase {
         XCTAssertEqual(local.id, "server-aisle-1")
     }
 
-    func testApplyRemoteStapleWithNoLocalToggle_appliesRemoteIsActiveAndMarksSynced() {
-        let local = GroupStapleItem(
-            id: GroupStapleItem.newLocalPlaceholderID(), groupID: "g1", name: "Milk",
-            category: .dairyAndEggs, isActive: true, addedByUserID: "u1", syncState: .pendingCreate
-        )
-        let remote = RemoteGroupStapleItem(id: "server-staple-1", groupID: "g1", name: "Milk", category: .dairyAndEggs, defaultQuantityText: nil, isActive: true, addedByUserID: "u1", createdAt: .now)
-        GroupSyncService.applyRemote(remote, to: local, preserveLocalIsActive: false)
-        XCTAssertTrue(local.isActive)
-        XCTAssertEqual(local.syncState, .synced)
-    }
-
-    /// Regression test for the staple-`isActive` counterpart: the user
-    /// toggled a still-`.pendingCreate` staple off — before or during its
-    /// own create call — which `POST .../grocery/staples` has no way to
-    /// carry (always creates `isActive: true`). The local `false` must win,
-    /// and the row must be re-pushed (`.pendingUpdate`) via a follow-up
-    /// `PATCH .../grocery/staples/:id` so the toggle actually reaches the
-    /// server.
-    func testApplyRemoteStapleAfterLocalToggleOff_preservesLocalIsActiveAndMarksPendingUpdate() {
-        let local = GroupStapleItem(
-            id: GroupStapleItem.newLocalPlaceholderID(), groupID: "g1", name: "Milk",
-            category: .dairyAndEggs, isActive: false, addedByUserID: "u1", syncState: .pendingCreate
-        )
-        let remote = RemoteGroupStapleItem(id: "server-staple-1", groupID: "g1", name: "Milk", category: .dairyAndEggs, defaultQuantityText: nil, isActive: true, addedByUserID: "u1", createdAt: .now)
-        GroupSyncService.applyRemote(remote, to: local, preserveLocalIsActive: true)
-        XCTAssertFalse(local.isActive, "local toggle-off must win, not be reset to the server's default true")
-        XCTAssertEqual(local.syncState, .pendingUpdate, "must be re-pushed, not treated as fully synced")
-        XCTAssertFalse(local.isLocalPlaceholderID)
-        XCTAssertEqual(local.id, "server-staple-1")
-    }
 }

@@ -640,8 +640,12 @@ struct GroupGroceryListResponse: Codable {
 // Wire shapes only, same relationship to the local, offline-capable
 // SwiftData layer as the meal-plan/grocery-list types above — see
 // `HomeEats/Models/GroupGroceryLayout.swift` for the local mirrors
-// (`GroupStoreAisle`, `GroupStapleItem`, `GroupGroceryHistoryEntry`) and
-// `GroupSyncService` for what turns one of these into the other and back.
+// (`GroupStoreAisle`, `GroupGroceryHistoryEntry`) and `GroupSyncService` for
+// what turns one of these into the other and back. (A third wire type used
+// to be declared further down this file, `RemoteGroupStapleItem`/
+// `GroupStaplesResponse` — removed along with the rest of the standing
+// "staples" template-list feature; see `GroupStoreAisle`'s doc comment for
+// the removal note.)
 
 /// One row of `GET .../grocery/aisles`, and every aisle-mutating route's
 /// response — exactly `serializeAisle(...)` in routes/groupGroceryAisles.js.
@@ -664,31 +668,6 @@ struct RemoteGroupStoreAisle: Codable, Identifiable {
 
 struct GroupStoreAislesResponse: Codable {
     let aisles: [RemoteGroupStoreAisle]
-}
-
-// MARK: - Group staples (Phase 4 iOS wiring — routes/groupGroceryStaples.js)
-
-/// One row of `GET .../grocery/staples`, and every staple-mutating route's
-/// response — exactly `serializeStaple(...)` in routes/groupGroceryStaples.js.
-struct RemoteGroupStapleItem: Codable, Identifiable {
-    let id: String
-    let groupID: String
-    let name: String
-    let category: RemoteGroceryCategory
-    let defaultQuantityText: String?
-    let isActive: Bool
-    let addedByUserID: String
-    let createdAt: Date
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, category, defaultQuantityText, isActive, createdAt
-        case groupID = "groupId"
-        case addedByUserID = "addedByUserId"
-    }
-}
-
-struct GroupStaplesResponse: Codable {
-    let staples: [RemoteGroupStapleItem]
 }
 
 // MARK: - Group grocery history (Phase 4 iOS wiring — GET .../grocery/history in routes/groupGrocery.js)
