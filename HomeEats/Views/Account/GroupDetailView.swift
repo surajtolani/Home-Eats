@@ -35,25 +35,32 @@ struct GroupDetailView: View {
                 Text(errorMessage).foregroundStyle(.red)
                 Button("Retry") { Task { await load() } }
             } else if let group {
-                // Phase 4 — the group's shared, backend-hosted meal plan and
-                // grocery list (contrast with everything below, which is
-                // just this group's *membership* info): reached from here,
-                // not folded into the personal Plan/Grocery tabs, per this
-                // feature's own scope (see `GroupSharedMealPlanView`'s doc
-                // comment). Shown for every member regardless of role — a
-                // `PARTICIPANT` can still suggest/vote/check things off on
-                // both, they just don't get every action once inside (see
-                // each screen's own role gating).
-                Section("Shared With This Group") {
+                // This group's own backend-hosted meal plan and grocery list
+                // (contrast with everything below, which is just this
+                // group's *membership* info) — the exact same screens the
+                // main Plan/Grocery tabs show when this group is the active
+                // one (see `GroupScopedPlanTab`/`GroupScopedGroceryTab` in
+                // RootView.swift), offered again here as a shortcut so you
+                // don't have to switch the active group just to peek at
+                // another one's plan. Deliberately *not* labeled "Shared
+                // Meal Plan"/"Shared Grocery List" any more — every group's
+                // plan and list belongs to that group alone (each is its own
+                // row in the backend, keyed by groupId); "shared" read as if
+                // there were one plan shared across all your groups, which
+                // is exactly backwards. Shown for every member regardless of
+                // role — a `PARTICIPANT` can still suggest/vote/check things
+                // off on both, they just don't get every action once inside
+                // (see each screen's own role gating).
+                Section(group.name) {
                     NavigationLink {
                         GroupSharedMealPlanView(groupID: groupID, groupName: group.name)
                     } label: {
-                        Label("Shared Meal Plan", systemImage: "calendar")
+                        Label("Meal Plan", systemImage: "calendar")
                     }
                     NavigationLink {
                         GroupSharedGroceryListView(groupID: groupID, groupName: group.name)
                     } label: {
-                        Label("Shared Grocery List", systemImage: "cart")
+                        Label("Grocery List", systemImage: "cart")
                     }
                 }
                 Section("Members") {

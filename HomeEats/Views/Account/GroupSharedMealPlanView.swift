@@ -1,8 +1,12 @@
 import SwiftUI
 import SwiftData
 
-/// A group's shared meal plan — day-by-day decided meals and pending
-/// suggestions, reached from `GroupDetailView`'s "Shared Meal Plan" link.
+/// A single group's own meal plan — day-by-day decided meals and pending
+/// suggestions, scoped to one `groupID` (never shared across groups; each
+/// group has its own independent plan). This is what the main "Plan" tab
+/// shows for whichever group is currently active (see `GroupScopedPlanTab`
+/// in RootView.swift), and is also reachable directly from
+/// `GroupDetailView`'s "Meal Plan" link for a non-active group.
 /// A new screen, not a modification of the existing personal-use
 /// `DaySlotsView`/`CalendarPlanView` (see this feature's own scope notes —
 /// those stay untouched): this reuses their *visual* language (the

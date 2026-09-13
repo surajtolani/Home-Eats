@@ -1,9 +1,13 @@
 import SwiftUI
 import SwiftData
 
-/// A group's shared grocery list — category-grouped, with a suggest/accept
-/// flow and check-off, reached from `GroupDetailView`'s "Shared Grocery
-/// List" link. A new screen (see this feature's scope notes — the existing
+/// A single group's own grocery list — category-grouped, with a
+/// suggest/accept flow and check-off, scoped to one `groupID` (never shared
+/// across groups; each group has its own independent list). This is what
+/// the main "Grocery" tab shows for whichever group is currently active
+/// (see `GroupScopedGroceryTab` in RootView.swift), and is also reachable
+/// directly from `GroupDetailView`'s "Grocery List" link for a non-active
+/// group. A new screen (see this feature's scope notes — the existing
 /// personal `GroceryListView` stays untouched); reuses that screen's
 /// *visual* language (category sections, a checkbox row, an Accept/Reject-
 /// style suggestion row) rebuilt against the new `GroupSharedGroceryItem`
