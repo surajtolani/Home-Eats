@@ -492,18 +492,44 @@ private struct GroupDayCell: View {
         return 1
     }
 
+    /// One dot per distinct category actually present that day — matching
+    /// the always-multi-category `legend` above (Cooking/Eating out/Order
+    /// in/Suggested), rather than the single highest-priority dot this used
+    /// to collapse down to. A day with both a home-cooked lunch and a
+    /// restaurant dinner planned now shows both a forest and a terracotta
+    /// dot side by side, not just the first one an if/else-if chain happened
+    /// to check first — that used to silently hide real information ("what
+    /// else is going on that day?") the calendar's whole job is to surface
+    /// at a glance.
     @ViewBuilder
     private var statusDot: some View {
-        if meals.contains(where: { $0.isHomeCooked }) {
-            Circle().fill(Color.brandForest).frame(width: 6, height: 6)
-        } else if meals.contains(where: { $0.isEatingOut }) {
-            Circle().fill(Color.brandTerracotta).frame(width: 6, height: 6)
-        } else if meals.contains(where: { $0.isOrderingIn }) {
-            Circle().fill(Color.brandHoney).frame(width: 6, height: 6)
-        } else if hasSuggestions {
-            Circle().fill(Color.brandSage).frame(width: 6, height: 6)
-        } else {
+        let hasHomeCooked = meals.contains { $0.isHomeCooked }
+        let hasEatingOut = meals.contains { $0.isEatingOut }
+        let hasOrderingIn = meals.contains { $0.isOrderingIn }
+
+        if !hasHomeCooked && !hasEatingOut && !hasOrderingIn && !hasSuggestions {
             Color.clear.frame(width: 6, height: 6)
+        } else {
+            HStack(spacing: 3) {
+                if hasHomeCooked {
+                    Circle().fill(Color.brandForest).frame(width: 6, height: 6)
+                }
+                if hasEatingOut {
+                    Circle().fill(Color.brandTerracotta).frame(width: 6, height: 6)
+                }
+                if hasOrderingIn {
+                    Circle().fill(Color.brandHoney).frame(width: 6, height: 6)
+                }
+                // Suggested only shown once nothing's actually decided yet
+                // for the day — once at least one meal IS decided, a
+                // still-pending suggestion for some other slot isn't worth
+                // its own dot in this already-multi-dot view; the day
+                // detail screen is where that suggestion is still fully
+                // visible and actionable.
+                if hasSuggestions && !hasHomeCooked && !hasEatingOut && !hasOrderingIn {
+                    Circle().fill(Color.brandSage).frame(width: 6, height: 6)
+                }
+            }
         }
     }
 }
