@@ -119,6 +119,32 @@ struct GroupSharedGroceryListView: View {
         allAisles.filter { $0.syncState != .pendingDelete }
     }
 
+    /// Aisles a "Move to Aisle" action can actually target — `visibleAisles`
+    /// minus any still-`.pendingCreate` one. A fresh aisle's `id` is still a
+    /// local placeholder (`GroupStoreAisle.newLocalPlaceholderID()`), not the
+    /// real, stable id `PATCH .../grocery/:id`'s `aisleId` field requires
+    /// (validated server-side as `z.string().uuid()` — see
+    /// routes/groupGrocery.js); `GroupSyncService.push` runs
+    /// `pushGroceryItems` *before* `pushAisles` in the same cycle (see that
+    /// method's own ordering), so an item assigned to a brand-new aisle in
+    /// the same offline stretch it was created in would have its aisle
+    /// placement PATCHed with that placeholder string in the very same sync
+    /// the aisle itself is about to be swapped onto its real server id —
+    /// and, unlike a genuine relationship, `GroupSharedGroceryItem.aisleID`
+    /// is a plain `String`, not something `GroupSyncService.applyRemote(_:to:
+    /// GroupStoreAisle)` updates every referencing item to match when the
+    /// aisle's own id changes. Left unguarded, that PATCH — and every retry
+    /// after it — would fail forever, permanently stranding the item's aisle
+    /// placement. Excluding a not-yet-synced aisle from this menu closes the
+    /// gap outright rather than trying to reconcile a stale reference after
+    /// the fact; a fresh aisle drops back in and becomes assignable as soon
+    /// as its own create actually lands (near-instant in practice, since
+    /// `GroupAislesManagerView.addAisle` triggers a sync right after
+    /// inserting it).
+    private var assignableAisles: [GroupStoreAisle] {
+        visibleAisles.filter { !$0.isLocalPlaceholderID }
+    }
+
     private var suggestedItems: [GroupSharedGroceryItem] {
         visibleItems.filter { $0.section == .suggested }.sorted { $0.name < $1.name }
     }
@@ -391,7 +417,7 @@ struct GroupSharedGroceryListView: View {
                     Text("Unsorted")
                 }
             }
-            ForEach(visibleAisles) { aisle in
+            ForEach(assignableAisles) { aisle in
                 Button {
                     moveToAisle(item, aisleID: aisle.id)
                 } label: {
