@@ -76,7 +76,7 @@ targets:
         # bundle ID — bump this by 1 each time you archive+upload a new
         # build, even though MARKETING_VERSION (the version testers see)
         # can stay the same across several TestFlight builds.
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
     dependencies: []
 
   HomeEatsTests:
