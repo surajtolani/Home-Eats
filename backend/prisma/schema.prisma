@@ -53,6 +53,14 @@ model User {
   recipeSharesReceived RecipeShare[] @relation("RecipeShareUserTarget")
   recipeSharesSent     RecipeShare[] @relation("RecipeShareSharer")
 
+  // Group meal planning / grocery lists (Phase 3) — see the doc comments on
+  // PlannedMeal, MealSuggestion, MealSuggestionVote, and GroupGroceryItem
+  // below for the full model.
+  decidedMealPlans        PlannedMeal[]        @relation("PlannedMealDecidedBy")
+  proposedMealSuggestions MealSuggestion[]     @relation("MealSuggestionProposedBy")
+  mealSuggestionVotes     MealSuggestionVote[]
+  addedGroceryItems       GroupGroceryItem[]
+
   @@index([phoneNumber])
 }
 
@@ -86,9 +94,12 @@ model Friendship {
 }
 
 // The "household" or "trip" — deliberately generic, name is user-chosen.
-// createdByUserId is kept mainly for provenance/display ("created by...");
-// v1 has no elevated admin role for the creator (see GroupMembership doc
-// comment and DELETE /groups/:groupId/members/:userId). Nullable, with
+// createdByUserId is kept mainly for provenance/display ("created by...") —
+// it's what the Phase 3 role-backfill migration used to decide who starts
+// MANAGER (see the GroupRole/GroupMembership doc comments below), but
+// nothing at runtime keeps a membership's `role` tied to it after that: a
+// MANAGER can leave or be demoted-by-a-future-endpoint independently of
+// whether they happen to be group.createdByUserId. Nullable, with
 // `onDelete: SetNull` rather than `Cascade`: the creator is just the one who
 // happened to tap "Create" — deleting their User row (no such route exists
 // yet, but will) must not take the whole Group down with it and thereby
@@ -105,17 +116,52 @@ model Group {
   memberships  GroupMembership[]
   invites      Invite[]
   recipeShares RecipeShare[]
+
+  // Group meal planning / grocery lists (Phase 3) — see the doc comments on
+  // PlannedMeal, MealSuggestion, and GroupGroceryItem below.
+  plannedMeals    PlannedMeal[]
+  mealSuggestions MealSuggestion[]
+  groceryItems    GroupGroceryItem[]
+}
+
+// MANAGER/PARTICIPANT — the two-tier permission model added in Phase 3 for
+// shared meal planning and grocery lists ("Managers can add stuff to the
+// meal plans etc, participants can suggest things to vote or suggest a
+// recipe etc," per the feature spec). A MANAGER can decide meals and
+// grocery-list items directly; a PARTICIPANT can only propose/suggest
+// (a meal suggestion pending a vote, or a grocery item in the SUGGESTED
+// section) — see routes/groupMealPlan.js and routes/groupGrocery.js for
+// exactly which routes require which role. Deliberately just these two
+// tiers, and deliberately no promote/demote-role endpoint yet (see
+// backend/README.md) — that's a reasonable follow-up once real usage shows
+// it's needed, not something this phase needs to solve.
+enum GroupRole {
+  MANAGER
+  PARTICIPANT
 }
 
 // The many-to-many join between User and Group — this is what makes
 // "overlapping groups" work: a user can have many GroupMembership rows
 // (one per group they're in), and a group can have many members. Nothing
 // in this schema or the route handlers assumes a user has at most one.
+//
+// `role` (added in Phase 3): a group's creator's own membership row starts
+// MANAGER; every membership added afterwards — at creation via
+// `memberUserIds`, or later via POST /groups/:groupId/invite — starts
+// PARTICIPANT (see routes/groups.js). The migration that added this column
+// backfilled it the same way for every pre-existing membership: the row
+// matching `group.createdByUserId` became MANAGER, everything else
+// PARTICIPANT — and since `createdByUserId` is nullable (a group whose
+// creator's account has since been deleted — see the Group doc comment
+// above), a group with no known creator anymore just leaves every one of
+// its existing memberships at the column default (PARTICIPANT) rather than
+// guessing which member should be promoted.
 model GroupMembership {
-  id       String   @id @default(uuid())
+  id       String    @id @default(uuid())
   userId   String
   groupId  String
-  joinedAt DateTime @default(now())
+  role     GroupRole @default(PARTICIPANT)
+  joinedAt DateTime  @default(now())
 
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
@@ -207,6 +253,15 @@ model Recipe {
   ingredients RecipeIngredient[]
   shares      RecipeShare[]
 
+  // Group meal planning (Phase 3) — a recipe-based PlannedMeal/
+  // MealSuggestion references back to the same Recipe row it was decided/
+  // suggested from (see those models' doc comments below). Not scoped to
+  // sharing/visibility at the schema level; routes/groupMealPlan.js enforces
+  // that the caller can actually see a recipe (owner, direct share, or a
+  // shared-with group) before letting it be planned or suggested.
+  plannedMeals    PlannedMeal[]
+  mealSuggestions MealSuggestion[]
+
   @@index([ownerId])
 }
 
@@ -261,4 +316,195 @@ model RecipeShare {
   @@unique([recipeId, sharedWithGroupId])
   @@index([sharedWithUserId])
   @@index([sharedWithGroupId])
+}
+
+// --- Group meal planning (Phase 3) --------------------------------------
+// A group's single shared meal plan: everyone in the group sees the same
+// PlannedMeal/MealSuggestion rows (contrast with Recipe/RecipeShare above,
+// which is "my recipe, shared with specific people/groups" — this is
+// "belongs to the group outright," no separate sharing step). See
+// backend/README.md's "Group meal planning" section and
+// routes/groupMealPlan.js for the API. `slot`'s case names deliberately
+// mirror the iOS `MealSlot` enum's case names exactly (breakfast ->
+// BREAKFAST, etc. — see HomeEats/Models/MealSlot.swift) so a later iOS-
+// wiring task has a direct 1:1 mapping rather than a lookup table.
+enum MealSlot {
+  BREAKFAST
+  LUNCH
+  DINNER
+  OTHER
+}
+
+// A single already-decided meal for a group's shared plan — the group-
+// scoped, MANAGER-only-to-create counterpart of the iOS `PlannedMeal`
+// SwiftData model (HomeEats/Models/PlannedMeal.swift), which this mirrors
+// field-for-field where it makes sense (date/slot/isOrderIn/decidedAt).
+// Every row is either recipe-based (`recipeId` set, referencing an existing
+// row in the recipe-library — see the Recipe model above and
+// routes/groupMealPlan.js, which requires the recipe to already exist and
+// be visible to the caller) or a restaurant/order-in meal (`restaurantName`
+// set instead). Exactly one of `recipeId`/`restaurantName` must be set,
+// never both/neither — same "Prisma/Postgres can't express this as a
+// schema constraint" situation as RecipeShare above, so it's enforced in
+// routes/groupMealPlan.js instead. v1 deliberately has no backend
+// `Restaurant` model at all (see the feature spec) — `restaurantName` is
+// just a plain string, no FK, matching `isOrderIn`'s existing meaning on
+// the iOS model (dining at vs. ordering in from the same place).
+//
+// `recipeId`'s `onDelete: SetNull` (rather than Cascade) is the same
+// tradeoff as `Group.createdByUserId` above: if the recipe behind a
+// decided meal is later deleted by its owner, this row survives (so a
+// group's meal-plan history isn't silently destroyed by an unrelated
+// delete elsewhere) with `recipeId` cleared — the one case where a row can
+// end up with both `recipeId` and `restaurantName` null; routes/clients
+// reading this data should treat that combination as "recipe no longer
+// available" rather than crashing on it.
+model PlannedMeal {
+  id              String   @id @default(uuid())
+  groupId         String
+  date            DateTime
+  slot            MealSlot
+  recipeId        String?
+  restaurantName  String?
+  isOrderIn       Boolean  @default(false)
+  decidedByUserId String
+  decidedAt       DateTime @default(now())
+
+  group         Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  recipe        Recipe? @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  decidedByUser User   @relation("PlannedMealDecidedBy", fields: [decidedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@index([groupId, date])
+  @@index([recipeId])
+}
+
+// A recipe/restaurant proposed for a given date+slot, pending a vote —
+// the group-scoped counterpart of the iOS `MealSuggestion` SwiftData model
+// (HomeEats/Models/MealSuggestion.swift). Any member may propose one (see
+// routes/groupMealPlan.js); a MANAGER can adopt it into a real PlannedMeal
+// (POST .../suggestions/:id/adopt, inside a transaction that creates the
+// PlannedMeal and deletes this row) or it can be withdrawn by its proposer
+// or removed by a MANAGER. Same recipe-or-restaurant shape and the same
+// `onDelete: SetNull` reasoning on `recipeId` as PlannedMeal above.
+//
+// Votes are their own join table (`MealSuggestionVote`) rather than a
+// plain integer counter or an array column: the iOS `MealSuggestion` model
+// tracks voters as `votedMemberIDs: [UUID]` specifically so the UI can show
+// "did I already vote for this" per suggestion, not just a raw count — a
+// real table with `@@unique([suggestionId, userId])` gives that same
+// per-user answer as a simple existence check (and toggling a vote is then
+// just an insert-or-delete on one row) instead of reading/rewriting a JSON-
+// ish array column on every vote.
+model MealSuggestion {
+  id               String   @id @default(uuid())
+  groupId          String
+  date             DateTime
+  slot             MealSlot
+  recipeId         String?
+  restaurantName   String?
+  isOrderIn        Boolean  @default(false)
+  proposedByUserId String
+  createdAt        DateTime @default(now())
+
+  group          Group                @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  recipe         Recipe?              @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  proposedByUser User                 @relation("MealSuggestionProposedBy", fields: [proposedByUserId], references: [id], onDelete: Cascade)
+  votes          MealSuggestionVote[]
+
+  @@index([groupId])
+  @@index([groupId, date])
+  @@index([recipeId])
+}
+
+// One user's vote for one MealSuggestion — see that model's doc comment
+// above for why this is a real join table rather than a counter/array
+// column. `@@unique([suggestionId, userId])` is what makes "toggle my own
+// vote" a clean upsert-or-delete in routes/groupMealPlan.js, and also
+// guarantees one member can never double-count their own vote.
+model MealSuggestionVote {
+  id           String   @id @default(uuid())
+  suggestionId String
+  userId       String
+  createdAt    DateTime @default(now())
+
+  suggestion MealSuggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([suggestionId, userId])
+  @@index([suggestionId])
+  @@index([userId])
+}
+
+// --- Group grocery list (Phase 3) ---------------------------------------
+// A group's single shared grocery list — same "belongs to the group
+// outright, not separately shared" relationship to Group as PlannedMeal/
+// MealSuggestion above. See backend/README.md's "Group grocery list"
+// section and routes/groupGrocery.js for the API.
+//
+// `category`'s case names mirror the iOS `GroceryCategory` enum's case
+// names exactly (produce -> PRODUCE, dairyAndEggs -> DAIRY_AND_EGGS, etc.
+// — see HomeEats/Models/GroceryCategory.swift) so a later iOS-wiring task
+// has a direct 1:1 mapping. Deliberately does NOT carry that enum's
+// `guess`/`symbolName`/`sortIndex` display logic — those stay client-side,
+// same reasoning as RecipeIngredient leaving out `category`/`rawText`
+// above.
+enum GroceryCategory {
+  PRODUCE
+  DAIRY_AND_EGGS
+  MEAT_AND_SEAFOOD
+  BAKERY
+  PANTRY
+  FROZEN
+  BEVERAGES
+  SNACKS
+  HOUSEHOLD
+  OTHER
+}
+
+// `section`'s case names mirror the iOS `GroceryListSection` enum's
+// *current* semantics, not its full raw case list: `GroceryListSection`
+// still technically has a `.rejected` case in Swift, but it's vestigial —
+// kept only for `RejectedGroceryItemCleanup`'s one-time migration of old
+// rows, per that file's own doc comment ("Rejecting now deletes the row
+// outright instead ... nothing new will ever land in `.rejected`"). This
+// enum deliberately has no REJECTED value to match: "reject" here (see
+// DELETE /groups/:groupId/grocery/:id in routes/groupGrocery.js) means
+// deleting the row outright, same as the already-fixed local behavior.
+// suggested -> SUGGESTED, thisWeek -> THIS_WEEK, staples -> STAPLES.
+enum GroupGrocerySection {
+  SUGGESTED
+  THIS_WEEK
+  STAPLES
+}
+
+// A single shared grocery-list line. Named `GroupGroceryItem` (rather than
+// reusing `GroceryItem`) to keep it visibly distinct from the iOS
+// `GroceryItem` SwiftData model it parallels: this is deliberately a
+// smaller shape — no `weekStartDate`/`selectedProductOptionID`/
+// `quantityCount`/`categoryManuallySet`/`layoutOrderIndex`, since v1 has no
+// group-scoped "My Layout" custom-aisle subsystem at all (see
+// backend/README.md) — group lists only support category-grouped ordering,
+// matching the iOS "By Category" view mode. `orderIndex` is a `Float` (not
+// `Int`) for the same reason as the iOS model's own `orderIndex`: reordering
+// can slot an item between two existing ones (new value = the average of
+// its neighbors) without renumbering every other row in the category.
+model GroupGroceryItem {
+  id            String              @id @default(uuid())
+  groupId       String
+  name          String
+  category      GroceryCategory
+  section       GroupGrocerySection
+  quantityText  String              @default("")
+  isChecked     Boolean             @default(false)
+  orderIndex    Float               @default(0)
+  addedByUserId String
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  group       Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  addedByUser User  @relation(fields: [addedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@index([groupId, section])
 }

@@ -3,6 +3,18 @@
 // to many groups at once. Nothing here (or in prisma/schema.prisma's
 // GroupMembership model) assumes a user has only one group. Every route
 // requires auth (mounted behind requireAuth in index.js).
+//
+// Roles (Phase 3): every GroupMembership now carries a `role` — MANAGER or
+// PARTICIPANT (see the GroupRole/GroupMembership doc comments in
+// prisma/schema.prisma for the full reasoning and the migration that
+// backfilled existing rows). The group's creator starts MANAGER; anyone
+// added afterwards — via `memberUserIds` at creation, or via
+// POST /:groupId/invite, direct or by-phone — starts PARTICIPANT. That
+// split only tightens group-*management* routes here (invite, and
+// removing someone else): the meal-plan/grocery-list routes in
+// routes/groupMealPlan.js and routes/groupGrocery.js have their own,
+// separate MANAGER/PARTICIPANT rules. There's deliberately no promote/
+// demote-role endpoint yet — out of scope for this phase.
 "use strict";
 
 const express = require("express");
@@ -19,6 +31,14 @@ const router = express.Router();
 // ever used.
 function publicUser(user) {
   return { id: user.id, displayName: user.displayName, phoneNumber: user.phoneNumber };
+}
+
+// Same as publicUser, plus this group's role for that person — used
+// anywhere a member list is returned to a fellow member (GET /:groupId,
+// POST /, invite responses) so the client always knows who's a MANAGER
+// without a second request.
+function publicMember(membership) {
+  return { ...publicUser(membership.user), role: membership.role };
 }
 
 async function isAcceptedFriend(userIdA, userIdB) {
@@ -61,7 +81,10 @@ const CreateGroupSchema = z.object({
 // caller a member, and adds any given memberUserIds. Every id in
 // memberUserIds must be one of the caller's existing accepted friends —
 // this is what stops someone from adding an arbitrary stranger's userId
-// straight into a group they share nothing with.
+// straight into a group they share nothing with. The caller's own
+// membership is created MANAGER; every memberUserIds entry starts
+// PARTICIPANT — same as an invite added after the fact (see
+// POST /:groupId/invite below).
 router.post("/", asyncHandler(async (req, res) => {
   const parsed = CreateGroupSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -86,7 +109,10 @@ router.post("/", asyncHandler(async (req, res) => {
       name,
       createdByUserId: req.userId,
       memberships: {
-        create: [req.userId, ...otherMemberIds].map((userId) => ({ userId })),
+        create: [
+          { userId: req.userId, role: "MANAGER" },
+          ...otherMemberIds.map((userId) => ({ userId, role: "PARTICIPANT" })),
+        ],
       },
     },
     include: { memberships: { include: { user: true } } },
@@ -98,7 +124,7 @@ router.post("/", asyncHandler(async (req, res) => {
       name: group.name,
       createdByUserId: group.createdByUserId,
       createdAt: group.createdAt,
-      members: group.memberships.map((m) => publicUser(m.user)),
+      members: group.memberships.map(publicMember),
     },
   });
 }));
@@ -121,10 +147,10 @@ router.get("/", asyncHandler(async (req, res) => {
   });
 }));
 
-// GET /groups/:groupId — group details + member list. Phone numbers are
-// included here since every person in the response is, by definition, a
-// fellow member of this same group; a caller who isn't a member gets a 403
-// before any of that data is ever read.
+// GET /groups/:groupId — group details + member list, each member's role
+// included. Phone numbers are included here since every person in the
+// response is, by definition, a fellow member of this same group; a caller
+// who isn't a member gets a 403 before any of that data is ever read.
 router.get("/:groupId", asyncHandler(async (req, res) => {
   const membership = await membershipFor(req.params.groupId, req.userId);
   if (!membership) {
@@ -145,7 +171,7 @@ router.get("/:groupId", asyncHandler(async (req, res) => {
       name: group.name,
       createdByUserId: group.createdByUserId,
       createdAt: group.createdAt,
-      members: group.memberships.map((m) => publicUser(m.user)),
+      members: group.memberships.map(publicMember),
     },
   });
 }));
@@ -153,7 +179,11 @@ router.get("/:groupId", asyncHandler(async (req, res) => {
 // POST /groups/:groupId/invite
 // Body: { userId } (an existing friend) or { phoneNumber } (anyone else —
 // already a Home Eats user, a user who isn't yet a friend, or not a user at
-// all). Only an existing member may invite.
+// all). MANAGER only (tightened in Phase 3 — see the GroupRole doc comment
+// in prisma/schema.prisma): a PARTICIPANT can suggest meals/grocery items
+// for a vote/review, but growing the group's membership is a management
+// action. A caller who is a member but not a MANAGER gets a 403, same as a
+// non-member.
 //
 // `userId` must be one of the caller's accepted friends — same restriction
 // as group creation — and, if so, is added as a member directly. Since the
@@ -196,6 +226,9 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
   if (!membership) {
     return res.status(403).json({ error: "You're not a member of this group." });
   }
+  if (membership.role !== "MANAGER") {
+    return res.status(403).json({ error: "Only a group manager can invite new members." });
+  }
   const group = await prisma.group.findUnique({ where: { id: req.params.groupId } });
   if (!group) {
     return res.status(404).json({ error: "Group not found." });
@@ -216,10 +249,10 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
       return res.status(409).json({ error: "That person is already a member of this group." });
     }
     const newMembership = await prisma.groupMembership.create({
-      data: { userId: targetUserId, groupId: req.params.groupId },
+      data: { userId: targetUserId, groupId: req.params.groupId, role: "PARTICIPANT" },
       include: { user: true },
     });
-    return res.status(201).json({ member: publicUser(newMembership.user) });
+    return res.status(201).json({ member: publicMember(newMembership) });
   }
 
   const phoneNumber = parsed.data.phoneNumber;
@@ -231,10 +264,10 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
       return res.status(409).json({ error: "That person is already a member of this group." });
     }
     const newMembership = await prisma.groupMembership.create({
-      data: { userId: existingUser.id, groupId: req.params.groupId },
+      data: { userId: existingUser.id, groupId: req.params.groupId, role: "PARTICIPANT" },
       include: { user: true },
     });
-    return res.status(201).json({ member: publicUser(newMembership.user) });
+    return res.status(201).json({ member: publicMember(newMembership) });
   }
 
   // Either not a Home Eats user yet, or one who isn't yet an accepted
@@ -286,16 +319,21 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
   return invitedResponse(res);
 }));
 
-// DELETE /groups/:groupId/members/:userId — leave (self) or remove (any
-// current member can remove any other member). No admin-role system in
-// v1 — every member has equal standing to remove anyone, including the
-// group's creator; a caller who isn't a member themselves gets a 403.
+// DELETE /groups/:groupId/members/:userId — leave (pass your own id) or
+// remove another member. Leaving is always self-service regardless of role
+// (a PARTICIPANT can always remove themselves); removing someone ELSE is
+// MANAGER only (tightened in Phase 3 — see the GroupRole doc comment in
+// prisma/schema.prisma). A caller who isn't a member themselves gets a 403.
 router.delete("/:groupId/members/:userId", asyncHandler(async (req, res) => {
   const callerMembership = await membershipFor(req.params.groupId, req.userId);
   if (!callerMembership) {
     return res.status(403).json({ error: "You're not a member of this group." });
   }
-  const targetMembership = await membershipFor(req.params.groupId, req.params.userId);
+  const isSelf = req.params.userId === req.userId;
+  if (!isSelf && callerMembership.role !== "MANAGER") {
+    return res.status(403).json({ error: "Only a group manager can remove another member." });
+  }
+  const targetMembership = isSelf ? callerMembership : await membershipFor(req.params.groupId, req.params.userId);
   if (!targetMembership) {
     return res.status(404).json({ error: "That user is not a member of this group." });
   }

@@ -7,8 +7,11 @@ environment variables) and never ship inside the iOS app — see
 for the client side of that. Second — new as of this feature — the real
 backend for accounts, friends, and groups: phone number + SMS sign-in, a
 friends list, and Splitwise-style groups, backed by Postgres — and, new as
-of Phase 2a, recipe sharing on top of that same layer. See "Accounts,
-friends, and groups" and "Recipe sharing" below.
+of Phase 2a, recipe sharing on top of that same layer. Phase 3 adds a
+MANAGER/PARTICIPANT role to group membership, plus a group's single shared
+meal plan and shared grocery list built on top of it. See "Accounts,
+friends, and groups", "Recipe sharing", "Group meal planning", and "Group
+grocery list" below.
 
 ## 1. Get a Google Places API key
 
@@ -62,7 +65,8 @@ npx prisma migrate deploy
 
 This creates every table in `prisma/schema.prisma` (`User`, `Friendship`,
 `Group`, `GroupMembership`, `Invite`, `Recipe`, `RecipeIngredient`,
-`RecipeShare`). Run it again after pulling any future change to
+`RecipeShare`, `PlannedMeal`, `MealSuggestion`, `MealSuggestionVote`,
+`GroupGroceryItem`). Run it again after pulling any future change to
 `prisma/schema.prisma`/`prisma/migrations/` — it's safe to run repeatedly, it
 only applies migrations that haven't run yet. (`prisma migrate dev` also
 works locally if you want an interactive flow that can generate new
@@ -219,6 +223,35 @@ Declining the friend request cancels any tied invite(s) instead
 (`cancelInvitesForDeclinedFriendship`) rather than leaving them `PENDING`
 forever.
 
+**Group roles (Phase 3).** Every `GroupMembership` now carries a `role`:
+`MANAGER` or `PARTICIPANT` — a two-tier permission model, not the
+free-for-all every-member-is-equal v1 group membership had before this
+phase. A group's creator starts `MANAGER`; anyone added afterwards — via
+`memberUserIds` on `POST /groups`, or via `POST /groups/:groupId/invite`
+(direct or by-phone) — starts `PARTICIPANT`. Existing groups from before
+this phase were backfilled the same way: the membership row matching
+`group.createdByUserId` became `MANAGER`, every other membership became
+`PARTICIPANT` — and since `createdByUserId` is nullable (see the note on it
+further down), a group whose creator's account was already deleted by the
+time of the backfill has no way to know who to promote, so every one of its
+memberships was simply left `PARTICIPANT`. See the `GroupRole`/
+`GroupMembership` doc comments in `prisma/schema.prisma` for the full
+reasoning, and its migration
+(`prisma/migrations/20260913020000_group_roles_meal_plan_grocery`) for the
+exact backfill.
+
+Roles tighten group-*management* itself: `POST /groups/:groupId/invite` is
+now `MANAGER`-only (a `PARTICIPANT` gets `403`), and
+`DELETE /groups/:groupId/members/:userId` removing someone else is now
+`MANAGER`-only too — but removing *yourself* (leaving) still works
+regardless of role, at any time, for anyone. `GET /groups/:groupId`'s
+member list includes each member's `role` so a client can show/gate on it
+without a second request. There's deliberately no promote/demote-role
+endpoint yet — a reasonable follow-up once real usage shows it's needed,
+out of scope for this phase. Roles also gate the group meal-plan and
+grocery-list routes below, with their own (different, more field-grained in
+grocery's case) rules — see "Group meal planning" and "Group grocery list".
+
 **Phone-number privacy.** `POST /friends/request` and
 `POST /groups/:groupId/invite` both report success back the same way
 (`{ "status": "requested" }` / `{ "status": "invited" }`, both `201`)
@@ -245,11 +278,11 @@ response has the shape `{ "error": "..." }`.
 | POST | `/friends/:friendshipId/accept` | required | — | Recipient only; `403` otherwise, `409` if not `PENDING`. Also resolves any tied `Invite`(s) into `GroupMembership` — see "Invites and consent" above. |
 | POST | `/friends/:friendshipId/decline` | required | — | Recipient only; same error shape as accept. Also cancels any tied `Invite`(s) (see "Invites and consent" above). |
 | GET | `/friends` | required | — | `{ friends: [...], incomingRequests: [...], outgoingRequests: [...] }` — accepted friends, plus separate pending lists for requests you've received and sent. |
-| POST | `/groups` | required | `{ name, memberUserIds?: string[] }` | Creates a group with the caller as a member, plus any `memberUserIds` — each must already be an accepted friend of the caller (`400` otherwise, so you can't add a stranger's id). `memberUserIds` is capped at 100 entries (`400` if exceeded). Returns `{ group }` including the member list. |
-| GET | `/groups` | required | — | `{ groups: [...] }` — every group the caller belongs to (a lightweight list; use the next route for members). |
-| GET | `/groups/:groupId` | required | — | `{ group }` with the full member list, phone numbers included (safe here — everyone returned is a fellow member of this same group). `403` if the caller isn't a member. |
-| POST | `/groups/:groupId/invite` | required | `{ userId }` **or** `{ phoneNumber }` | Only current members may invite. `userId`, or a `phoneNumber` that matches one of the caller's own accepted friends, is added as a member directly (`201`, `{ member }`). Any other `phoneNumber` — a Home Eats user who isn't yet an accepted friend of the caller, or not a user at all — queues an `Invite` with this `groupId` (and, if that phone number is already a user with no prior relationship to the caller, also sends them an ordinary friend request) and reports back identically either way (`201`, `{ "status": "invited" }`) — see "Phone-number privacy" above. `409` if already a member / already invited. |
-| DELETE | `/groups/:groupId/members/:userId` | required | — | Leave (pass your own id) or remove another member — v1 has no admin role, any current member can remove any other. `403` if the caller isn't a member, `404` if the target isn't. |
+| POST | `/groups` | required | `{ name, memberUserIds?: string[] }` | Creates a group with the caller as a member (their own membership starts `MANAGER`), plus any `memberUserIds` (each starts `PARTICIPANT`) — each must already be an accepted friend of the caller (`400` otherwise, so you can't add a stranger's id). `memberUserIds` is capped at 100 entries (`400` if exceeded). Returns `{ group }` including the member list with roles. |
+| GET | `/groups` | required | — | `{ groups: [...] }` — every group the caller belongs to (a lightweight list; use the next route for members/roles). |
+| GET | `/groups/:groupId` | required | — | `{ group }` with the full member list (each entry includes `role`), phone numbers included (safe here — everyone returned is a fellow member of this same group). `403` if the caller isn't a member. |
+| POST | `/groups/:groupId/invite` | **MANAGER only** | `{ userId }` **or** `{ phoneNumber }` | A member who isn't a `MANAGER` gets `403` (see "Group roles" above); a non-member also gets `403`. `userId`, or a `phoneNumber` that matches one of the caller's own accepted friends, is added as a member directly, starting `PARTICIPANT` (`201`, `{ member }`). Any other `phoneNumber` — a Home Eats user who isn't yet an accepted friend of the caller, or not a user at all — queues an `Invite` with this `groupId` (and, if that phone number is already a user with no prior relationship to the caller, also sends them an ordinary friend request) and reports back identically either way (`201`, `{ "status": "invited" }`) — see "Phone-number privacy" above. `409` if already a member / already invited. |
+| DELETE | `/groups/:groupId/members/:userId` | required (self always allowed; **MANAGER** for anyone else) | — | Leave (pass your own id) — always allowed for any member, regardless of role. Removing someone ELSE's membership is `MANAGER`-only (`403` for a `PARTICIPANT` trying to remove another member). `403` if the caller isn't a member at all, `404` if the target isn't a member. |
 | POST | `/recipe-library` | required | `{ title, summary?, ingredients: [{ name, quantity?, unit? }], instructions: string[], servings?, prepMinutes?, cookMinutes? }` | Creates a recipe owned by the caller, starting `PRIVATE`. `ingredients`/`instructions` are each capped at 200 entries (`400` if exceeded). Returns `{ recipe }` including its ingredients. |
 | GET | `/recipe-library/mine` | required | — | `{ recipes: [...] }` — every recipe the caller owns, any visibility. |
 | GET | `/recipe-library/shared-with-me` | required | — | `{ recipes: [...] }` — every recipe shared directly with the caller, or via any group they belong to. One entry per share (a recipe shared with you two ways appears twice); each entry carries a `share: { sharedAt, sharedBy, sharedWithGroup }` so the UI can show who shared it / via which group. |
@@ -258,6 +291,18 @@ response has the shape `{ "error": "..." }`.
 | DELETE | `/recipe-library/:recipeId` | required | — | Owner only (`403` otherwise). Cascades to its ingredients and shares. |
 | POST | `/recipe-library/:recipeId/share` | required | `{ userId }` **or** `{ groupId }` | Owner only — sharing further isn't delegated to someone it's already shared with. `userId` must be an accepted friend of the owner; `groupId` must be a group the owner belongs to (`400` otherwise, same anti-stranger rule as `/groups`). Flips visibility `PRIVATE` → `SHARED` if needed. `409` if already shared with that exact user/group. |
 | DELETE | `/recipe-library/:recipeId/share/:shareId` | required | — | Un-share, owner only (`403` otherwise). Does **not** revert visibility back to `PRIVATE` even if it was the last share — see "Recipe sharing" below. |
+| GET | `/groups/:groupId/meal-plan` | required (member) | — | `{ plannedMeals: [...], suggestions: [...] }` — every decided meal and every pending suggestion for the group, no date filtering server-side (client filters locally). Each suggestion includes `voteCount` and `votedByMe` (whether the caller has voted for it). `403` if the caller isn't a member. |
+| POST | `/groups/:groupId/meal-plan` | **MANAGER only** | `{ date, slot, recipeId }` **or** `{ date, slot, restaurantName, isOrderIn? }` | Directly decides a meal (created already-decided, not a suggestion). `slot` is one of `BREAKFAST`/`LUNCH`/`DINNER`/`OTHER`. Exactly one of `recipeId`/`restaurantName` (`400` otherwise); `recipeId` must reference a recipe that already exists in `/recipe-library` **and** is visible to the caller — owner, a direct share, or a shared group (`400` otherwise). `403` for a `PARTICIPANT`. |
+| DELETE | `/groups/:groupId/meal-plan/:id` | **MANAGER only** | — | `403` for a `PARTICIPANT`, `404` if the planned meal doesn't belong to this group. |
+| POST | `/groups/:groupId/meal-plan/suggestions` | required (any member) | Same body shape as `POST /groups/:groupId/meal-plan` | The Participant-facing "suggest a recipe/restaurant/order-in for a vote" action. The proposer is automatically counted as having voted for their own suggestion. |
+| POST | `/groups/:groupId/meal-plan/suggestions/:id/vote` | required (any member) | — | Toggles the caller's own vote on/off (an existing vote is removed; no vote is added). Returns the updated `{ suggestion }` with `voteCount`/`votedByMe`. |
+| POST | `/groups/:groupId/meal-plan/suggestions/:id/adopt` | **MANAGER only** | — | Converts the suggestion into a decided `PlannedMeal` (same date/slot/recipe-or-restaurant) and deletes the suggestion, in one transaction. `403` for a `PARTICIPANT`. |
+| DELETE | `/groups/:groupId/meal-plan/suggestions/:id` | **MANAGER, or the suggestion's own proposer** | — | Lets you withdraw your own suggestion even without being a manager (mirrors the local app's own suggestion-withdrawal pattern); anyone else gets `403`. |
+| GET | `/groups/:groupId/grocery` | required (member) | — | `{ items: [...] }` — every item on the group's shared list; client groups/filters by category/section locally. |
+| POST | `/groups/:groupId/grocery` | required (any member); role-gated on `section` | `{ name, category, section, quantityText?, orderIndex? }` | `category` is one of `PRODUCE`/`DAIRY_AND_EGGS`/`MEAT_AND_SEAFOOD`/`BAKERY`/`PANTRY`/`FROZEN`/`BEVERAGES`/`SNACKS`/`HOUSEHOLD`/`OTHER`; `section` is `SUGGESTED`/`THIS_WEEK`/`STAPLES`. A `PARTICIPANT` may only create with `section: SUGGESTED` (`403` for any other section — the "suggest an item" path); a `MANAGER` may create with any section (the "add directly to the real list" path). |
+| PATCH | `/groups/:groupId/grocery/:id/accept` | **MANAGER only** | — | Moves a `SUGGESTED` item to `THIS_WEEK`. `403` for a `PARTICIPANT`, `409` if the item isn't currently `SUGGESTED`. |
+| PATCH | `/groups/:groupId/grocery/:id` | required (any member); field-gated by role | Any subset of `{ name, category, quantityText, section, isChecked, orderIndex }` | **Asymmetric on purpose** — see "Group grocery list" below. Any member may set `isChecked`/`orderIndex` (routine day-to-day list use). Only a `MANAGER` may set `name`/`category`/`quantityText`/`section` (editing what's on the list). A request from a `PARTICIPANT` that touches even one manager-only field is rejected wholesale (`403`) — nothing is partially applied. |
+| DELETE | `/groups/:groupId/grocery/:id` | depends on the item's current `section` | — | `SUGGESTED`: **MANAGER, or the item's own original suggester** (rejecting a suggestion) — anyone else gets `403`. `THIS_WEEK`/`STAPLES`: **any member** (routine list maintenance — "we bought it" / "we don't need it") — no extra check. |
 
 ## 6. Recipe sharing
 
@@ -309,6 +354,108 @@ diffing/matching individual rows (incoming ingredients have no stable id to
 match an existing row against anyway). The one visible side effect: an
 ingredient's row `id` changes on every edit that touches ingredients, which
 is fine since nothing outside this feature references one.
+
+## 7. Group meal planning
+
+Phase 3: a group's single shared meal plan — every member sees the same
+`PlannedMeal`/`MealSuggestion` rows (contrast with recipe sharing above,
+which is "my recipe, shared with specific people/groups" — this is
+"belongs to the group outright," no separate sharing step). See
+`prisma/schema.prisma`'s `PlannedMeal`/`MealSuggestion`/
+`MealSuggestionVote` doc comments for the full data model and
+`routes/groupMealPlan.js` for the API (the endpoint table above has every
+route).
+
+**Decided vs. suggested**, mirroring the "Managers can add stuff to the
+meal plans, participants can suggest things to vote on" permission model
+from "Group roles" above: a `MANAGER` can `POST` a meal directly onto the
+plan (already-decided); any member can `POST` a suggestion instead, which
+sits pending a vote until a `MANAGER` either adopts it (turns it into a
+real `PlannedMeal` and deletes the suggestion, one transaction) or it's
+removed — by a `MANAGER`, or by whoever originally proposed it, same
+withdraw-your-own-suggestion pattern the local app already has.
+
+**Recipe-or-restaurant, no backend Restaurant model.** Every row — decided
+or suggested — is either recipe-based (`recipeId`, referencing an existing
+row in `/recipe-library`) or a restaurant/order-in meal (`restaurantName`,
+a plain string, plus `isOrderIn` distinguishing "eating at" from "ordering
+in from" the same place — mirrors the iOS `PlannedMeal`/`MealSuggestion`
+models' own `isOrderIn` meaning). v1 deliberately has no backend
+`Restaurant` model at all; adding one later is a schema addition, not a
+rework of this shape. Planning/suggesting a recipe requires it to already
+exist **and** be visible to the caller (owner, a direct share, or a shared
+group) — the same access check `GET /recipe-library/:recipeId` uses,
+applied here so this can't be used to plant an otherwise-invisible
+recipeId into a group's shared plan.
+
+**Voting** is a real join table (`MealSuggestionVote`), not a counter or an
+array column, specifically so the API can answer "did I already vote for
+this" per suggestion (`votedByMe`) as well as a raw count (`voteCount`) —
+the iOS `MealSuggestion` model needs exactly that distinction for its own
+UI. `POST .../vote` toggles: voting again removes the vote rather than
+double-counting it.
+
+`slot`'s values (`BREAKFAST`/`LUNCH`/`DINNER`/`OTHER`) mirror the iOS
+`MealSlot` enum's case names exactly (see
+`HomeEats/Models/MealSlot.swift`) so a later iOS-wiring task has a direct
+mapping rather than a lookup table.
+
+## 8. Group grocery list
+
+Phase 3: a group's single shared grocery list, same "belongs to the group
+outright" relationship to `Group` as the meal plan above. See
+`prisma/schema.prisma`'s `GroupGroceryItem` doc comment for the full data
+model and `routes/groupGrocery.js` for the API.
+
+**No group-scoped "My Layout."** v1 only supports category-grouped
+ordering (`category` + `orderIndex`), matching the local app's "By
+Category" view mode — the local app's separate custom-aisle subsystem
+(`StoreAisle`/`ItemAisleAssignment`, its "My Layout" view mode) has no
+group-scoped counterpart here at all. `category`'s values mirror the iOS
+`GroceryCategory` enum's case names exactly (see
+`HomeEats/Models/GroceryCategory.swift`) — `produce` → `PRODUCE`,
+`dairyAndEggs` → `DAIRY_AND_EGGS`, and so on — so a later iOS-wiring task
+has a direct mapping.
+
+**No `REJECTED` section, on purpose.** `section` is `SUGGESTED` /
+`THIS_WEEK` / `STAPLES` — deliberately matching the local app's *current*
+(already-fixed) grocery-list semantics, not its full historical one. The
+local `GroceryListSection` Swift enum still technically has a `.rejected`
+case, but it's vestigial (kept only for a one-time migration cleanup of old
+rows — see `RejectedGroceryItemCleanup.swift`'s own doc comment): rejecting
+a suggestion now means deleting the row outright, not parking it in a
+permanent rejected bucket. This backend follows that corrected behavior
+from day one — there's no rejected state to reintroduce, and
+`DELETE /groups/:groupId/grocery/:id` on a `SUGGESTED` item **is** the
+reject action.
+
+**The suggest → accept flow**, mirroring "Group roles" the same way the
+meal plan does: a `PARTICIPANT` calling `POST` can only create a
+`SUGGESTED` item (the participant-suggests path); a `MANAGER` can create
+with any section, i.e. add straight onto the real list. `PATCH .../accept`
+(`MANAGER` only) moves a `SUGGESTED` item to `THIS_WEEK`; there's no
+separate reject endpoint since `DELETE` already covers it.
+
+**`PATCH`'s field-by-field role split** is the one deliberately asymmetric
+rule in this whole feature, worth calling out on its own: `isChecked`
+(checking something off while shopping) and `orderIndex` (tidying the
+list) are routine day-to-day *use* of an already-decided list, open to any
+member — nothing about using the list changes what's actually on it.
+`name`/`category`/`quantityText`/`section` change what's on the list or how
+it's organized, which is a planning decision, so those stay `MANAGER`-only,
+same as adding an item directly. The route validates this field-by-field
+(not route-wide): a `PARTICIPANT`'s request touching only
+`isChecked`/`orderIndex` succeeds; the moment it also touches a
+manager-only field, the *whole* request is rejected (`403`) rather than
+silently applying the allowed subset — so a client always gets an explicit
+signal instead of a partially-applied update it might not notice.
+
+**`DELETE`'s section-dependent rule**: removing a `SUGGESTED` item follows
+the same "manager or original proposer" rule as withdrawing a meal
+suggestion; removing a `THIS_WEEK`/`STAPLES` item is routine maintenance
+("we bought it" / "we don't need it after all") open to any member. The
+rule is decided by the item's section *at delete time*, not by who added
+it.
 
 ## Notes
 
@@ -366,7 +513,8 @@ is fine since nothing outside this feature references one.
   will be) — deleting the creator just clears who created it; the group and
   every other member's membership, invites, and recipe shares are
   unaffected.
-- There's no delete-account, remove-phone-number, or admin-role system yet
-  (see the `DELETE /groups/:groupId/members/:userId` note above — v1 keeps
-  group membership deliberately simple/permissive). Those are reasonable
-  things to add once real usage shows they're needed.
+- There's no delete-account or remove-phone-number route yet. There IS a
+  group role system as of Phase 3 (`GroupRole`: `MANAGER`/`PARTICIPANT` —
+  see "Group roles" above), but deliberately no promote/demote-role
+  endpoint — a reasonable thing to add once real usage shows it's needed,
+  out of scope for this phase.

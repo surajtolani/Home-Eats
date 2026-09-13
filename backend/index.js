@@ -24,6 +24,8 @@ const meRouter = require("./routes/me");
 const friendsRouter = require("./routes/friends");
 const groupsRouter = require("./routes/groups");
 const recipeLibraryRouter = require("./routes/recipeLibrary");
+const groupMealPlanRouter = require("./routes/groupMealPlan");
+const groupGroceryRouter = require("./routes/groupGrocery");
 
 const app = express();
 // Render puts every request through its own reverse proxy, so without this
@@ -106,6 +108,19 @@ app.use("/auth", authRouter);
 app.use("/me", requireAuth, meRouter);
 app.use("/friends", requireAuth, friendsRouter);
 app.use("/groups", requireAuth, groupsRouter);
+
+// --- Group meal planning / grocery list (Phase 3) ----------------------
+// A group's single shared meal plan and shared grocery list — see
+// backend/README.md's "Group meal planning" / "Group grocery list"
+// sections, prisma/schema.prisma's PlannedMeal/MealSuggestion/
+// GroupGroceryItem doc comments, and routes/groupMealPlan.js /
+// routes/groupGrocery.js. Nested under /groups/:groupId/... (mounted with
+// `{ mergeParams: true }` in each router so `req.params.groupId` is
+// available) rather than folded into routes/groups.js itself — a distinct
+// file per resource, same organization this codebase already uses for
+// recipe-library vs. groups/friends.
+app.use("/groups/:groupId/meal-plan", requireAuth, groupMealPlanRouter);
+app.use("/groups/:groupId/grocery", requireAuth, groupGroceryRouter);
 
 // --- Recipe sharing (Phase 2a) ----------------------------------------
 // Recipes moving from purely on-device storage to something that can be
