@@ -110,27 +110,37 @@ final class GroupSharedPlanDecodingTests: XCTestCase {
     // MARK: - Grocery list (routes/groupGrocery.js)
 
     func testGroupGroceryListResponseDecodesEveryCategoryAndSection() throws {
-        // `serializeItem` in routes/groupGrocery.js.
+        // `serializeItem` in routes/groupGrocery.js — including the Phase 4
+        // "My Layout" `aisleId`/`aisleManuallySet` fields, which the real
+        // backend always includes (both `nil`/`false` for a never-placed
+        // item, and a real id/`true` for one explicitly placed — see the
+        // second/third fixture rows below).
         let json = """
         {
           "items": [
             {
               "id": "i1", "groupId": "g1", "name": "milk", "category": "DAIRY_AND_EGGS",
               "section": "THIS_WEEK", "quantityText": "1 gallon", "isChecked": false,
-              "orderIndex": 0, "addedByUserId": "u1",
+              "orderIndex": 0, "aisleId": null, "aisleManuallySet": false, "addedByUserId": "u1",
               "createdAt": "2024-06-01T00:00:00.000Z", "updatedAt": "2024-06-01T00:00:00.000Z"
             },
             {
               "id": "i2", "groupId": "g1", "name": "paper towels", "category": "HOUSEHOLD",
               "section": "SUGGESTED", "quantityText": "", "isChecked": false,
-              "orderIndex": 1.5, "addedByUserId": "u2",
+              "orderIndex": 1.5, "aisleId": null, "aisleManuallySet": false, "addedByUserId": "u2",
               "createdAt": "2024-06-02T00:00:00.000Z", "updatedAt": "2024-06-02T00:00:00.000Z"
+            },
+            {
+              "id": "i3", "groupId": "g1", "name": "napkins", "category": "HOUSEHOLD",
+              "section": "THIS_WEEK", "quantityText": "", "isChecked": false,
+              "orderIndex": 0, "aisleId": "aisle-1", "aisleManuallySet": true, "addedByUserId": "u1",
+              "createdAt": "2024-06-03T00:00:00.000Z", "updatedAt": "2024-06-03T00:00:00.000Z"
             }
           ]
         }
         """
         let response = try decoder.decode(GroupGroceryListResponse.self, from: data(json))
-        XCTAssertEqual(response.items.count, 2)
+        XCTAssertEqual(response.items.count, 3)
 
         let milk = response.items[0]
         XCTAssertEqual(milk.category, .dairyAndEggs)
@@ -138,6 +148,8 @@ final class GroupSharedPlanDecodingTests: XCTestCase {
         XCTAssertEqual(milk.section, .thisWeek)
         XCTAssertEqual(milk.quantityText, "1 gallon")
         XCTAssertFalse(milk.isChecked)
+        XCTAssertNil(milk.aisleID)
+        XCTAssertFalse(milk.aisleManuallySet)
 
         let paperTowels = response.items[1]
         XCTAssertEqual(paperTowels.category, .household)
@@ -145,6 +157,10 @@ final class GroupSharedPlanDecodingTests: XCTestCase {
         // A fractional Float orderIndex (mid-reorder slot value) decodes
         // into the Double this app stores it as without losing precision.
         XCTAssertEqual(paperTowels.orderIndex, 1.5, accuracy: 0.0001)
+
+        let napkins = response.items[2]
+        XCTAssertEqual(napkins.aisleID, "aisle-1")
+        XCTAssertTrue(napkins.aisleManuallySet)
     }
 
     func testRemoteGroceryCategoryRoundTripsToAndFromLocalGroceryCategoryForEveryCase() {

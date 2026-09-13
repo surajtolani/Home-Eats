@@ -78,6 +78,19 @@ account, per the spec. The models:
 | `ItemAisleAssignment` | Which aisle a canonical item name belongs in — persists across weeks. |
 | `HistoricalGroceryItem` | The "past groceries" catalog (populated by pasting an old list) for one-tap re-adding. |
 
+The models above are all personal/local-only, per-device — the app also has a
+parallel set of **group-scoped, backend-synced** models (`HomeEats/Models/GroupSharedMealPlan.swift`,
+`GroupSharedGroceryItem.swift`, `GroupGroceryLayout.swift`) backing the main
+Plan/Grocery tabs' active-group content (`GroupSharedMealPlanView`/
+`GroupSharedGroceryListView`): `GroupPlannedMeal`/`GroupMealSuggestion` (a
+group's shared meal plan), `GroupSharedGroceryItem` (its shared grocery
+list, including Phase 4's "My Layout" `aisleID`/`aisleManuallySet` fields),
+`GroupStoreAisle`/`GroupStapleItem`/`GroupGroceryHistoryEntry` (that group's
+own "My Layout" aisles, standing staples, and past-groceries catalog). Each
+is a local, offline-capable *mirror* of backend state, reconciled by
+`GroupSyncService` — see that file's own doc comment for the full
+push/pull/conflict-resolution design.
+
 **Services** worth knowing about:
 - `GroceryListBuilder` aggregates ingredients across a week's home-cooked
   meals (any slot), merges duplicates (simple plural-insensitive name matching),
@@ -173,7 +186,12 @@ guidelines sheet:
    Dinner / Other — each slot holds any number of `PlannedMeal`s, so "Dinner:
    Tacos" and a separate "Other: Ice cream run" both fit on the same day,
    and multiple undecided options can sit side by side before the family
-   settles on one.
+   settles on one. The main Plan tab now ports this exact Calendar/Weekly/
+   per-slot design onto whichever **group** is currently active
+   (`GroupSharedMealPlanView`, backed by `GroupPlannedMeal`/
+   `GroupMealSuggestion` and synced by `GroupSyncService`) — same visual
+   language, but MANAGER/PARTICIPANT role-gated (decide vs. suggest-and-vote)
+   and offline-capable; see that view's own doc comment.
 4. **Restaurant planning** — `RestaurantListView` has a search bar up top
    (Apple's free `MKLocalSearch`, no API key) that looks up real places by
    name; tap **+** on a result to add it straight to the restaurant list with
@@ -201,7 +219,17 @@ guidelines sheet:
    weeks). A **"From Your Past Groceries"** section at the bottom
    (`HistoricalGroceryItem`) lists everything you've bought before, grouped by
    category, with a one-tap **+** to add it to this week's list; populate it in
-   bulk by pasting an old list (`GroceryHistoryImportSheet`).
+   bulk by pasting an old list (`GroceryHistoryImportSheet`). The main Grocery
+   tab ports this same By Category / My Layout / Suggested / Past-Groceries
+   structure onto the active **group**'s shared list
+   (`GroupSharedGroceryListView`, `GroupSharedGroceryItem`,
+   `GroupSyncService`), with the group-scoped counterparts of "My Layout" and
+   staples reachable from its toolbar (`GroupAislesManagerView` ->
+   `GroupStoreAisle`, `GroupStaplesManagerView` -> `GroupStapleItem`) and its
+   past-groceries catalog backed by `GroupGroceryHistoryEntry` — see
+   "Known limitations" below for the two deliberate differences from the
+   personal version (no bulk paste-import, and My Layout/By Category share
+   one physical sort key group-side).
 7. **Cooking guidance** — `RecipeDetailView` shows numbered step-by-step
    instructions. Imported ingredient lines are reformatted consistently
    (`RecipeIngredientEntry.displayText`, `IngredientLineParser`) rather than
@@ -218,6 +246,42 @@ guidelines sheet:
 
 This is a first build-out, scoped per the spec's own phasing notes:
 
+- **Group Plan/Grocery tabs now match the personal Calendar/Weekly/My-Layout
+  design, with three deliberate gaps flagged below.** `GroupSharedMealPlanView`/
+  `GroupSharedGroceryListView` port the personal `CalendarPlanView`/
+  `DayDetailView`/`GroceryListView`'s visual and interaction design onto the
+  group-scoped, offline-capable, backend-synced models (see
+  `GroupSyncService`'s doc comment for the sync design). Three things this
+  round could not fully match, worth a human decision before treating them as
+  done:
+  - **"My Layout" and "By Category" share one physical sort order group-side.**
+    The backend's `GroupGroceryItem` has a single `orderIndex` column (no
+    second `layoutOrderIndex` the way the personal `GroceryItem` has one for
+    each view) — reordering in one group view also reorders the other. Both
+    orderings still work independently on the *personal* screen; only the
+    *group* screen's two views are coupled this way. A real fix needs a
+    backend schema change, out of scope for this iOS-only task.
+  - **No group-scoped "Paste an Old Grocery List" bulk import.** The
+    backend has no bulk-create endpoint for `GroupGroceryHistoryEntry`, so a
+    group's past-groceries catalog can only grow the automatic way (checking
+    an item off) — never by pasting a list, unlike the personal
+    `GroceryHistoryImportSheet`.
+  - **No group-scoped order reminders or meal-history logging.** Both are
+    purely local, per-device features (`NotificationScheduler`,
+    `MealHistoryEntry`) with no backend counterpart for a group's shared
+    plan, so `GroupDaySlotsView` has no "set a reminder"/"log this meal"
+    actions the way the personal `DaySlotsView` does.
+  - **Schema-change risk, same caveat as the very next bullet below.** This
+    round added new stored properties to the existing `GroupSharedGroceryItem`
+    model (`aisleID`/`aisleManuallySet`) plus three brand-new model types
+    (`GroupStoreAisle`/`GroupStapleItem`/`GroupGroceryHistoryEntry`) to the
+    SwiftData schema. New types need no migration; the two new fields on an
+    *existing* type are the one part worth flagging — if SwiftData's
+    lightweight migration can't bridge them for someone with an existing
+    local store, `HomeEatsApp.init`'s existing reset-and-recreate fallback
+    (see the bullet below) kicks in the same way it already does for any
+    other incompatible schema change, and the next sync repopulates
+    everything group-scoped from the server as normal.
 - **⚠️ Local storage resets on this update.** This round changed the SwiftData
   schema (`DayPlan` → `PlannedMeal`/`MealSlot`) in a way lightweight migration
   can't bridge, and also moved the on-disk store to an explicit path so a
