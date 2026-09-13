@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import MapKit
+import CoreLocation
 
 /// A single group's own meal plan — day-by-day decided meals and pending
 /// suggestions, scoped to one `groupID` (never shared across groups; each
@@ -1094,25 +1096,98 @@ struct GroupMealSheetContent: View {
     }
 }
 
-/// A minimal "type the restaurant's name" sheet — the group meal plan has no
-/// backend-side restaurant entity to pick from (`RemotePlannedMeal
-/// .restaurantName` is a plain string; see that type's own doc comment), so
-/// this stands in for the personal `RestaurantPickerSheet` (which is tied to
-/// the local, personal `Restaurant` SwiftData model this feature's scope
-/// leaves untouched).
+/// A real, on-device restaurant *search* — not a bare free-text field — for
+/// the group meal plan's "decide"/"suggest" restaurant flow. This used to be
+/// a plain `TextField("Restaurant name", text: $name)`: nothing stopped
+/// someone from typing gibberish and having it "suggest" a place that
+/// doesn't exist, since the field had no connection to any real-world data
+/// at all (see this feature's user-reported bug report). Fixed by searching
+/// with `MKLocalSearch`, tapping a real result to pick it — same
+/// search-as-you-type interaction `RestaurantListView`'s own
+/// `RestaurantSearchModel` already uses for the personal Eating Out list.
+///
+/// **Why this doesn't just reuse `RestaurantSearchModel` wholesale**: that
+/// type also calls `GooglePlacesService` (rating/price/cuisine/photos) and
+/// builds a `Restaurant` SwiftData row on selection — machinery this screen
+/// has no use for, since `RemotePlannedMeal.restaurantName`/
+/// `RemoteMealSuggestion.restaurantName` are, and stay, a plain string (see
+/// that type's own doc comment — there's still no backend-side restaurant
+/// entity to pick from, and none is needed just to fix the missing search
+/// grounding). Reaching into `RestaurantListView.swift` to extract a shared
+/// component risked destabilizing a live, in-use personal feature for a
+/// dependency this screen doesn't actually need; `GroupRestaurantSearchModel`
+/// below duplicates just the `MKLocalSearch`-only half of that file's
+/// `RestaurantSearchModel` (no Google, no `Restaurant` model, no photos) —
+/// small enough that duplicating it here is clearly simpler than threading a
+/// shared abstraction between a SwiftData-backed personal screen and this
+/// plain-string-backed group one.
+///
+/// **What gets submitted**: `result.name` alone, not "name, address" — every
+/// downstream display of `restaurantName` (`GroupPlannedMealRow`'s pill,
+/// `GroupSuggestionRow`, `GroupAgendaDayRow`'s one-line slot summary) is a
+/// compact, space-constrained label, the same shape a hand-typed name always
+/// produced, and an address tacked on would either get silently truncated
+/// there or badly overflow a pill sized for a short name. The result list in
+/// this sheet still shows the address as a secondary line — enough to tell
+/// two same-named places apart before picking one — it just isn't carried
+/// into the string that ends up stored.
 private struct GroupRestaurantNameSheet: View {
     let isOrderIn: Bool
     let onSubmit: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
+    @State private var searchText = ""
+    @StateObject private var searchModel = GroupRestaurantSearchModel()
+    @StateObject private var locationProvider = UserLocationProvider()
 
-    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var isSearchActive: Bool {
+        !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
     var body: some View {
         NavigationStack {
-            Form {
-                TextField("Restaurant name", text: $name)
+            List {
+                if !isSearchActive {
+                    Text("Search for a place above, then tap it to pick it.")
+                        .foregroundStyle(.secondary)
+                } else if searchModel.isSearching && searchModel.results.isEmpty {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                } else if let errorMessage = searchModel.errorMessage {
+                    Text(errorMessage).foregroundStyle(.secondary)
+                } else if searchModel.results.isEmpty {
+                    Text("No matches found.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(searchModel.results) { result in
+                        Button {
+                            onSubmit(result.name)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(result.name).foregroundStyle(.primary)
+                                if let address = result.address {
+                                    Text(address)
+                                        .font(.brandCaption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .searchable(text: $searchText, prompt: "Search for a restaurant")
+            .onChange(of: searchText) { _, newValue in
+                searchModel.search(newValue)
+            }
+            .onAppear {
+                locationProvider.requestIfNeeded()
+            }
+            .onChange(of: locationProvider.coordinate) { _, newValue in
+                searchModel.userCoordinate = newValue
             }
             .navigationTitle(isOrderIn ? "Order In" : "Eat Out")
             .navigationBarTitleDisplayMode(.inline)
@@ -1120,16 +1195,96 @@ private struct GroupRestaurantNameSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        guard !trimmedName.isEmpty else { return }
-                        onSubmit(trimmedName)
-                        dismiss()
-                    }
-                    .disabled(trimmedName.isEmpty)
-                }
             }
         }
+    }
+}
+
+/// A minimal, `MKLocalSearch`-only counterpart of `RestaurantSearchModel`
+/// (`RestaurantListView.swift`) — see `GroupRestaurantNameSheet`'s own doc
+/// comment for why this is a deliberate, small duplication rather than a
+/// shared abstraction. No Google Places fallback logic (this screen has
+/// nothing that would benefit from rating/price/cuisine/photos — the result
+/// only ever becomes a plain `restaurantName` string), and no debounce
+/// tuning beyond matching that file's own 300ms value, for the same
+/// "don't fire a network search on every keystroke" reason.
+@MainActor
+private final class GroupRestaurantSearchModel: ObservableObject {
+    struct Result: Identifiable {
+        let id: String
+        let name: String
+        let address: String?
+    }
+
+    @Published var results: [Result] = []
+    @Published var isSearching = false
+    @Published var errorMessage: String?
+
+    /// Set by the view once location access resolves — biases MapKit's
+    /// ranking toward nearby results; `nil` (denied, not yet answered, or
+    /// simply unavailable) just falls back to unbiased results, same as
+    /// `RestaurantSearchModel.userCoordinate`.
+    var userCoordinate: CLLocationCoordinate2D?
+
+    private var searchTask: Task<Void, Never>?
+
+    func search(_ query: String) {
+        searchTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            results = []
+            errorMessage = nil
+            return
+        }
+        let coordinate = userCoordinate
+        searchTask = Task {
+            // Small debounce so a search isn't fired on every keystroke —
+            // same value as `RestaurantSearchModel.search`.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+
+            isSearching = true
+            errorMessage = nil
+            defer { isSearching = false }
+
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = trimmed
+            request.resultTypes = .pointOfInterest
+            if let coordinate {
+                // A ~50km region biases MapKit's own ranking toward this
+                // area — without it MapKit ranks purely by name/relevance,
+                // same reasoning as `RestaurantSearchModel.searchWithMapKit`.
+                request.region = MKCoordinateRegion(
+                    center: coordinate, latitudinalMeters: 100_000, longitudinalMeters: 100_000
+                )
+            }
+            do {
+                let response = try await MKLocalSearch(request: request).start()
+                guard !Task.isCancelled else { return }
+                let items = coordinate.map { userLocation in
+                    response.mapItems.sorted {
+                        distance(from: userLocation, to: $0.placemark.coordinate)
+                            < distance(from: userLocation, to: $1.placemark.coordinate)
+                    }
+                } ?? response.mapItems
+                results = items.enumerated().map { index, item in
+                    Result(
+                        id: "mapkit-\(index)-\(item.name ?? "")",
+                        name: item.name ?? "Unknown",
+                        address: item.placemark.title
+                    )
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                results = []
+                errorMessage = "Couldn't search right now — check your connection."
+            }
+        }
+    }
+
+    private func distance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> CLLocationDistance {
+        CLLocation(latitude: from.latitude, longitude: from.longitude)
+            .distance(from: CLLocation(latitude: to.latitude, longitude: to.longitude))
     }
 }
 
