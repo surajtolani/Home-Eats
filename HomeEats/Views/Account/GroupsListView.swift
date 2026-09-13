@@ -70,12 +70,19 @@ struct GroupsListView: View {
     }
 }
 
-/// "Name a group, pick members from your accepted friends" — kept as its
-/// own file-private view (used only from the `.sheet` above) since it needs
-/// its own friends fetch and multi-select state, mirroring how
-/// `RecipePickerSheet`/`RestaurantPickerSheet` are each a dedicated picker
-/// rather than an inline list.
-private struct CreateGroupView: View {
+/// "Name a group, pick members from your accepted friends" — its own view
+/// (used from the `.sheet` above, mirroring how `RecipePickerSheet`/
+/// `RestaurantPickerSheet` are each a dedicated picker rather than an inline
+/// list) since it needs its own friends fetch and multi-select state.
+///
+/// Internal, not `private`, on purpose: the app-creation pivot's
+/// `CreateOrJoinFirstGroupView` (a signed-in user's very first stop when
+/// they have zero groups) reuses this exact same form rather than
+/// duplicating it — a brand-new user creating their very first group is the
+/// same task as an existing user creating an additional one, just reached
+/// from a different screen. No behavior here changed for that reuse; only
+/// the access level did.
+struct CreateGroupView: View {
     @Environment(\.dismiss) private var dismiss
     /// Called with the group `create()` just made, right before dismissing
     /// — lets `GroupsListView` push straight into it instead of landing

@@ -2,6 +2,20 @@ import SwiftUI
 import SwiftData
 
 struct RootView: View {
+    /// `ActiveUserSession`/`FamilyMember` are the older "who's using the app
+    /// right now on this shared device" concept this pivot's *gating* no
+    /// longer keys off of (see `ActiveGroupSession`'s doc comment for the
+    /// full reasoning) — but the concept itself is untouched and still very
+    /// much alive: recipe/restaurant attribution
+    /// (`RecipeEditorView`/`RecommendMealView`/`LogMealSheet`/...),
+    /// `ActiveUserMenu`, `FamilyMembersView` (still linked from `MoreView`),
+    /// and the old local Plan/Grocery screens this task preserves-but-
+    /// unreferences all still read it. This `@Query` and the `.onAppear`
+    /// below that seeds `activeUserSession` from it are kept exactly as
+    /// they were pre-pivot, purely as a QoL nicety for whoever already has
+    /// `FamilyMember`s from before this change (or adds one later via
+    /// `FamilyMembersView`) — see this task's own final report for the full
+    /// list of what still depends on this.
     @Query(sort: \FamilyMember.createdAt) private var familyMembers: [FamilyMember]
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var reminderRouter: PlanningReminderRouter
@@ -14,6 +28,11 @@ struct RootView: View {
     /// `isSignedIn` to `false`. See `GroupSyncService.purgeAllLocalGroupData`'s
     /// own doc comment for why this purge has to happen at all.
     @EnvironmentObject private var accountSession: AccountSession
+    /// Which group's shared plan/grocery list the main tabs render — the
+    /// pivot's new organizing concept (see its own doc comment). Refreshed
+    /// right after sign-in below, and what both the "you have no groups
+    /// yet" gate and the group-scoped tab content read from.
+    @EnvironmentObject private var activeGroupSession: ActiveGroupSession
 
     @State private var selectedTab: Tab = .plan
 
@@ -28,20 +47,35 @@ struct RootView: View {
             // opt-in "Sign In" row buried in Settings) — every account,
             // friend, group, and shared list depends on knowing who's
             // actually using the app, so that has to be settled before
-            // anything else, including the app's own local onboarding
-            // below. `AccountSignInView(allowsCancel: false)` is the exact
-            // same phone -> code -> name flow used everywhere else in the
-            // app (Settings' "Sign In" row, sharing a recipe while signed
-            // out) — just embedded directly with nothing to cancel back to,
-            // instead of presented as a dismissible `.sheet`.
+            // anything else. `AccountSignInView(allowsCancel: false)` is
+            // the exact same phone -> code -> name flow used everywhere
+            // else in the app (Settings' "Sign In" row, sharing a recipe
+            // while signed out) — just embedded directly with nothing to
+            // cancel back to, instead of presented as a dismissible
+            // `.sheet`.
+            //
+            // Below that, the gate used to be "do you have a `FamilyMember`
+            // yet" (`OnboardingView`). This pivot replaces that with "do you
+            // belong to a group yet" — a group, not a locally-named
+            // household member, is now the thing the main Plan/Grocery tabs
+            // are organized around (see `ActiveGroupSession`'s doc comment
+            // for the full reasoning), so getting into one is the new
+            // "only truly required setup step." The middle branch
+            // (`!activeGroupSession.hasLoadedOnce`) exists only to avoid a
+            // one-frame flash of "you have no groups" while the first
+            // `GET /groups` call from the `.task` below is still in
+            // flight — see `ActiveGroupSession.hasLoadedOnce`'s own doc
+            // comment.
             if !accountSession.isSignedIn {
                 AccountSignInView(allowsCancel: false)
-            } else if familyMembers.isEmpty {
-                OnboardingView()
+            } else if !activeGroupSession.hasLoadedOnce {
+                ProgressView("Loading your groups…")
+            } else if activeGroupSession.groups.isEmpty {
+                CreateOrJoinFirstGroupView()
             } else {
                 TabView(selection: $selectedTab) {
                     NavigationStack {
-                        CalendarPlanView()
+                        GroupScopedPlanTab()
                     }
                     .tabItem { Label("Plan", systemImage: "calendar") }
                     .tag(Tab.plan)
@@ -59,7 +93,7 @@ struct RootView: View {
                     .tag(Tab.restaurants)
 
                     NavigationStack {
-                        GroceryListView()
+                        GroupScopedGroceryTab()
                     }
                     .tabItem { Label("Grocery", systemImage: "cart") }
                     .tag(Tab.grocery)
@@ -77,6 +111,19 @@ struct RootView: View {
                 activeUserSession.setActive(familyMembers.first)
             }
         }
+        // Fetches the signed-in user's groups the moment sign-in completes
+        // (and again on every relaunch that's already signed in, since
+        // `.task(id:)` also runs on first appearance with whatever
+        // `accountSession.isSignedIn`'s initial value already is — see
+        // `AccountSession.init`'s own doc comment on that optimistic
+        // initial value). Re-keying on `accountSession.isSignedIn` (rather
+        // than a plain `.task { }` that only ever ran once) is what makes
+        // this fire again after a sign-out/sign-in-as-someone-else cycle,
+        // not just at app launch.
+        .task(id: accountSession.isSignedIn) {
+            guard accountSession.isSignedIn else { return }
+            await activeGroupSession.refreshGroups()
+        }
         .onChange(of: reminderRouter.shouldPresentPlanningFlow) { _, shouldPresent in
             guard shouldPresent else { return }
             // The weekly planning notification used to launch a separate
@@ -93,6 +140,96 @@ struct RootView: View {
             // must never trigger this.
             guard wasSignedIn, !isSignedIn else { return }
             GroupSyncService.purgeAllLocalGroupData(modelContext: modelContext)
+            // Piggybacks on this exact same sign-out trigger — see
+            // `ActiveGroupSession.reset()`'s own doc comment for why this
+            // has to happen here rather than be left for the next
+            // `refreshGroups()` to naturally overwrite.
+            activeGroupSession.reset()
+        }
+    }
+}
+
+// MARK: - Group-scoped main tabs
+
+/// The main "Plan" tab's content — the active group's shared meal plan,
+/// reactive to `activeGroupSession.activeGroupID` changing. This is
+/// deliberately a thin wrapper around the *same* `GroupSharedMealPlanView`
+/// that `GroupDetailView` already shows for one specific group (see that
+/// view's own doc comment) — not a new, parallel implementation — now
+/// promoted to being reached directly from a main tab instead of only via
+/// a group's detail page, per this pivot's whole premise.
+///
+/// `.id(activeGroupSession.activeGroupID)` is what makes switching groups
+/// actually take effect: `GroupSharedMealPlanView` captures its `groupID`
+/// into its `@Query`'s `#Predicate` once, in its own `init` (see that
+/// view's own comment on why), so simply handing it a new `groupID` string
+/// on an unchanged view identity would *not* re-run that `init` or restart
+/// its `.task` (the load-group/sync/periodic-resync loop) — SwiftUI would
+/// just keep the original identity's already-initialized `@Query`/`@State`
+/// around. Giving it a fresh `.id()` whenever the active group changes
+/// instead tells SwiftUI to treat it as a brand new view: the old one is
+/// torn down (cancelling its in-flight `.task`, including that periodic
+/// resync loop) and a new one is built from scratch against the
+/// newly-active group, right down to a fresh `#Predicate` and a fresh
+/// initial sync. This happens *inside* the tab's own `NavigationStack`, not
+/// by resetting the stack itself, so it's just this content view being
+/// swapped — not a jarring pop back to some root or a lost place in a
+/// pushed-into screen (there's nothing pushed on top of this tab's root to
+/// lose in the first place).
+private struct GroupScopedPlanTab: View {
+    @EnvironmentObject private var activeGroupSession: ActiveGroupSession
+
+    var body: some View {
+        Group {
+            if let group = activeGroupSession.activeGroup {
+                GroupSharedMealPlanView(groupID: group.id, groupName: group.name)
+                    .id(group.id)
+            } else {
+                // Defensive only — `RootView`'s own gating means this tab
+                // is never shown at all while `activeGroupSession.groups`
+                // is empty, and `refreshGroups()` always picks *some*
+                // active group whenever `groups` is non-empty (see its own
+                // doc comment). Still cheaper and clearer than a forced
+                // unwrap for the split second between `groups` updating and
+                // `activeGroupID` catching up to it.
+                ContentUnavailableView(
+                    "No Group Selected",
+                    systemImage: "person.3",
+                    description: Text("Choose a group from the switcher above.")
+                )
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                GroupSwitcherMenu()
+            }
+        }
+    }
+}
+
+/// The main "Grocery" tab's content — same idea as `GroupScopedPlanTab`
+/// above, wrapping `GroupSharedGroceryListView` instead; see that type's own
+/// doc comment for the full reasoning (not repeated here).
+private struct GroupScopedGroceryTab: View {
+    @EnvironmentObject private var activeGroupSession: ActiveGroupSession
+
+    var body: some View {
+        Group {
+            if let group = activeGroupSession.activeGroup {
+                GroupSharedGroceryListView(groupID: group.id, groupName: group.name)
+                    .id(group.id)
+            } else {
+                ContentUnavailableView(
+                    "No Group Selected",
+                    systemImage: "person.3",
+                    description: Text("Choose a group from the switcher above.")
+                )
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                GroupSwitcherMenu()
+            }
         }
     }
 }

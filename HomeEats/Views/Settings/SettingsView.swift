@@ -126,12 +126,16 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Household") {
-                TextField("Household name", text: Binding(
-                    get: { settings.householdName },
-                    set: { settings.householdName = $0 }
-                ))
-            }
+            // The old "Household name" field lived here — removed as part
+            // of the app-creation pivot: a *group* (with a real name of its
+            // own, set at creation and visible throughout "Friends &
+            // Groups" above and the main Plan/Grocery tabs' switcher) is
+            // now the thing that organizes shared planning, making a
+            // second, disconnected "household name" free-text field redundant
+            // and confusing next to it. `AppSettings.householdName` itself
+            // is left in place (unused now, but SwiftData model changes are
+            // outside this cleanup's scope — see this task's own final
+            // report) rather than touched here.
 
             Section {
                 Toggle("Weekly Planning Reminder", isOn: Binding(

@@ -14,6 +14,13 @@ struct HomeEatsApp: App {
     /// deep inside it, like `AccountSignInView` or `RecipeSharePickerSheet`)
     /// can read it with `@EnvironmentObject`.
     @StateObject private var accountSession = AccountSession()
+    /// Which group's shared plan/grocery list the main tabs render — the
+    /// app-creation pivot's new organizing concept, replacing
+    /// `FamilyMember`/`ActiveUserSession` as what the main Plan/Grocery tabs
+    /// key off of (see `ActiveGroupSession`'s own doc comment for the full
+    /// reasoning). Injected the same way as the two session objects above
+    /// so any view under `RootView` can read it with `@EnvironmentObject`.
+    @StateObject private var activeGroupSession = ActiveGroupSession()
 
     init() {
         // Nav bar / tab bar chrome is drawn by UIKit, which SwiftUI's
@@ -105,6 +112,7 @@ struct HomeEatsApp: App {
                 .environmentObject(reminderRouter)
                 .environmentObject(activeUserSession)
                 .environmentObject(accountSession)
+                .environmentObject(activeGroupSession)
                 .task {
                     reminderRouter.install()
                     await scheduleReminderIfConfigured()
