@@ -13,6 +13,18 @@ struct SettingsView: View {
     @Query private var groupPlannedMeals: [GroupPlannedMeal]
     @Query private var groupMealSuggestions: [GroupMealSuggestion]
     @Query private var groupGroceryItems: [GroupSharedGroceryItem]
+    // Phase 4 — "My Layout" aisles and staples can carry a pending
+    // create/rename/reorder/toggle too (see `GroupStoreAisle`/
+    // `GroupStapleItem`'s own `syncState`), so they have to be checked here
+    // the same as the three models above — otherwise a group member who
+    // only, say, renamed an aisle offline would sign out with no warning at
+    // all, and `GroupSyncService.purgeAllLocalGroupData` (which purges these
+    // two unconditionally, same as the rest) would silently drop it.
+    // `GroupGroceryHistoryEntry` has no pending state of its own to lose
+    // (see that model's own doc comment), so it's deliberately not queried
+    // here.
+    @Query private var groupAisles: [GroupStoreAisle]
+    @Query private var groupStaples: [GroupStapleItem]
 
     @State private var reminderTime: Date = Calendar.current.date(
         from: DateComponents(hour: 18, minute: 0)
@@ -28,6 +40,8 @@ struct SettingsView: View {
         groupPlannedMeals.contains { $0.syncState != .synced }
             || groupMealSuggestions.contains { $0.syncState != .synced }
             || groupGroceryItems.contains { $0.syncState != .synced }
+            || groupAisles.contains { $0.syncState != .synced }
+            || groupStaples.contains { $0.syncState != .synced }
     }
 
     // `settings` is read several times per `body` pass (the toggle, the day
