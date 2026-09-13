@@ -262,3 +262,123 @@ final class GroupLocalPlaceholderIDTests: XCTestCase {
         XCTAssertFalse(meal.isLocalPlaceholderID)
     }
 }
+
+/// Regression tests for the concurrent-edit-during-create-dispatch race
+/// `GroupSyncService.pushGroceryItems`'s `.pendingCreate` handling guards
+/// against: a local `isChecked`/`orderIndex` change made while that row's
+/// `createGroupGroceryItem` call is still in flight must win over the
+/// create response's "as submitted" echo, not be silently clobbered by it.
+/// See `GroceryCreateReconciliation`'s own doc comment for the race itself.
+///
+/// Split the same way `GroupSyncReconciliationTests`/
+/// `GroupMealSuggestionVoteToggleTests` are: first the pure decision
+/// function (no `ModelContext`, no network), then the actual model mutation
+/// (`GroupSyncService.applyRemote`, exercised directly against a
+/// `GroupSharedGroceryItem` constructed in-memory, no `ModelContext`
+/// needed — same as `GroupMealSuggestionVoteToggleTests` constructing a
+/// `GroupMealSuggestion` directly). The one piece this can't exercise
+/// end-to-end without a live network layer — actually dispatching
+/// `AccountsAPIClient.createGroupGroceryItem` and having a concurrent
+/// `Task` mutate the row mid-`await` — is covered by hand-tracing
+/// `pushGroceryItems`'s `.pendingCreate` case instead (see this task's
+/// final report); this suite verifies that both pieces it's built from
+/// behave correctly in every case that matters.
+final class GroupGroceryItemCreateRaceTests: XCTestCase {
+
+    // MARK: - `GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder`
+
+    func testNothingChangedSinceDispatch_doesNotPreserveLocal() {
+        XCTAssertFalse(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+            dispatchedIsChecked: false, currentIsChecked: false,
+            dispatchedOrderIndex: 2, currentOrderIndex: 2
+        ))
+    }
+
+    func testCheckedToggledDuringDispatch_preservesLocal() {
+        XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+            dispatchedIsChecked: false, currentIsChecked: true,
+            dispatchedOrderIndex: 2, currentOrderIndex: 2
+        ))
+    }
+
+    func testOrderIndexChangedDuringDispatch_preservesLocal() {
+        XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+            dispatchedIsChecked: false, currentIsChecked: false,
+            dispatchedOrderIndex: 2, currentOrderIndex: 5
+        ))
+    }
+
+    func testBothCheckedAndOrderChangedDuringDispatch_preservesLocal() {
+        XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+            dispatchedIsChecked: false, currentIsChecked: true,
+            dispatchedOrderIndex: 2, currentOrderIndex: 5
+        ))
+    }
+
+    // MARK: - `GroupSyncService.applyRemote`
+
+    private func makeLocalRow(
+        isChecked: Bool, orderIndex: Double, syncState: GroupSyncState = .pendingCreate
+    ) -> GroupSharedGroceryItem {
+        GroupSharedGroceryItem(
+            id: GroupSharedGroceryItem.newLocalPlaceholderID(), groupID: "g1", name: "Milk",
+            category: .dairyAndEggs, section: .thisWeek, quantityText: "1 gal",
+            isChecked: isChecked, orderIndex: orderIndex, addedByUserID: "u1", syncState: syncState
+        )
+    }
+
+    private func makeRemoteItem(isChecked: Bool, orderIndex: Double) -> RemoteGroupGroceryItem {
+        RemoteGroupGroceryItem(
+            id: "server-1", groupID: "g1", name: "Milk", category: .dairyAndEggs, section: .thisWeek,
+            quantityText: "1 gal", isChecked: isChecked, orderIndex: orderIndex, addedByUserID: "u1",
+            createdAt: .now, updatedAt: .now
+        )
+    }
+
+    func testCreateResponseWithNoConcurrentEdit_appliesRemoteCheckedAndOrderAndMarksSynced() {
+        // The common case, unchanged by this fix: nothing local moved while
+        // the create was in flight, so the server's response is fully
+        // authoritative.
+        let row = makeLocalRow(isChecked: false, orderIndex: 0)
+        let remote = makeRemoteItem(isChecked: false, orderIndex: 0)
+        GroupSyncService.applyRemote(remote, to: row, preserveLocalCheckedAndOrder: false)
+        XCTAssertEqual(row.id, "server-1")
+        XCTAssertFalse(row.isChecked)
+        XCTAssertEqual(row.orderIndex, 0)
+        XCTAssertEqual(row.syncState, .synced)
+    }
+
+    func testCreateResponseAfterConcurrentCheckToggle_preservesLocalCheckedAndMarksPendingUpdate() {
+        // The user checked the item off in the window the create call was
+        // in flight — the local `true` must win over the create response's
+        // own `false`, and the row must still get pushed again
+        // (`.pendingUpdate`), not be treated as fully synced with the wrong
+        // value baked in.
+        let row = makeLocalRow(isChecked: true, orderIndex: 0)
+        let remote = makeRemoteItem(isChecked: false, orderIndex: 0)
+        GroupSyncService.applyRemote(remote, to: row, preserveLocalCheckedAndOrder: true)
+        XCTAssertTrue(row.isChecked, "local checkbox change must win, not be clobbered by the create response")
+        XCTAssertEqual(row.syncState, .pendingUpdate, "must be re-pushed, not treated as fully synced")
+    }
+
+    func testCreateResponseAfterConcurrentReorder_preservesLocalOrderIndexAndMarksPendingUpdate() {
+        let row = makeLocalRow(isChecked: false, orderIndex: 3)
+        let remote = makeRemoteItem(isChecked: false, orderIndex: 0)
+        GroupSyncService.applyRemote(remote, to: row, preserveLocalCheckedAndOrder: true)
+        XCTAssertEqual(row.orderIndex, 3, "local reorder must win, not be clobbered by the create response")
+        XCTAssertEqual(row.syncState, .pendingUpdate)
+    }
+
+    func testCreateResponseStillAdoptsServerIDAndOtherFieldsEvenWhenPreservingCheckedAndOrder() {
+        // Preserving isChecked/orderIndex must not also strand the row on
+        // its local placeholder id — it still needs the real server id for
+        // its now-`.pendingUpdate` state to ever be push-able again via
+        // `updateGroupGroceryItem`.
+        let row = makeLocalRow(isChecked: true, orderIndex: 1)
+        XCTAssertTrue(row.isLocalPlaceholderID)
+        let remote = makeRemoteItem(isChecked: false, orderIndex: 0)
+        GroupSyncService.applyRemote(remote, to: row, preserveLocalCheckedAndOrder: true)
+        XCTAssertFalse(row.isLocalPlaceholderID)
+        XCTAssertEqual(row.id, "server-1")
+    }
+}

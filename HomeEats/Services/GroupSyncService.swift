@@ -69,6 +69,31 @@ enum ReconciliationAction: Equatable {
     }
 }
 
+/// The concurrent-edit-during-create-dispatch decision for a
+/// `GroupSharedGroceryItem`'s `isChecked`/`orderIndex` fields — see the
+/// `.pendingCreate` case of `GroupSyncService.pushGroceryItems` for the race
+/// this exists to close (a local checkbox toggle or reorder, made while that
+/// row's create call is still in flight, would otherwise be silently
+/// overwritten by the create response's "as submitted" values once it comes
+/// back). A pure function of the before/after snapshots, exposed standalone
+/// for the same reason `ReconciliationAction.decide` is: unit-testable with
+/// no `ModelContext` and no network at all (see
+/// `GroupGroceryItemCreateRaceTests`).
+enum GroceryCreateReconciliation {
+    /// - Returns: `true` if either field has moved since the create request
+    ///   was dispatched — meaning the local value, not the server's
+    ///   as-submitted echo of it, should win, and the row should be marked
+    ///   `.pendingUpdate` (not `.synced`) so the corrected value still gets
+    ///   pushed. `false` (the common case — nothing changed mid-flight)
+    ///   means the response is fully authoritative, same as before this fix.
+    static func shouldPreserveLocalCheckedAndOrder(
+        dispatchedIsChecked: Bool, currentIsChecked: Bool,
+        dispatchedOrderIndex: Double, currentOrderIndex: Double
+    ) -> Bool {
+        currentIsChecked != dispatchedIsChecked || currentOrderIndex != dispatchedOrderIndex
+    }
+}
+
 /// Pushes local pending group meal-plan/grocery-list edits to the backend,
 /// then pulls the server's current state back down and reconciles it into
 /// the local SwiftData store — the offline-capable sync engine behind
@@ -329,12 +354,35 @@ enum GroupSyncService {
             case .synced:
                 continue
             case .pendingCreate:
+                // Snapshot the checkbox/reorder fields at the moment this
+                // create request is dispatched — the `await` below can
+                // yield the main actor to a concurrent local
+                // toggle/reorder (`setChecked`/`reorder` in
+                // `GroupSharedGroceryListView`) made while this call is
+                // still in flight. Unlike an already-`.synced` row, this
+                // row's `syncState` stays `.pendingCreate` throughout that
+                // window (there's no server id yet for a concurrent edit to
+                // be queued as a `.pendingUpdate` against), so without this
+                // check a local change made mid-flight would simply be
+                // overwritten by whatever this row's own values were *at
+                // dispatch time*, once the create response applies them
+                // back via `applyRemote`. Same class of race — and the same
+                // "capture, compare after the await, prefer the local value
+                // if it moved" fix — as `GroupMealSuggestion.toggleVoteLocally()`'s
+                // own protection against a concurrent vote toggle; see that
+                // method's doc comment.
+                let dispatchedIsChecked = row.isChecked
+                let dispatchedOrderIndex = row.orderIndex
                 do {
                     let created = try await AccountsAPIClient.createGroupGroceryItem(
                         groupID: groupID, name: row.name, category: row.category, section: row.section,
                         quantityText: row.quantityText, orderIndex: row.orderIndex
                     )
-                    applyRemote(created, to: row)
+                    let localChangedSinceDispatch = GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+                        dispatchedIsChecked: dispatchedIsChecked, currentIsChecked: row.isChecked,
+                        dispatchedOrderIndex: dispatchedOrderIndex, currentOrderIndex: row.orderIndex
+                    )
+                    applyRemote(created, to: row, preserveLocalCheckedAndOrder: localChangedSinceDispatch)
                 } catch {
                     allOK = false
                 }
@@ -369,17 +417,45 @@ enum GroupSyncService {
         return allOK
     }
 
-    private static func applyRemote(_ remote: RemoteGroupGroceryItem, to row: GroupSharedGroceryItem) {
+    /// Applies a server row's fields onto a local `GroupSharedGroceryItem`.
+    /// `preserveLocalCheckedAndOrder` (see the `.pendingCreate` case in
+    /// `pushGroceryItems` above, and `GroceryCreateReconciliation` below,
+    /// for the one caller that ever passes `true`) skips overwriting
+    /// `isChecked`/`orderIndex` from `remote` and marks the row
+    /// `.pendingUpdate` instead of `.synced`, so a local change made while
+    /// this row's create call was still in flight isn't clobbered — the
+    /// row's next push then sends those corrected values via the normal
+    /// `updateGroupGroceryItem` path. Every other caller (a `.pendingUpdate`
+    /// push's own response, and `reconcileGroceryItems`'s pull-side upsert,
+    /// both of which are never racing a create) leaves this at its default
+    /// `false`, i.e. today's existing "the response is authoritative"
+    /// behavior, unchanged.
+    // Not `private`, and explicitly `nonisolated` — unlike every other
+    // helper in this file, this is called directly by `HomeEatsTests` (see
+    // `GroupGroceryItemCreateRaceTests`), from plain synchronous test
+    // methods with no actor context of their own, so the exact state
+    // transition a create response applies can be exercised without a live
+    // network call or a `ModelContext` — same reasoning as
+    // `ReconciliationAction.decide` being a standalone testable function.
+    // Safe to opt out of this enum's `@MainActor` isolation here because
+    // this method only ever mutates the single `row` instance it's handed
+    // — it touches no other actor-isolated state of its own.
+    nonisolated static func applyRemote(
+        _ remote: RemoteGroupGroceryItem, to row: GroupSharedGroceryItem,
+        preserveLocalCheckedAndOrder: Bool = false
+    ) {
         row.id = remote.id
         row.name = remote.name
         row.category = remote.category.localCategory
         row.section = remote.section
         row.quantityText = remote.quantityText
-        row.isChecked = remote.isChecked
-        row.orderIndex = remote.orderIndex
+        if !preserveLocalCheckedAndOrder {
+            row.isChecked = remote.isChecked
+            row.orderIndex = remote.orderIndex
+        }
         row.addedByUserID = remote.addedByUserID
         row.serverUpdatedAt = remote.updatedAt
-        row.syncState = .synced
+        row.syncState = preserveLocalCheckedAndOrder ? .pendingUpdate : .synced
     }
 
     // MARK: - Pull + reconcile
@@ -555,6 +631,65 @@ enum GroupSyncService {
             return local.title
         }
         return try? await AccountsAPIClient.getRecipe(id: recipeID).title
+    }
+}
+
+// MARK: - Sign-out purge
+
+extension GroupSyncService {
+    /// Deletes every locally-cached group-sync row — `GroupPlannedMeal`,
+    /// `GroupMealSuggestion`, `GroupSharedGroceryItem` — from `modelContext`,
+    /// **regardless of `syncState`**, including anything still
+    /// `.pendingCreate`/`.pendingUpdate`/`.pendingDelete`. Called on every
+    /// sign-out (see `RootView`'s `.onChange(of: accountSession.isSignedIn)`,
+    /// which covers both the explicit "Sign Out" tap and the automatic
+    /// 401-triggered sign-out `AccountsAPIClient` performs — both flip
+    /// `isSignedIn` to `false` the same way, so both are caught here
+    /// uniformly with no separate wiring needed at either call site).
+    ///
+    /// **Why this exists**: the SwiftData `ModelContainer` these rows live
+    /// in is shared per-*device*, not per-signed-in-account — on a shared
+    /// device, User A's offline edit (still `.pendingCreate`/
+    /// `.pendingUpdate`/`.pendingDelete` because it hasn't synced yet) would
+    /// otherwise sit in this store untouched by a sign-out, and User B's
+    /// very next visit to that same group's screen would have
+    /// `GroupSyncService.push()` fire it off to the backend using B's own
+    /// Keychain token — silently attributing A's action to B. Purging every
+    /// row unconditionally on sign-out closes that window entirely: there is
+    /// nothing left in the store for a subsequent `push()` to send under the
+    /// wrong identity, no matter who signs in next or how soon. The
+    /// trade-off this accepts on purpose — a genuinely un-synced pending
+    /// change is lost rather than held for "whoever signs in next" — is the
+    /// right one: losing an edit is recoverable (redo it), misattributing it
+    /// to a different account is not.
+    ///
+    /// On the next sign-in (same device, same or different account), the
+    /// normal `pull()` path re-populates these three models fresh from the
+    /// server for whatever groups that account belongs to — identical to a
+    /// first-ever sign-in, so there's no special-casing needed anywhere else
+    /// for "this device used to have someone else's cached group data."
+    ///
+    /// Deliberately scoped to **only** these three group-sync mirrors —
+    /// every personal/local-only model (`Recipe`, the personal `PlannedMeal`,
+    /// `GroceryItem`, `FamilyMember`, ...) is untouched, since none of that
+    /// is account-scoped server state in the first place; see each of those
+    /// models' own doc comments on being purely local/per-device.
+    static func purgeAllLocalGroupData(modelContext: ModelContext) {
+        deleteAllRows(of: GroupPlannedMeal.self, modelContext: modelContext)
+        deleteAllRows(of: GroupMealSuggestion.self, modelContext: modelContext)
+        deleteAllRows(of: GroupSharedGroceryItem.self, modelContext: modelContext)
+        try? modelContext.save()
+    }
+
+    /// Same fetch-everything-then-loop-delete shape as this codebase's other
+    /// one-time/global cleanups (see `RejectedGroceryItemCleanup`) rather
+    /// than SwiftData's batch `ModelContext.delete(model:)` — keeps this
+    /// consistent with the established pattern here and sidesteps needing to
+    /// separately verify that newer batch-delete API's behavior against
+    /// pending, not-yet-saved changes in the same context.
+    private static func deleteAllRows<T: PersistentModel>(of type: T.Type, modelContext: ModelContext) {
+        guard let rows = try? modelContext.fetch(FetchDescriptor<T>()) else { return }
+        for row in rows { modelContext.delete(row) }
     }
 }
 

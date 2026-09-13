@@ -353,9 +353,11 @@ extension AccountsAPIClient {
         try await sendNoContent("POST", path: "groups/\(groupID)/invite", body: ["phoneNumber": phoneNumber])
     }
 
-    /// Leave (pass your own id) or remove another member — v1 has no admin
-    /// role, so any current member can remove any other (see
-    /// backend/README.md's note on `DELETE /groups/:groupId/members/:userId`).
+    /// Leave (pass your own id) or remove another member. Self-removal is
+    /// always allowed; removing another member requires the caller to be a
+    /// `MANAGER` of the group (tightened in Phase 3 — a `PARTICIPANT`
+    /// attempting it gets a `403` back) — see backend/README.md's "Group
+    /// roles" section and routes/groups.js's own doc comment on this route.
     static func removeGroupMember(groupID: String, userID: String) async throws {
         try await sendNoContent("DELETE", path: "groups/\(groupID)/members/\(userID)")
     }

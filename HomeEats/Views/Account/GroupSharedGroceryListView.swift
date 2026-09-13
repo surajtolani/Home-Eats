@@ -240,7 +240,14 @@ struct GroupSharedGroceryListView: View {
             if item.syncState != .synced { pendingIndicator }
             // Renaming/recategorizing/changing quantity or section is
             // MANAGER only — mirrors `PATCH .../grocery/:id`'s manager-only
-            // fields exactly.
+            // fields exactly. Deliberately NOT also disabled for a still-
+            // `.pendingCreate` row the way the suggestion-accept and
+            // meal-plan-adopt buttons are: a manager editing an item they
+            // just added, before it's synced, is a normal thing to want to
+            // do (fixing a typo) — `EditGroupGroceryItemSheet.save()` itself
+            // branches on `isLocalPlaceholderID` to apply that edit locally
+            // instead of sending a network `PATCH` against an id the server
+            // has never seen.
             if isManager {
                 Button { editingItem = item } label: {
                     Image(systemName: "pencil.circle")
@@ -489,14 +496,36 @@ private struct EditGroupGroceryItemSheet: View {
     }
 
     private func save() async {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedQuantity = quantityText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Still `.pendingCreate` (no real server id yet — see
+        // `isLocalPlaceholderID`'s doc comment) -> there is no server row
+        // for a `PATCH` to target; sending one anyway would 404 and the
+        // edit would be silently lost. Apply it directly to the local row
+        // instead and leave `syncState` as `.pendingCreate`: its eventual
+        // `push()` sends these corrected values as part of the still-
+        // pending create call, not as a separate update. This is what lets
+        // someone fix a typo in something they just added seconds ago,
+        // before it's synced, without the edit vanishing.
+        if item.isLocalPlaceholderID {
+            item.name = trimmedName
+            item.category = category
+            item.quantityText = trimmedQuantity
+            item.section = section
+            try? modelContext.save()
+            dismiss()
+            return
+        }
+
         isSaving = true
         defer { isSaving = false }
         do {
             try await GroupSyncService.editGroceryItem(
                 groupID: groupID, itemID: item.id,
-                name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                name: trimmedName,
                 category: category,
-                quantityText: quantityText.trimmingCharacters(in: .whitespacesAndNewlines),
+                quantityText: trimmedQuantity,
                 section: section,
                 modelContext: modelContext
             )

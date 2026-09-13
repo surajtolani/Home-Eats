@@ -6,11 +6,29 @@ struct SettingsView: View {
     @EnvironmentObject private var accountSession: AccountSession
     @Query private var settingsRows: [AppSettings]
     @Query(sort: \GroceryReminder.createdAt) private var groceryReminders: [GroceryReminder]
+    // Unfiltered — same "fetch everything, filter `syncState` in Swift"
+    // caution as `GroupSyncService`'s own local fetches (see its doc
+    // comments) — used only to decide whether to show the sign-out warning
+    // below, not for display.
+    @Query private var groupPlannedMeals: [GroupPlannedMeal]
+    @Query private var groupMealSuggestions: [GroupMealSuggestion]
+    @Query private var groupGroceryItems: [GroupSharedGroceryItem]
 
     @State private var reminderTime: Date = Calendar.current.date(
         from: DateComponents(hour: 18, minute: 0)
     ) ?? .now
     @State private var showSignIn = false
+    @State private var showUnsyncedSignOutWarning = false
+
+    /// Whether any group-sync row is still waiting to reach the server —
+    /// used only to decide whether signing out needs a confirmation first;
+    /// see `GroupSyncService.purgeAllLocalGroupData`'s doc comment for why
+    /// sign-out purges these rows unconditionally regardless of this check.
+    private var hasUnsyncedGroupChanges: Bool {
+        groupPlannedMeals.contains { $0.syncState != .synced }
+            || groupMealSuggestions.contains { $0.syncState != .synced }
+            || groupGroceryItems.contains { $0.syncState != .synced }
+    }
 
     // `settings` is read several times per `body` pass (the toggle, the day
     // picker, the reminder-time handler...). Inserting a new row from inside
@@ -70,7 +88,17 @@ struct SettingsView: View {
                         Label("Groups", systemImage: "person.3")
                     }
                     Button("Sign Out", role: .destructive) {
-                        accountSession.signOut()
+                        // Signing out purges every locally-cached group-sync
+                        // row unconditionally, pending or not — see
+                        // `GroupSyncService.purgeAllLocalGroupData`'s doc
+                        // comment for why. Warn first if that would actually
+                        // lose something, so a genuinely offline edit isn't
+                        // silently dropped with no chance to notice.
+                        if hasUnsyncedGroupChanges {
+                            showUnsyncedSignOutWarning = true
+                        } else {
+                            accountSession.signOut()
+                        }
                     }
                 } else if accountSession.isSignedIn {
                     // A token is stored but GET /me hasn't resolved yet
@@ -176,6 +204,18 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showSignIn) {
             AccountSignInView()
+        }
+        .confirmationDialog(
+            "You have unsynced changes",
+            isPresented: $showUnsyncedSignOutWarning,
+            titleVisibility: .visible
+        ) {
+            Button("Sign Out Anyway", role: .destructive) {
+                accountSession.signOut()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Some group meal-plan or grocery-list changes haven't synced yet. Signing out now will lose them.")
         }
     }
 

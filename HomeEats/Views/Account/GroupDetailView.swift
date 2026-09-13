@@ -18,6 +18,15 @@ struct GroupDetailView: View {
     @State private var errorMessage: String?
     @State private var showInvite = false
 
+    /// The signed-in caller's own role in *this* group — same
+    /// `group?.myRole(currentUserID:)` convention `GroupSharedMealPlanView`/
+    /// `GroupSharedGroceryListView` already use for their own role gating.
+    /// `nil` until `group` has loaded, which conservatively hides every
+    /// MANAGER-only control below until then rather than briefly showing
+    /// them to everyone during that first load.
+    private var myRole: GroupRole? { group?.myRole(currentUserID: accountSession.currentUser?.id) }
+    private var isManager: Bool { myRole == .manager }
+
     var body: some View {
         List {
             if isLoading && group == nil {
@@ -57,11 +66,18 @@ struct GroupDetailView: View {
         .navigationTitle(group?.name ?? groupName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showInvite = true
-                } label: {
-                    Image(systemName: "person.badge.plus")
+            // Inviting a new member is MANAGER-only server-side (`POST
+            // /groups/:groupId/invite` — see routes/groups.js's own doc
+            // comment on that route). Gating the button itself, not just
+            // catching the resulting 403, so a PARTICIPANT never sees an
+            // action they can't actually use in the first place.
+            if isManager {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showInvite = true
+                    } label: {
+                        Image(systemName: "person.badge.plus")
+                    }
                 }
             }
         }
@@ -101,19 +117,24 @@ struct GroupDetailView: View {
             // Same route (`DELETE /groups/:groupId/members/:userId`) either
             // way — "Leave" (removing yourself) and "Remove" (removing
             // someone else) are the same call with a different label purely
-            // for how it reads. Removing someone else is `MANAGER`-only as
-            // of Phase 3 (see backend/README.md's "Group roles" section);
-            // this button is shown to everyone regardless (pre-existing
-            // Phase 2/3 behavior, unchanged by this Phase 4 task, which is
-            // scoped to the new shared meal-plan/grocery-list screens
-            // above, not to gating group-membership management itself) —
-            // a `PARTICIPANT` tapping it on someone else simply gets the
-            // backend's `403` back as an inline error, same as any other
-            // server-declined request elsewhere in this app.
-            Button(member.id == accountSession.currentUser?.id ? "Leave" : "Remove", role: .destructive) {
-                Task { await remove(member.id) }
+            // for how it reads. Leaving is open to everyone regardless of
+            // role; removing someone *else* is `MANAGER`-only as of Phase 3
+            // (see backend/README.md's "Group roles" section) and gated
+            // here to match — a `PARTICIPANT` no longer sees a "Remove" they
+            // could never actually use (it used to be shown to everyone and
+            // just 403 for a non-manager tapping it on someone else).
+            let isSelf = member.id == accountSession.currentUser?.id
+            if isSelf {
+                Button("Leave", role: .destructive) {
+                    Task { await remove(member.id) }
+                }
+                .buttonStyle(.borderless)
+            } else if isManager {
+                Button("Remove", role: .destructive) {
+                    Task { await remove(member.id) }
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
         }
     }
 
