@@ -31,11 +31,26 @@ datasource db {
 // is null until the person sets it post-verification (see PATCH /me) — the
 // app can still function with a phone-number-only account in the meantime,
 // e.g. to accept a friend request that arrived before they picked a name.
+//
+// passwordHash (added when SMS-every-login was replaced by a traditional
+// sign-up/log-in model — see routes/auth.js and backend/README.md's
+// "Accounts, friends, and groups" section): null until the person finishes
+// signup by setting a password (POST /auth/complete-signup). That's a real,
+// valid, resumable state — not a bug — for someone who verified their phone
+// via POST /auth/verify-code but closed the app before finishing signup;
+// routes/auth.js's verify-code handler specifically checks for it so that
+// person can pick up signup again without another SMS round-trip. Only ever
+// hashed with bcrypt (see lib/password.js) — the raw password itself is
+// never stored, and this column is never included in any API response (see
+// every route below, which reconstructs `{ id, phoneNumber, displayName,
+// ... }` by hand rather than returning a Prisma row directly, precisely so
+// a field like this can be added here without an audit of every response).
 model User {
-  id          String   @id @default(uuid())
-  phoneNumber String   @unique
-  displayName String?
-  createdAt   DateTime @default(now())
+  id           String   @id @default(uuid())
+  phoneNumber  String   @unique
+  displayName  String?
+  passwordHash String?
+  createdAt    DateTime @default(now())
 
   // Friend requests this user sent / received. A Friendship is queryable
   // from either side by combining these two relations (see routes/friends.js).

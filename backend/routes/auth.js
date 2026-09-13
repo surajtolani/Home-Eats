@@ -1,22 +1,51 @@
-// POST /auth/request-code and POST /auth/verify-code — phone number + SMS
-// code sign-in, backed by Twilio Verify. No password, no Apple-only
-// sign-in-with-Apple: a phone number is the one identifier that works the
-// same on iOS and (eventually) Android, and it's what friend-matching
-// against a phone contacts list will key off of later.
+// The sign-up / log-in / forgot-password surface, backed by Twilio Verify
+// for SMS and bcrypt for passwords. A phone number is still the one
+// identifier that works the same on iOS and (eventually) Android, and it's
+// what friend-matching against a phone contacts list keys off of later —
+// but unlike the very first version of this feature, SMS is no longer
+// required on every sign-in. Splitwise/WhatsApp-style "verify by SMS every
+// time" was replaced by a traditional model:
 //
-// Neither route here requires a Bearer token (see index.js — this router is
-// mounted before requireAuth would ever apply to it); everything under
-// /me, /friends, /groups does.
+//   - Sign up (brand-new number): POST /auth/request-code, then
+//     POST /auth/verify-code (once), then POST /auth/complete-signup to set
+//     a password and display name.
+//   - Log in (returning user): POST /auth/login — phone number + password,
+//     no SMS at all.
+//   - Forgot password: POST /auth/request-code, then POST /auth/verify-code
+//     again (proving you still own the phone), then
+//     POST /auth/reset-password.
+//
+// The two-tier token model that makes this safe: POST /auth/verify-code's
+// success case can no longer just log someone in the way it used to — it
+// hands back a short-lived, single-purpose JWT ("signup" or "reset", see
+// lib/authTokens.js) instead of a real session token. Only
+// POST /auth/complete-signup, POST /auth/reset-password, and POST /auth/login
+// ever hand back a real session token (the kind middleware/requireAuth.js
+// accepts on /me, /friends, /groups, ...) — and each of those three purpose/
+// session tokens is rejected everywhere except the one route it's meant
+// for; see lib/authTokens.js's verifySessionToken/verifyPurposeToken for
+// where that boundary actually lives.
+//
+// None of the routes here require a Bearer token (see index.js — this
+// router is mounted before requireAuth would ever apply to it) — that's the
+// whole point, this is how you get a token in the first place.
 "use strict";
 
 const express = require("express");
-const jwt = require("jsonwebtoken");
 const { z } = require("zod");
 const { prisma } = require("../lib/prisma");
 const { twilioClient } = require("../lib/twilio");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { createRateLimiter } = require("../lib/rateLimit");
+const { passwordField, hashPassword, comparePassword, DUMMY_PASSWORD_HASH } = require("../lib/password");
+const {
+  PURPOSE_SIGNUP,
+  PURPOSE_RESET,
+  signSessionToken,
+  signPurposeToken,
+  verifyPurposeToken,
+} = require("../lib/authTokens");
 
 const router = express.Router();
 
@@ -38,15 +67,27 @@ const PhoneSchema = z.object({
 const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5 });
 const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
 
+// POST /login doesn't cost money per call the way /request-code does, but a
+// phone number + password login is a real brute-force target (an attacker
+// who knows/guesses a phone number gets unlimited free password guesses
+// otherwise) — so it gets the same two-limiter shape. Limits are looser than
+// /request-code's since a wrong password is a much more likely honest
+// mistake than a mistyped SMS code (no autofill for it), but still tight
+// enough to make guessing an 8+ character password impractical: 10 attempts
+// per phone number per hour, 30 per IP per hour.
+const loginPhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10 });
+const loginIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+
 function firstIssue(error, fallback) {
   return error.issues[0]?.message || fallback;
 }
 
-function signToken(userId) {
-  // 30 days: long enough that a phone-based app (where re-typing an SMS
-  // code every session would be actively annoying) stays signed in across
-  // normal use, short enough that a leaked token doesn't work forever.
-  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: "30d" });
+// The one shape every route below returns a User as — reconstructed field
+// by field (never a raw Prisma row) so `passwordHash` can never leak into a
+// response just because a field gets added to the model later. Matches the
+// shape POST /auth/verify-code used to return before this change.
+function publicUser(user) {
+  return { id: user.id, phoneNumber: user.phoneNumber, displayName: user.displayName };
 }
 
 // POST /auth/request-code
@@ -54,7 +95,10 @@ function signToken(userId) {
 // itself owns code generation, expiry, and rate-limiting/attempt-limits, so
 // this route deliberately doesn't add another layer of throttling on top —
 // just the cheap format check above, so a garbage input doesn't burn an
-// API call.
+// API call. Purpose-agnostic: used identically for a first-time signup and
+// for a forgot-password re-verification — POST /auth/verify-code is what
+// decides which of those this turns out to be, based on whether the number
+// already has a passwordHash set (see below).
 router.post("/request-code", asyncHandler(async (req, res) => {
   const parsed = PhoneSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -94,14 +138,26 @@ router.post("/request-code", asyncHandler(async (req, res) => {
 
 // POST /auth/verify-code
 // Body: { phoneNumber, code }. Checks the code with Twilio Verify; on
-// success, finds-or-creates the User by phone number and turns any pending
-// Invites addressed to that number into ordinary PENDING friend requests
-// (see the Invite model's doc comment in prisma/schema.prisma — this
-// deliberately does NOT auto-accept the friendship or auto-join any tied
-// group; that only happens later, if and when the new user actually
-// accepts the resulting request), all inside one transaction so a signup
-// either fully succeeds — user row plus any invite-derived friend requests
-// — or fully fails, never half-applied. Returns a JWT.
+// success, looks up the User for this phone number and returns a
+// short-lived, single-purpose token instead of logging anyone in directly
+// (that's the core behavior change from the old SMS-every-login model —
+// see the file-level comment above):
+//
+//   - No user yet, OR a user exists but has no passwordHash (they verified
+//     before but never finished signup — see the User.passwordHash doc
+//     comment in prisma/schema.prisma; this deliberately resumes that row
+//     rather than losing it or erroring): creates the User if needed
+//     (still resolving pending Invites exactly as before, inside the same
+//     transaction), returns { signupToken, isNewAccount: true }.
+//   - A user exists AND already has a passwordHash: this is a
+//     forgot-password re-verification, returns
+//     { resetToken, isNewAccount: false }.
+//
+// Either way, `signupToken`/`resetToken` is a `purpose`-scoped JWT (see
+// lib/authTokens.js) good for 15 minutes and good for exactly one thing:
+// POST /auth/complete-signup or POST /auth/reset-password, respectively. It
+// does NOT work as a session token on any authenticated route — see
+// middleware/requireAuth.js.
 const VerifySchema = PhoneSchema.extend({
   // Twilio Verify codes are typically 4-10 digits depending on channel/
   // configuration; validated loosely here and authoritatively by Twilio.
@@ -146,10 +202,21 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
   }
 
   try {
-    const user = await prisma.$transaction(async (tx) => {
+    const { user, isNewAccount } = await prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findUnique({ where: { phoneNumber } });
+
+      if (existingUser && existingUser.passwordHash) {
+        // Already a complete account — this verification was a
+        // forgot-password re-proof of phone ownership, not a signup.
+        return { user: existingUser, isNewAccount: false };
+      }
       if (existingUser) {
-        return existingUser;
+        // Verified before, never finished signup (no passwordHash yet).
+        // Resume the same row instead of creating a duplicate or making
+        // them re-do anything already done (e.g. any invites already
+        // resolved into friend requests below, the first time this number
+        // verified).
+        return { user: existingUser, isNewAccount: true };
       }
 
       const newUser = await tx.user.create({ data: { phoneNumber } });
@@ -201,18 +268,180 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
       // `resolveInvitesForAcceptedFriendship`/
       // `cancelInvitesForDeclinedFriendship` in routes/friends.js.
 
-      return newUser;
+      return { user: newUser, isNewAccount: true };
     });
 
-    const token = signToken(user.id);
-    res.json({
-      token,
-      user: { id: user.id, phoneNumber: user.phoneNumber, displayName: user.displayName },
-    });
+    if (isNewAccount) {
+      res.json({ signupToken: signPurposeToken(user.id, PURPOSE_SIGNUP), isNewAccount: true });
+    } else {
+      res.json({ resetToken: signPurposeToken(user.id, PURPOSE_RESET), isNewAccount: false });
+    }
   } catch (error) {
     console.error("Signup/verify transaction failed", error);
-    res.status(500).json({ error: "Couldn't complete sign-in." });
+    res.status(500).json({ error: "Couldn't complete verification." });
   }
+}));
+
+// POST /auth/complete-signup
+// Body: { signupToken, password, displayName }. The last step of signup:
+// verifies the token's signature/expiry/purpose (must be "signup" —
+// see lib/authTokens.js), sets a password and display name on the user it
+// names, and returns a real session token — completing signup the same way
+// POST /auth/verify-code used to on its own before this change. No
+// Authorization header here on purpose: `signupToken` travels as a body
+// field, same as `code` does on POST /auth/verify-code, because this is
+// explicitly a not-yet-fully-authenticated action (the caller has proven
+// phone ownership, not signed in).
+const CompleteSignupSchema = z.object({
+  signupToken: z.string().min(1, "signupToken is required."),
+  password: passwordField,
+  displayName: z.string().trim().min(1, "displayName can't be empty.").max(100),
+});
+
+router.post("/complete-signup", asyncHandler(async (req, res) => {
+  const parsed = CompleteSignupSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: firstIssue(parsed.error, "Invalid request.") });
+  }
+  const { signupToken, password, displayName } = parsed.data;
+
+  if (!process.env.JWT_SECRET) {
+    console.error("JWT_SECRET is not configured.");
+    return res.status(500).json({ error: "Server is misconfigured." });
+  }
+
+  let payload;
+  try {
+    payload = verifyPurposeToken(signupToken, PURPOSE_SIGNUP);
+  } catch (error) {
+    // Covers an expired/tampered/malformed token, and a validly-signed
+    // token with the wrong purpose (a resetToken, or even a real session
+    // token) — all of those are "this isn't a valid signup token", and the
+    // caller doesn't need finer detail than that.
+    return res.status(401).json({ error: "Invalid or expired signup token." });
+  }
+
+  const passwordHash = await hashPassword(password);
+
+  let user;
+  try {
+    user = await prisma.user.update({
+      where: { id: payload.userId },
+      data: { passwordHash, displayName },
+    });
+  } catch (error) {
+    // The user row this token names is gone — shouldn't normally happen
+    // (there's no delete-account route yet), but fail as an invalid token
+    // rather than a generic 500 since that's effectively what it is from
+    // the caller's point of view.
+    console.error("complete-signup update failed", error);
+    return res.status(400).json({ error: "Invalid or expired signup token." });
+  }
+
+  res.json({ token: signSessionToken(user.id), user: publicUser(user) });
+}));
+
+// POST /auth/reset-password
+// Body: { resetToken, newPassword }. Verifies the token (must be purpose
+// "reset"), updates the password, and — standard UX, no reason to make
+// someone log in again right after proving who they are twice already
+// (SMS, then this) — logs them straight in with a real session token.
+const ResetPasswordSchema = z.object({
+  resetToken: z.string().min(1, "resetToken is required."),
+  newPassword: passwordField,
+});
+
+router.post("/reset-password", asyncHandler(async (req, res) => {
+  const parsed = ResetPasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: firstIssue(parsed.error, "Invalid request.") });
+  }
+  const { resetToken, newPassword } = parsed.data;
+
+  if (!process.env.JWT_SECRET) {
+    console.error("JWT_SECRET is not configured.");
+    return res.status(500).json({ error: "Server is misconfigured." });
+  }
+
+  let payload;
+  try {
+    payload = verifyPurposeToken(resetToken, PURPOSE_RESET);
+  } catch (error) {
+    // Same "any mismatch reads as invalid" reasoning as complete-signup
+    // above — a signupToken, an expired/tampered token, or a real session
+    // token handed here all fail identically.
+    return res.status(401).json({ error: "Invalid or expired reset token." });
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+
+  let user;
+  try {
+    user = await prisma.user.update({
+      where: { id: payload.userId },
+      data: { passwordHash },
+    });
+  } catch (error) {
+    console.error("reset-password update failed", error);
+    return res.status(400).json({ error: "Invalid or expired reset token." });
+  }
+
+  res.json({ token: signSessionToken(user.id), user: publicUser(user) });
+}));
+
+// POST /auth/login
+// Body: { phoneNumber, password }. The normal, no-SMS-involved sign-in for
+// a returning user. On any failure — wrong password, no such phone number,
+// or a phone number that verified once but never finished signup (no
+// passwordHash yet) — this returns the exact same generic 401, on purpose:
+// a well-known account-enumeration protection, the same "don't let a
+// response's shape/status double as a way to check who's a Home Eats user"
+// principle backend/README.md's "Phone-number privacy" section already
+// applies to /friends/request and /groups/:groupId/invite.
+const LoginSchema = z.object({
+  phoneNumber: phoneNumberField,
+  // Deliberately just "non-empty" here, not the full 8-character
+  // `passwordField` rule — a too-short password is still a *wrong*
+  // password, and validating it more strictly here would let a caller
+  // learn something about the account (or about this route's own rules)
+  // beyond what the generic 401 below is supposed to reveal.
+  password: z.string().min(1, "password is required."),
+});
+
+router.post("/login", asyncHandler(async (req, res) => {
+  const parsed = LoginSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: firstIssue(parsed.error, "Invalid phoneNumber or password.") });
+  }
+  const { phoneNumber, password } = parsed.data;
+
+  const phoneLimited = loginPhoneLimiter.check(phoneNumber).limited;
+  const ipLimited = loginIPLimiter.check(req.ip).limited;
+  if (phoneLimited || ipLimited) {
+    return res.status(429).json({ error: "Too many login attempts. Please wait a bit and try again." });
+  }
+
+  if (!process.env.JWT_SECRET) {
+    console.error("JWT_SECRET is not configured.");
+    return res.status(500).json({ error: "Server is misconfigured." });
+  }
+
+  const user = await prisma.user.findUnique({ where: { phoneNumber } });
+
+  // Always run a real bcrypt compare, even when there's no user or no
+  // passwordHash yet — comparing against DUMMY_PASSWORD_HASH instead of
+  // short-circuiting keeps this route's response time roughly the same for
+  // "no such account" as for "wrong password", so timing can't be used to
+  // tell those apart either (see lib/password.js's doc comment on
+  // DUMMY_PASSWORD_HASH). Defense in depth on top of the generic error
+  // message below, which is the primary protection.
+  const passwordMatches = await comparePassword(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
+
+  if (!user || !user.passwordHash || !passwordMatches) {
+    return res.status(401).json({ error: "Invalid phone number or password." });
+  }
+
+  res.json({ token: signSessionToken(user.id), user: publicUser(user) });
 }));
 
 module.exports = router;
