@@ -24,18 +24,27 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// own view-mode picker plus those same two collapsible sections below it),
 /// now Phase-4-backed by the group-scoped `GroupStoreAisle`/
 /// `GroupGroceryHistoryEntry` models instead of the local `StoreAisle`/
-/// `HistoricalGroceryItem`. "Staples" is a separate standing *template* list
-/// (`GroupStaplesManagerView`, reachable from the toolbar), not a third view
-/// mode — matching the personal app's own structure exactly (see
-/// `StapleItem`'s doc comment: a staple is added onto the real list by hand,
-/// same as any other item, with `section: .staples`; the standing list is
-/// just where its name/category/usual-quantity are remembered for next
-/// time). One thing this version deliberately does NOT port: the personal
-/// screen's "Paste an Old Grocery List" bulk-import sheet
+/// `HistoricalGroceryItem`. A quick-add field at the top of the list
+/// (`quickAddField` below) lets a plain name-only add reach the list
+/// directly via Return, with no sheet at all — see that property's own doc
+/// comment for the role-gating and the "why keep the sheet too" reasoning.
+/// One thing this version deliberately does NOT port: the personal screen's
+/// "Paste an Old Grocery List" bulk-import sheet
 /// (`GroceryHistoryImportSheet`) — there is no group-scoped bulk-import
 /// endpoint on the backend, so this group's past-groceries catalog can only
 /// ever grow the automatic way (checking an item off), never by pasting a
 /// list; see this feature's own final report.
+///
+/// **No "Staples" here.** A standing group "staples" template list
+/// (`GroupStaplesManagerView`, reachable from this screen's toolbar) used to
+/// exist alongside "By Category"/"My Layout" — removed outright per direct
+/// user feedback that the concept added nothing useful. This is unrelated
+/// to `GroupGrocerySection.staples`, still very much present below
+/// (`purchasableItems`'s filter, `moveToAisleMenu`, ...): that's a tag on
+/// one specific line already on the live list (mirroring the personal
+/// `GroceryListSection.staples`), not a standing template — see
+/// `GroupStoreAisle`'s doc comment in
+/// HomeEats/Models/GroupGroceryLayout.swift for the fuller removal note.
 ///
 /// **Local-first / sync**: same design as `GroupSharedMealPlanView` — see
 /// that view's and `GroupSyncService`'s own doc comments for the full
@@ -51,9 +60,11 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// edit its name/category/quantity/section, or accept a suggestion; a
 /// `PARTICIPANT` can only suggest (create with `section: .suggested`) and
 /// can remove their own suggestion (or any `THIS_WEEK`/`STAPLES` item —
-/// routine maintenance, open to anyone). Managing "My Layout" aisles and the
-/// standing staples list is open to any member too — see
-/// `GroupAislesManagerView`/`GroupStaplesManagerView`'s own doc comments.
+/// routine maintenance, open to anyone). Managing "My Layout" aisles is open
+/// to any member too — see `GroupAislesManagerView`'s own doc comment. The
+/// quick-add field at the top of the list follows this exact same
+/// MANAGER-decides/PARTICIPANT-suggests split — see `quickAddField`'s own
+/// doc comment.
 struct GroupSharedGroceryListView: View {
     let groupID: String
     let groupName: String
@@ -69,10 +80,11 @@ struct GroupSharedGroceryListView: View {
     @State private var lastSyncOutcome: GroupSyncService.SyncOutcome?
     @State private var showAddSheet = false
     @State private var showAislesManager = false
-    @State private var showStaplesManager = false
     @State private var editingItem: GroupSharedGroceryItem?
     @State private var actionErrorMessage: String?
 
+    /// Backs `quickAddField` — see that property's own doc comment.
+    @State private var quickAddText = ""
     @State private var viewMode: GroupGroceryViewMode = .byCategory
     /// Same "always active, real writable binding rather than `.constant`"
     /// reasoning as the personal `GroceryListView.editMode` — see that
@@ -174,6 +186,11 @@ struct GroupSharedGroceryListView: View {
                 groceryListTitleHeader
             }
 
+            Section {
+                quickAddField
+                    .listRowSeparator(.hidden)
+            }
+
             if hasPendingChanges || isKnownOffline {
                 Section {
                     Label(statusMessage, systemImage: "wifi.slash")
@@ -210,12 +227,15 @@ struct GroupSharedGroceryListView: View {
                 Button { showAddSheet = true } label: { Image(systemName: "plus") }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                // A single-item `Menu` rather than a plain button:
+                // deliberately kept in this shape (not simplified down to a
+                // bare toolbar button now that "Manage Staples" is gone —
+                // see this file's own top doc comment for that removal)
+                // since a separate, concurrent task is reworking this
+                // screen's overall toolbar layout and a menu-vs-button shape
+                // change here would just be extra churn for that work to
+                // land on top of.
                 Menu {
-                    Button {
-                        presentAfterMenuDismiss { showStaplesManager = true }
-                    } label: {
-                        Label("Manage Staples", systemImage: "list.bullet.clipboard")
-                    }
                     Button {
                         presentAfterMenuDismiss { showAislesManager = true }
                     } label: {
@@ -242,9 +262,6 @@ struct GroupSharedGroceryListView: View {
         }
         .sheet(isPresented: $showAislesManager) {
             GroupAislesManagerView(groupID: groupID)
-        }
-        .sheet(isPresented: $showStaplesManager) {
-            GroupStaplesManagerView(groupID: groupID)
         }
         .alert(
             "Couldn't complete that",
@@ -282,7 +299,7 @@ struct GroupSharedGroceryListView: View {
                     Text(category.displayName)
                 } footer: {
                     if index == purchasableByCategory.count - 1 {
-                        Text("Drag the ≡ handle to reorder. Tap the ⋯ on an item (or touch and hold it) to move it to a different aisle in My Layout — any member can do this. Manage the group's standing staples and aisles from the toolbar.")
+                        Text("Drag the ≡ handle to reorder. Tap the ⋯ on an item (or touch and hold it) to move it to a different aisle in My Layout — any member can do this. Manage the group's aisles from the toolbar.")
                     }
                 }
             }
@@ -604,6 +621,88 @@ struct GroupSharedGroceryListView: View {
             .textCase(nil)
             .padding(.top, 8)
             .padding(.bottom, 4)
+    }
+
+    // MARK: - Quick add
+
+    /// An always-visible, search-bar-styled `TextField` at the top of the
+    /// list — type a name and hit Return (or tap the arrow) to add it
+    /// immediately, no sheet involved at all. This is a direct fix for user
+    /// feedback that adding an item required opening a modal for what's
+    /// usually just a bare name.
+    ///
+    /// Deliberately a plain `TextField`, not `.searchable`: `.searchable`'s
+    /// established meaning elsewhere in this app (`RestaurantListView`,
+    /// `GroupRecipePickerSheet`, the "By Category"/"My Layout" toggle above
+    /// has no search of its own to attach one to anyway) is "filter/find
+    /// something that already exists" — this field's job is the opposite,
+    /// to CREATE a new row, so reusing that same affordance for a different
+    /// action would read as misleading despite the "search bar" look the
+    /// feature request asked for.
+    ///
+    /// **Same role-gating as the existing sheet-based flow, no exceptions**:
+    /// a `MANAGER`'s submission lands directly on the real list
+    /// (`section: .thisWeek`); a `PARTICIPANT`'s lands as a `.suggested`
+    /// item requiring a `MANAGER` to adopt it via the "Suggested" section
+    /// below — the exact same split `AddGroupGroceryItemSheet.submit()`
+    /// already enforces (see that type's own doc comment for why: the
+    /// backend's `POST /groups/:groupId/grocery` itself rejects any other
+    /// section from a `PARTICIPANT`), just reached by pressing Return
+    /// instead of opening a sheet and tapping "Add".
+    ///
+    /// **Why `AddGroupGroceryItemSheet` still exists alongside this,
+    /// instead of being replaced by it**: this field is deliberately
+    /// name-only — no category picker, no quantity, no (for a `MANAGER`)
+    /// section picker — so a plain "milk" typed and submitted still needs
+    /// *some* way to set a quantity or override the category `GroceryCategory
+    /// .guess(fromIngredientName:)` gets wrong, or (for a `MANAGER`) to add
+    /// straight into `.suggested`/`.staples` instead of the default
+    /// `.thisWeek`. The existing sheet (still reachable from the toolbar's
+    /// `+`) covers exactly that "I want to set more than just the name"
+    /// case; this field covers the much more common "just add milk" case
+    /// the user asked for directly, without regressing the other one.
+    private var quickAddField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(isManager ? "Add an item" : "Suggest an item", text: $quickAddText)
+                .submitLabel(.done)
+                .onSubmit { submitQuickAdd() }
+            if !quickAddText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button(action: submitQuickAdd) {
+                    Image(systemName: "arrow.up.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.brandForest)
+            }
+        }
+    }
+
+    /// Inserts a `.pendingCreate` row straight from `quickAddText` — same
+    /// local-first-insert-and-sync-in-the-background pattern as every other
+    /// write on this screen (see `AddGroupGroceryItemSheet.submit()` for the
+    /// sheet-based twin of this exact insert). `GroceryCategory
+    /// .guess(fromIngredientName:)` is the same best-effort category guess
+    /// the personal `AddGroceryItemSheet`/`StaplesManagerView` use for a
+    /// name-only add — good enough for routine use, and a `MANAGER` can
+    /// still correct it afterward via `EditGroupGroceryItemSheet` if it
+    /// guesses wrong.
+    private func submitQuickAdd() {
+        let trimmedName = quickAddText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, let currentUserID = accountSession.currentUser?.id else { return }
+        let item = GroupSharedGroceryItem(
+            id: GroupSharedGroceryItem.newLocalPlaceholderID(),
+            groupID: groupID,
+            name: trimmedName,
+            category: GroceryCategory.guess(fromIngredientName: trimmedName),
+            section: isManager ? .thisWeek : .suggested,
+            addedByUserID: currentUserID,
+            syncState: .pendingCreate
+        )
+        modelContext.insert(item)
+        try? modelContext.save()
+        quickAddText = ""
+        Task { await runSync() }
     }
 
     // MARK: - Actions
