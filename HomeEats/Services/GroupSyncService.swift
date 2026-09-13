@@ -72,25 +72,45 @@ enum ReconciliationAction: Equatable {
 /// The concurrent-edit-during-create-dispatch decision for a
 /// `GroupSharedGroceryItem`'s `isChecked`/`orderIndex` fields — see the
 /// `.pendingCreate` case of `GroupSyncService.pushGroceryItems` for the race
-/// this exists to close (a local checkbox toggle or reorder, made while that
-/// row's create call is still in flight, would otherwise be silently
-/// overwritten by the create response's "as submitted" values once it comes
-/// back). A pure function of the before/after snapshots, exposed standalone
-/// for the same reason `ReconciliationAction.decide` is: unit-testable with
-/// no `ModelContext` and no network at all (see
-/// `GroupGroceryItemCreateRaceTests`).
+/// this exists to close (a local checkbox toggle or reorder, made at any
+/// point before that row's create call has actually been acknowledged,
+/// would otherwise be silently overwritten by the create response's values
+/// once it comes back). A pure function, exposed standalone for the same
+/// reason `ReconciliationAction.decide` is: unit-testable with no
+/// `ModelContext` and no network at all (see `GroupGroceryItemCreateRaceTests`).
+///
+/// Compares the row's **current** value against the value the **create
+/// response itself just returned** — not against a snapshot taken when the
+/// create request was dispatched. That distinction matters: `POST
+/// .../grocery` never accepts `isChecked` at all (see `CreateItemSchema` in
+/// routes/groupGrocery.js — a freshly created row is always `isChecked:
+/// false` server-side, no exceptions), so comparing "current" only against
+/// "value at dispatch time" misses the very common case of a user checking
+/// a brand-new item off (or reordering it) *before* its first sync ever
+/// runs, not just during one already in flight — at dispatch time,
+/// `dispatchedIsChecked` would already equal `currentIsChecked` (both
+/// `true`, since the checkbox was tapped before this push started, not
+/// during it), so a dispatch-time comparison sees no discrepancy and lets
+/// `applyRemote` overwrite the checked-off state with the server's `false`
+/// the moment the create response lands — a real, silent loss this
+/// design once had. Comparing against what the response actually says
+/// closes that gap uniformly, for both the "changed before dispatch" and
+/// the "changed during flight" cases, since either way the server's
+/// response is the one source of truth for "what the create call was even
+/// capable of communicating."
 enum GroceryCreateReconciliation {
-    /// - Returns: `true` if either field has moved since the create request
-    ///   was dispatched — meaning the local value, not the server's
-    ///   as-submitted echo of it, should win, and the row should be marked
-    ///   `.pendingUpdate` (not `.synced`) so the corrected value still gets
-    ///   pushed. `false` (the common case — nothing changed mid-flight)
-    ///   means the response is fully authoritative, same as before this fix.
+    /// - Returns: `true` if the row's current value differs from what the
+    ///   create response says — meaning the local value, not the server's
+    ///   response, should win, and the row should be marked `.pendingUpdate`
+    ///   (not `.synced`) so the corrected value still gets pushed via a
+    ///   follow-up `PATCH`. `false` (the common case — nothing local ever
+    ///   diverged from what got created) means the response is fully
+    ///   authoritative.
     static func shouldPreserveLocalCheckedAndOrder(
-        dispatchedIsChecked: Bool, currentIsChecked: Bool,
-        dispatchedOrderIndex: Double, currentOrderIndex: Double
+        currentIsChecked: Bool, remoteIsChecked: Bool,
+        currentOrderIndex: Double, remoteOrderIndex: Double
     ) -> Bool {
-        currentIsChecked != dispatchedIsChecked || currentOrderIndex != dispatchedOrderIndex
+        currentIsChecked != remoteIsChecked || currentOrderIndex != remoteOrderIndex
     }
 }
 
@@ -359,50 +379,40 @@ enum GroupSyncService {
             case .synced:
                 continue
             case .pendingCreate:
-                // Snapshot the checkbox/reorder fields at the moment this
-                // create request is dispatched — the `await` below can
-                // yield the main actor to a concurrent local
-                // toggle/reorder (`setChecked`/`reorder` in
-                // `GroupSharedGroceryListView`) made while this call is
-                // still in flight. Unlike an already-`.synced` row, this
-                // row's `syncState` stays `.pendingCreate` throughout that
-                // window (there's no server id yet for a concurrent edit to
-                // be queued as a `.pendingUpdate` against), so without this
-                // check a local change made mid-flight would simply be
-                // overwritten by whatever this row's own values were *at
-                // dispatch time*, once the create response applies them
-                // back via `applyRemote`. Same class of race — and the same
-                // "capture, compare after the await, prefer the local value
-                // if it moved" fix — as `GroupMealSuggestion.toggleVoteLocally()`'s
-                // own protection against a concurrent vote toggle; see that
-                // method's doc comment.
-                let dispatchedIsChecked = row.isChecked
-                let dispatchedOrderIndex = row.orderIndex
-                // Same race-capture idea, extended to "My Layout" placement
-                // (Phase 4): a manual aisle move made in this same in-flight
-                // window can't be sent as part of THIS create call either
-                // (`POST .../grocery` never accepts `aisleId` — see
-                // `CreateItemSchema` in routes/groupGrocery.js), so it has to
-                // be detected the same "snapshot, compare after the await"
-                // way and preserved rather than silently lost the moment
-                // `applyRemote` would otherwise mark this row `.synced`.
-                let dispatchedAisleID = row.aisleID
-                let dispatchedAisleManuallySet = row.aisleManuallySet
+                // `POST .../grocery` never accepts `isChecked` or
+                // `aisleId`/`aisleManuallySet` at all (see `CreateItemSchema`
+                // in routes/groupGrocery.js) — a freshly created row is
+                // always `isChecked: false`, `aisleId: null`,
+                // `aisleManuallySet: false` server-side, unconditionally. So
+                // rather than snapshotting this row's fields at dispatch
+                // time and comparing against that snapshot after the
+                // `await` (which would only catch a concurrent edit made
+                // *during* the network round-trip, and miss the equally
+                // real case of the user checking a brand-new item off, or
+                // placing it in an aisle, *before* its first sync ever
+                // runs — see `GroceryCreateReconciliation`'s own doc comment
+                // for the data-loss bug that blind spot caused), this
+                // compares the row's CURRENT value directly against what the
+                // create response itself says. Either way — changed before
+                // dispatch or during flight — the response is the one source
+                // of truth for what the create call was even capable of
+                // communicating, so a mismatch against it always means "the
+                // local value must win and still needs a follow-up PATCH."
                 do {
                     let created = try await AccountsAPIClient.createGroupGroceryItem(
                         groupID: groupID, name: row.name, category: row.category, section: row.section,
                         quantityText: row.quantityText, orderIndex: row.orderIndex
                     )
-                    let checkedOrOrderChangedSinceDispatch = GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
-                        dispatchedIsChecked: dispatchedIsChecked, currentIsChecked: row.isChecked,
-                        dispatchedOrderIndex: dispatchedOrderIndex, currentOrderIndex: row.orderIndex
+                    let checkedOrOrderDiffersFromResponse = GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+                        currentIsChecked: row.isChecked, remoteIsChecked: created.isChecked,
+                        currentOrderIndex: row.orderIndex, remoteOrderIndex: created.orderIndex
                     )
-                    let aisleChangedSinceDispatch = row.aisleID != dispatchedAisleID
-                        || row.aisleManuallySet != dispatchedAisleManuallySet
+                    let aisleDiffersFromResponse = row.aisleID != created.aisleID
+                        || row.aisleManuallySet != created.aisleManuallySet
                     applyRemote(
                         created, to: row,
-                        preserveLocalCheckedAndOrder: checkedOrOrderChangedSinceDispatch,
-                        preserveLocalAisle: aisleChangedSinceDispatch
+                        preserveLocalCheckedAndOrder: checkedOrOrderDiffersFromResponse,
+                        preserveLocalAisle: aisleDiffersFromResponse
                     )
                 } catch {
                     allOK = false
@@ -461,16 +471,17 @@ enum GroupSyncService {
     /// `pushGroceryItems` above, and `GroceryCreateReconciliation` below,
     /// for the one caller that ever passes `true`) skips overwriting
     /// `isChecked`/`orderIndex` from `remote` and marks the row
-    /// `.pendingUpdate` instead of `.synced`, so a local change made while
-    /// this row's create call was still in flight isn't clobbered — the
-    /// row's next push then sends those corrected values via the normal
-    /// `updateGroupGroceryItem` path. `preserveLocalAisle` (Phase 4) is the
-    /// "My Layout" placement counterpart of the same idea — same race, same
-    /// fix, see that same `.pendingCreate` case for the one caller that ever
-    /// passes it `true`. Every other caller (a `.pendingUpdate` push's own
-    /// response, and `reconcileGroceryItems`'s pull-side upsert, neither of
-    /// which race a create) leaves both flags at their default `false`, i.e.
-    /// today's existing "the response is authoritative" behavior, unchanged.
+    /// `.pendingUpdate` instead of `.synced`, so a local change made either
+    /// before this row's create call was ever dispatched, or while it was
+    /// still in flight, isn't clobbered — the row's next push then sends
+    /// those corrected values via the normal `updateGroupGroceryItem` path.
+    /// `preserveLocalAisle` (Phase 4) is the "My Layout" placement
+    /// counterpart of the same idea — same race, same fix, see that same
+    /// `.pendingCreate` case for the one caller that ever passes it `true`.
+    /// Every other caller (a `.pendingUpdate` push's own response, and
+    /// `reconcileGroceryItems`'s pull-side upsert, neither of which race a
+    /// create) leaves both flags at their default `false`, i.e. today's
+    /// existing "the response is authoritative" behavior, unchanged.
     ///
     /// Not `private`, and explicitly `nonisolated` — unlike every other
     /// helper in this file, this is called directly by `HomeEatsTests` (see
@@ -698,9 +709,24 @@ enum GroupSyncService {
             case .synced:
                 continue
             case .pendingCreate:
+                // `POST .../grocery/aisles` never accepts a `sortIndex` at
+                // all (see routes/groupGroceryAisles.js — a new aisle always
+                // lands at the end of the group's current walking order
+                // server-side), so a local reorder that already moved this
+                // still-unsynced aisle to a different position — whether
+                // that happened before this create was ever dispatched, or
+                // while it was still in flight — can't be communicated by
+                // this call, and would otherwise be silently reset back to
+                // "appended at the end" the moment the response applies.
+                // Same race class, same fix, as `GroceryCreateReconciliation`
+                // (see that type's own doc comment for the full reasoning,
+                // including why comparing against the response itself,
+                // rather than a dispatch-time snapshot, is what catches both
+                // halves of this uniformly).
                 do {
                     let created = try await AccountsAPIClient.createGroupGroceryAisle(groupID: groupID, name: row.name)
-                    applyRemote(created, to: row)
+                    let sortIndexDiffersFromResponse = row.sortIndex != created.sortIndex
+                    applyRemote(created, to: row, preserveLocalSortIndex: sortIndexDiffersFromResponse)
                 } catch {
                     allOK = false
                 }
@@ -738,19 +764,30 @@ enum GroupSyncService {
     /// Not `private`, and explicitly `nonisolated` — same "`HomeEatsTests`
     /// calls this directly, from a plain synchronous test method with no
     /// actor context of its own" reasoning as the grocery-item `applyRemote`
-    /// overload above (see its own doc comment); this one has no
-    /// create/dispatch race to guard against (aisles have no analogous
-    /// "checked/order changed mid-flight" concern), so it's a plain
-    /// field-mapping function, still worth unit-testing directly without a
-    /// `ModelContext`. Safe to opt out of this enum's `@MainActor` isolation
-    /// for the same reason as that overload: it only ever mutates the single
-    /// `row` instance it's handed.
-    nonisolated static func applyRemote(_ remote: RemoteGroupStoreAisle, to row: GroupStoreAisle) {
+    /// overload above (see its own doc comment). `preserveLocalSortIndex`
+    /// (see the `.pendingCreate` case in `pushAisles` above for the one
+    /// caller that ever passes `true`) is this model's counterpart of that
+    /// overload's `preserveLocalCheckedAndOrder` — skips overwriting
+    /// `sortIndex` from `remote` and marks the row `.pendingUpdate` instead
+    /// of `.synced`, so a reorder this row's own create call couldn't
+    /// possibly have communicated isn't clobbered; the row's next push then
+    /// sends the corrected value via the normal `updateGroupGroceryAisle`
+    /// path. Every other caller (a `.pendingUpdate` push's own response, and
+    /// `reconcileAisles`'s pull-side upsert) leaves it at its default
+    /// `false`, i.e. today's existing "the response is authoritative"
+    /// behavior, unchanged. Safe to opt out of this enum's `@MainActor`
+    /// isolation for the same reason as the grocery-item overload above: it
+    /// only ever mutates the single `row` instance it's handed.
+    nonisolated static func applyRemote(
+        _ remote: RemoteGroupStoreAisle, to row: GroupStoreAisle, preserveLocalSortIndex: Bool = false
+    ) {
         row.id = remote.id
         row.name = remote.name
-        row.sortIndex = remote.sortIndex
+        if !preserveLocalSortIndex {
+            row.sortIndex = remote.sortIndex
+        }
         row.linkedCategory = remote.linkedCategory?.localCategory
-        row.syncState = .synced
+        row.syncState = preserveLocalSortIndex ? .pendingUpdate : .synced
     }
 
     private static func reconcileAisles(remote: [RemoteGroupStoreAisle], groupID: String, modelContext: ModelContext) {
@@ -795,11 +832,22 @@ enum GroupSyncService {
             case .synced:
                 continue
             case .pendingCreate:
+                // `POST .../grocery/staples` never accepts `isActive` at all
+                // (see `CreateStapleSchema` in routes/groupGroceryStaples.js
+                // — a freshly created staple is always `isActive: true`
+                // server-side by default), so a local `isActive` that's
+                // already `false` before this create was ever dispatched, or
+                // toggled off while it was still in flight, can't be
+                // communicated by this call, and would otherwise be silently
+                // reset back to `true` the moment the response applies. Same
+                // race class, same fix, as `GroceryCreateReconciliation` (see
+                // that type's own doc comment).
                 do {
                     let created = try await AccountsAPIClient.createGroupGroceryStaple(
                         groupID: groupID, name: row.name, category: row.category, defaultQuantityText: row.defaultQuantityText
                     )
-                    applyRemote(created, to: row)
+                    let isActiveDiffersFromResponse = row.isActive != created.isActive
+                    applyRemote(created, to: row, preserveLocalIsActive: isActiveDiffersFromResponse)
                 } catch {
                     allOK = false
                 }
@@ -835,15 +883,23 @@ enum GroupSyncService {
     }
 
     /// Not `private`, and explicitly `nonisolated` — same reasoning as the
-    /// `RemoteGroupStoreAisle` overload above.
-    nonisolated static func applyRemote(_ remote: RemoteGroupStapleItem, to row: GroupStapleItem) {
+    /// `RemoteGroupStoreAisle` overload above. `preserveLocalIsActive` (see
+    /// the `.pendingCreate` case in `pushStaples` above for the one caller
+    /// that ever passes `true`) is this model's counterpart of that
+    /// overload's `preserveLocalSortIndex`/the grocery-item overload's
+    /// `preserveLocalCheckedAndOrder` — same fix, same reasoning.
+    nonisolated static func applyRemote(
+        _ remote: RemoteGroupStapleItem, to row: GroupStapleItem, preserveLocalIsActive: Bool = false
+    ) {
         row.id = remote.id
         row.name = remote.name
         row.category = remote.category.localCategory
         row.defaultQuantityText = remote.defaultQuantityText
-        row.isActive = remote.isActive
+        if !preserveLocalIsActive {
+            row.isActive = remote.isActive
+        }
         row.addedByUserID = remote.addedByUserID
-        row.syncState = .synced
+        row.syncState = preserveLocalIsActive ? .pendingUpdate : .synced
     }
 
     private static func reconcileStaples(remote: [RemoteGroupStapleItem], groupID: String, modelContext: ModelContext) {

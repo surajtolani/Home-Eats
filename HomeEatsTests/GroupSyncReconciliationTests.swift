@@ -263,12 +263,15 @@ final class GroupLocalPlaceholderIDTests: XCTestCase {
     }
 }
 
-/// Regression tests for the concurrent-edit-during-create-dispatch race
-/// `GroupSyncService.pushGroceryItems`'s `.pendingCreate` handling guards
-/// against: a local `isChecked`/`orderIndex` change made while that row's
-/// `createGroupGroceryItem` call is still in flight must win over the
-/// create response's "as submitted" echo, not be silently clobbered by it.
-/// See `GroceryCreateReconciliation`'s own doc comment for the race itself.
+/// Regression tests for the create-race protection
+/// `GroupSyncService.pushGroceryItems`'s `.pendingCreate` handling applies: a
+/// local `isChecked`/`orderIndex`/aisle-placement change that the create
+/// call itself could never communicate — because it was made before the
+/// create was ever dispatched, or because it changed while the call was
+/// still in flight — must win over the create response's values, not be
+/// silently clobbered by them. See `GroceryCreateReconciliation`'s own doc
+/// comment for the exact bug this closes (a dispatch-time snapshot comparison
+/// used to miss the "already set before dispatch" half of this entirely).
 ///
 /// Split the same way `GroupSyncReconciliationTests`/
 /// `GroupMealSuggestionVoteToggleTests` are: first the pure decision
@@ -287,31 +290,46 @@ final class GroupGroceryItemCreateRaceTests: XCTestCase {
 
     // MARK: - `GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder`
 
-    func testNothingChangedSinceDispatch_doesNotPreserveLocal() {
+    func testNothingDiffersFromResponse_doesNotPreserveLocal() {
         XCTAssertFalse(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
-            dispatchedIsChecked: false, currentIsChecked: false,
-            dispatchedOrderIndex: 2, currentOrderIndex: 2
+            currentIsChecked: false, remoteIsChecked: false,
+            currentOrderIndex: 2, remoteOrderIndex: 2
         ))
     }
 
-    func testCheckedToggledDuringDispatch_preservesLocal() {
+    func testCheckedDiffersFromResponse_preservesLocal() {
         XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
-            dispatchedIsChecked: false, currentIsChecked: true,
-            dispatchedOrderIndex: 2, currentOrderIndex: 2
+            currentIsChecked: true, remoteIsChecked: false,
+            currentOrderIndex: 2, remoteOrderIndex: 2
         ))
     }
 
-    func testOrderIndexChangedDuringDispatch_preservesLocal() {
+    func testOrderIndexDiffersFromResponse_preservesLocal() {
         XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
-            dispatchedIsChecked: false, currentIsChecked: false,
-            dispatchedOrderIndex: 2, currentOrderIndex: 5
+            currentIsChecked: false, remoteIsChecked: false,
+            currentOrderIndex: 5, remoteOrderIndex: 2
         ))
     }
 
-    func testBothCheckedAndOrderChangedDuringDispatch_preservesLocal() {
+    func testBothCheckedAndOrderDifferFromResponse_preservesLocal() {
         XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
-            dispatchedIsChecked: false, currentIsChecked: true,
-            dispatchedOrderIndex: 2, currentOrderIndex: 5
+            currentIsChecked: true, remoteIsChecked: false,
+            currentOrderIndex: 5, remoteOrderIndex: 2
+        ))
+    }
+
+    /// Regression test for the exact bug `GroceryCreateReconciliation`'s own
+    /// doc comment now calls out: `isChecked` was already `true` *before*
+    /// the create call was ever dispatched (not toggled mid-flight) — e.g.
+    /// the user added an item and immediately checked it off, all before its
+    /// first sync ever ran. A dispatch-time-snapshot comparison would see
+    /// "current == dispatched" (both `true`) and wrongly conclude nothing
+    /// needed preserving; comparing against the create response's actual
+    /// (always-`false`) `isChecked` catches this correctly.
+    func testCheckedAlreadyTrueBeforeCreateWasEverDispatched_stillPreservesLocal() {
+        XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+            currentIsChecked: true, remoteIsChecked: false,
+            currentOrderIndex: 0, remoteOrderIndex: 0
         ))
     }
 
@@ -378,6 +396,67 @@ final class GroupGroceryItemCreateRaceTests: XCTestCase {
         XCTAssertTrue(row.isLocalPlaceholderID)
         let remote = makeRemoteItem(isChecked: false, orderIndex: 0)
         GroupSyncService.applyRemote(remote, to: row, preserveLocalCheckedAndOrder: true)
+        XCTAssertFalse(row.isLocalPlaceholderID)
+        XCTAssertEqual(row.id, "server-1")
+    }
+
+    // MARK: - `GroupSyncService.applyRemote` — "My Layout" placement
+    // (`preserveLocalAisle`), the same create-race protection extended to
+    // Phase 4's aisle assignment. `POST .../grocery` never accepts
+    // `aisleId`/`aisleManuallySet` at all (see `CreateItemSchema` in
+    // routes/groupGrocery.js), so — exactly like `isChecked` above — an
+    // aisle placement made before the create was ever dispatched is just as
+    // real a case as one made mid-flight; `pushGroceryItems` computes
+    // `aisleDiffersFromResponse` by comparing the row's current placement
+    // against the create response's (always `nil`/`false`) values, which
+    // catches both uniformly. These tests exercise `applyRemote` itself —
+    // the actual field-preserving mutation — the same way the isChecked/
+    // orderIndex tests above do.
+
+    private func makeRemoteItemWithAisle(aisleID: String?, aisleManuallySet: Bool) -> RemoteGroupGroceryItem {
+        RemoteGroupGroceryItem(
+            id: "server-1", groupID: "g1", name: "Milk", category: .dairyAndEggs, section: .thisWeek,
+            quantityText: "1 gal", isChecked: false, orderIndex: 0,
+            aisleID: aisleID, aisleManuallySet: aisleManuallySet,
+            addedByUserID: "u1", createdAt: .now, updatedAt: .now
+        )
+    }
+
+    func testCreateResponseWithNoAislePlacement_appliesRemoteAisleAndMarksSynced() {
+        // The common case: the item was never placed in an aisle before its
+        // first sync, so the create response's "not placed" values are
+        // authoritative.
+        let row = makeLocalRow(isChecked: false, orderIndex: 0)
+        XCTAssertNil(row.aisleID)
+        XCTAssertFalse(row.aisleManuallySet)
+        let remote = makeRemoteItemWithAisle(aisleID: nil, aisleManuallySet: false)
+        GroupSyncService.applyRemote(remote, to: row, preserveLocalAisle: false)
+        XCTAssertNil(row.aisleID)
+        XCTAssertFalse(row.aisleManuallySet)
+        XCTAssertEqual(row.syncState, .synced)
+    }
+
+    /// Regression test for the aisle-placement counterpart of the
+    /// isChecked bug above: the user moved a still-`.pendingCreate` item
+    /// into a specific aisle — whether that happened before the create call
+    /// was ever dispatched, or while it was in flight, `POST .../grocery`
+    /// has no way to carry that placement, so the create response always
+    /// comes back "not placed." The local placement must win, and the row
+    /// must be re-pushed (`.pendingUpdate`) via a follow-up `PATCH .../grocery/:id`
+    /// so the placement actually reaches the server — not silently reset to
+    /// "Unsorted" the moment the create response applies.
+    func testCreateResponseAfterLocalAislePlacement_preservesLocalAisleAndMarksPendingUpdate() {
+        let row = makeLocalRow(isChecked: false, orderIndex: 0)
+        row.aisleID = "aisle-1"
+        row.aisleManuallySet = true
+        let remote = makeRemoteItemWithAisle(aisleID: nil, aisleManuallySet: false)
+        GroupSyncService.applyRemote(remote, to: row, preserveLocalAisle: true)
+        XCTAssertEqual(row.aisleID, "aisle-1", "local aisle placement must win, not be reset by the create response")
+        XCTAssertTrue(row.aisleManuallySet)
+        XCTAssertEqual(row.syncState, .pendingUpdate, "must be re-pushed, not treated as fully synced")
+        // Still adopts the real server id — same "don't also strand the row
+        // on its placeholder id" requirement as the isChecked/orderIndex
+        // case above.
         XCTAssertFalse(row.isLocalPlaceholderID)
         XCTAssertEqual(row.id, "server-1")
     }

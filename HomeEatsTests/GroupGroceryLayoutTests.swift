@@ -183,4 +183,84 @@ final class GroupGroceryLayoutApplyRemoteTests: XCTestCase {
         XCTAssertTrue(local.isActive)
         XCTAssertEqual(local.syncState, .synced)
     }
+
+    // MARK: - Create-race protection: aisle `sortIndex`, staple `isActive`
+    //
+    // Regression tests for the same "create call can't communicate field X"
+    // race `GroceryCreateReconciliation` closes for `GroupSharedGroceryItem`
+    // (see its own doc comment), extended to these two Phase 4 models:
+    // `POST .../grocery/aisles` never accepts `sortIndex` (a new aisle
+    // always lands at the end server-side — see routes/groupGroceryAisles.js)
+    // and `POST .../grocery/staples` never accepts `isActive` (always
+    // defaults `true` server-side — see routes/groupGroceryStaples.js), so
+    // a local value that already differs from either the "always appended
+    // at the end"/"always true" default — whether that happened before the
+    // create was ever dispatched, or during its own flight — must win over
+    // the create response, and the row must stay push-able (`.pendingUpdate`,
+    // not `.synced`) so a follow-up `PATCH` actually corrects the server.
+
+    func testApplyRemoteAisleWithNoLocalReorder_appliesRemoteSortIndexAndMarksSynced() {
+        let local = GroupStoreAisle(
+            id: GroupStoreAisle.newLocalPlaceholderID(), groupID: "g1", name: "Snacks",
+            sortIndex: 10, syncState: .pendingCreate
+        )
+        // The create response's own "appended at the end" value — matches
+        // what the local row already had, so nothing needs preserving.
+        let remote = RemoteGroupStoreAisle(id: "server-aisle-1", groupID: "g1", name: "Snacks", sortIndex: 10, linkedCategory: nil, createdAt: .now)
+        GroupSyncService.applyRemote(remote, to: local, preserveLocalSortIndex: false)
+        XCTAssertEqual(local.sortIndex, 10, accuracy: 0.0001)
+        XCTAssertEqual(local.syncState, .synced)
+    }
+
+    /// Regression test for the aisle-`sortIndex` counterpart of the
+    /// isChecked/aisle-placement bugs above: the user reordered a still-
+    /// `.pendingCreate` aisle — before or during its own create call — which
+    /// `POST .../grocery/aisles` has no way to carry, so the create response
+    /// always comes back "appended at the end." The local position must
+    /// win, and the row must be re-pushed (`.pendingUpdate`) via a follow-up
+    /// `PATCH .../grocery/aisles/:id` so the reorder actually reaches the
+    /// server.
+    func testApplyRemoteAisleAfterLocalReorder_preservesLocalSortIndexAndMarksPendingUpdate() {
+        let local = GroupStoreAisle(
+            id: GroupStoreAisle.newLocalPlaceholderID(), groupID: "g1", name: "Snacks",
+            sortIndex: 2, syncState: .pendingCreate
+        )
+        let remote = RemoteGroupStoreAisle(id: "server-aisle-1", groupID: "g1", name: "Snacks", sortIndex: 10, linkedCategory: nil, createdAt: .now)
+        GroupSyncService.applyRemote(remote, to: local, preserveLocalSortIndex: true)
+        XCTAssertEqual(local.sortIndex, 2, accuracy: 0.0001, "local reorder must win, not be reset to \"appended at the end\"")
+        XCTAssertEqual(local.syncState, .pendingUpdate, "must be re-pushed, not treated as fully synced")
+        XCTAssertFalse(local.isLocalPlaceholderID)
+        XCTAssertEqual(local.id, "server-aisle-1")
+    }
+
+    func testApplyRemoteStapleWithNoLocalToggle_appliesRemoteIsActiveAndMarksSynced() {
+        let local = GroupStapleItem(
+            id: GroupStapleItem.newLocalPlaceholderID(), groupID: "g1", name: "Milk",
+            category: .dairyAndEggs, isActive: true, addedByUserID: "u1", syncState: .pendingCreate
+        )
+        let remote = RemoteGroupStapleItem(id: "server-staple-1", groupID: "g1", name: "Milk", category: .dairyAndEggs, defaultQuantityText: nil, isActive: true, addedByUserID: "u1", createdAt: .now)
+        GroupSyncService.applyRemote(remote, to: local, preserveLocalIsActive: false)
+        XCTAssertTrue(local.isActive)
+        XCTAssertEqual(local.syncState, .synced)
+    }
+
+    /// Regression test for the staple-`isActive` counterpart: the user
+    /// toggled a still-`.pendingCreate` staple off — before or during its
+    /// own create call — which `POST .../grocery/staples` has no way to
+    /// carry (always creates `isActive: true`). The local `false` must win,
+    /// and the row must be re-pushed (`.pendingUpdate`) via a follow-up
+    /// `PATCH .../grocery/staples/:id` so the toggle actually reaches the
+    /// server.
+    func testApplyRemoteStapleAfterLocalToggleOff_preservesLocalIsActiveAndMarksPendingUpdate() {
+        let local = GroupStapleItem(
+            id: GroupStapleItem.newLocalPlaceholderID(), groupID: "g1", name: "Milk",
+            category: .dairyAndEggs, isActive: false, addedByUserID: "u1", syncState: .pendingCreate
+        )
+        let remote = RemoteGroupStapleItem(id: "server-staple-1", groupID: "g1", name: "Milk", category: .dairyAndEggs, defaultQuantityText: nil, isActive: true, addedByUserID: "u1", createdAt: .now)
+        GroupSyncService.applyRemote(remote, to: local, preserveLocalIsActive: true)
+        XCTAssertFalse(local.isActive, "local toggle-off must win, not be reset to the server's default true")
+        XCTAssertEqual(local.syncState, .pendingUpdate, "must be re-pushed, not treated as fully synced")
+        XCTAssertFalse(local.isLocalPlaceholderID)
+        XCTAssertEqual(local.id, "server-staple-1")
+    }
 }
