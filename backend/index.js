@@ -26,6 +26,15 @@ const groupsRouter = require("./routes/groups");
 const recipeLibraryRouter = require("./routes/recipeLibrary");
 
 const app = express();
+// Render puts every request through its own reverse proxy, so without this
+// `req.ip` would just be that proxy's address for every request — useless
+// for the per-IP request-code rate limiter in routes/auth.js, which needs
+// the real client IP from the `X-Forwarded-For` header Render sets. `true`
+// trusts that header from the immediate upstream hop, which is exactly
+// Render's proxy in this deployment (see backend/README.md's deploy
+// section — this always runs behind it, there's no direct-to-internet
+// deployment path to worry about spoofing this header on).
+app.set("trust proxy", true);
 // A downsized recipe photo (see ImageResizing.swift in the iOS app - it
 // caps images at 800px on the long edge before base64-encoding) is well
 // under 1MB, but give real headroom rather than a tight limit that fails

@@ -144,11 +144,12 @@ enum AccountsAPIClient {
     /// Runs a request whose success response has no body worth decoding —
     /// either a real `204 No Content` (every `DELETE` here, see the route
     /// table in backend/README.md) or a 2xx body this client intentionally
-    /// doesn't need (e.g. `POST /friends/request`'s response shape varies —
-    /// `{ invite }`, `{ friendship }`, or `{ friendship, autoAccepted }` —
-    /// depending on which of several branches the backend took; callers
-    /// re-fetch `GET /friends` afterward instead of trying to model all
-    /// three).
+    /// doesn't need (e.g. `POST /friends/request` normalizes most of its
+    /// success branches to `{ status: "requested" }` on purpose — see its
+    /// own doc comment in routes/friends.js on why — but still varies for
+    /// the one legitimately-different case, an auto-accept; callers
+    /// re-fetch `GET /friends` afterward instead of trying to model any of
+    /// that here).
     private static func sendNoContent(
         _ method: String,
         path: String,
@@ -335,14 +336,19 @@ extension AccountsAPIClient {
         try await sendNoContent("POST", path: "groups/\(groupID)/invite", body: ["userId": userID])
     }
 
-    /// Invites someone by phone number — an existing user (added directly,
-    /// same anti-stranger accepted-friend rule as the `userID` overload) or
-    /// not yet a user (queued as a standing `Invite`, same idea as
-    /// `sendFriendRequest`). Two overloads (`userID:`/`phoneNumber:`)
-    /// rather than one method taking `Either<String, String>` or an enum —
-    /// this mirrors the backend's own `InviteSchema`, a Zod union of
-    /// `{ userId }` OR `{ phoneNumber }` (see routes/groups.js), and reads
-    /// more plainly at each call site than an enum wrapper would.
+    /// Invites someone by phone number — one of the caller's own accepted
+    /// friends is added directly; anyone else (a Home Eats user who isn't
+    /// yet a friend, or not a user at all) is queued as a standing
+    /// `Invite` instead, same idea as `sendFriendRequest`. The backend
+    /// deliberately reports both of those non-friend outcomes back
+    /// identically (see routes/groups.js's own doc comment on
+    /// `POST /:groupId/invite`) — this app has no need to tell them apart
+    /// either, since it doesn't inspect this call's response body at all.
+    /// Two overloads (`userID:`/`phoneNumber:`) rather than one method
+    /// taking `Either<String, String>` or an enum — this mirrors the
+    /// backend's own `InviteSchema`, a Zod union of `{ userId }` OR
+    /// `{ phoneNumber }` (see routes/groups.js), and reads more plainly at
+    /// each call site than an enum wrapper would.
     static func inviteToGroup(groupID: String, phoneNumber: String) async throws {
         try await sendNoContent("POST", path: "groups/\(groupID)/invite", body: ["phoneNumber": phoneNumber])
     }
@@ -396,12 +402,10 @@ extension AccountsAPIClient {
         return response.recipe
     }
 
-    /// Full replace of every field `payload` sets — this client always
-    /// builds a complete `RecipeLibraryPayload` from a local `Recipe` (see
-    /// `RecipeLibraryPayload.init(recipe:)`), so it never needs the
-    /// backend's "omitted field = unchanged" partial-update behavior in
-    /// practice, even though the route itself supports it.
-    static func updateRecipe(id recipeID: String, _ payload: RecipeLibraryPayload) async throws -> RemoteRecipe {
+    /// Partial update — only the fields actually set on `payload` are sent
+    /// (see `RecipeLibraryUpdatePayload`'s own doc comment for how it
+    /// distinguishes "leave unchanged" from "clear to null").
+    static func updateRecipe(id recipeID: String, _ payload: RecipeLibraryUpdatePayload) async throws -> RemoteRecipe {
         struct Response: Decodable { let recipe: RemoteRecipe }
         let response: Response = try await send(
             "PATCH", path: "recipe-library/\(recipeID)",
@@ -505,5 +509,70 @@ struct RecipeIngredientPayload {
         object["quantity"] = quantity
         object["unit"] = unit
         return object
+    }
+}
+
+// MARK: - Updating a nilable field (PATCH /recipe-library/:id)
+
+/// Distinguishes "leave this field unchanged" from "explicitly clear it to
+/// `null`" for one of `RecipeLibraryUpdatePayload`'s nilable fields — a
+/// plain `T?` can't express this, because assigning Swift's `nil` through a
+/// `[String: Any]` subscript always *removes* the key (see
+/// `RecipeLibraryPayload.asJSONObject()`'s doc comment on why that's exactly
+/// right for the create path). The backend's `PATCH /recipe-library/:id`
+/// handler cares about that distinction, though: an omitted key is left
+/// alone, but an explicit JSON `null` clears the field (see
+/// `UpdateRecipeSchema` and the `data.summary !== undefined` checks in
+/// backend/routes/recipeLibrary.js). `.unchanged` is what every field
+/// defaults to below, so building an update only means naming what's
+/// actually changing.
+enum FieldUpdate<Value> {
+    case unchanged
+    case set(Value?)
+}
+
+/// The request body for `PATCH /recipe-library/:id` — kept as its own type
+/// rather than reusing `RecipeLibraryPayload` (the `POST` body), since only
+/// an update needs to tell "unchanged" apart from "set to nil"; every field
+/// here is optional because `PATCH` accepts any subset (see
+/// `UpdateRecipeSchema`). `title`/`ingredients`/`instructions` aren't
+/// nullable on the backend (there's no such thing as clearing a recipe's
+/// title), so a plain `nil` = "unchanged" is unambiguous for those three;
+/// only the genuinely nilable fields (`summary`/`servings`/`prepMinutes`/
+/// `cookMinutes`) need the `FieldUpdate` wrapper.
+struct RecipeLibraryUpdatePayload {
+    var title: String?
+    var ingredients: [RecipeIngredientPayload]?
+    var instructions: [String]?
+    var summary: FieldUpdate<String> = .unchanged
+    var servings: FieldUpdate<Int> = .unchanged
+    var prepMinutes: FieldUpdate<Int> = .unchanged
+    var cookMinutes: FieldUpdate<Int> = .unchanged
+
+    func asJSONObject() -> [String: Any] {
+        var object: [String: Any] = [:]
+        if let title { object["title"] = title }
+        if let ingredients { object["ingredients"] = ingredients.map { $0.asJSONObject() } }
+        if let instructions { object["instructions"] = instructions }
+        object.setFieldUpdate(summary, forKey: "summary")
+        object.setFieldUpdate(servings, forKey: "servings")
+        object.setFieldUpdate(prepMinutes, forKey: "prepMinutes")
+        object.setFieldUpdate(cookMinutes, forKey: "cookMinutes")
+        return object
+    }
+}
+
+private extension Dictionary where Key == String, Value == Any {
+    /// `.unchanged` -> key stays absent. `.set(nil)` -> key present with a
+    /// JSON `null` (via `NSNull()` — assigning Swift's own `nil` here would
+    /// remove the key instead, the exact ambiguity `FieldUpdate` exists to
+    /// avoid). `.set(x)` -> key present with `x`.
+    mutating func setFieldUpdate<T>(_ update: FieldUpdate<T>, forKey key: String) {
+        switch update {
+        case .unchanged:
+            return
+        case .set(let value):
+            self[key] = value.map { $0 as Any } ?? NSNull()
+        }
     }
 }

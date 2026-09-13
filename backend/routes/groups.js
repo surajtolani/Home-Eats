@@ -40,9 +40,20 @@ function membershipFor(groupId, userId) {
   });
 }
 
+// 100 is a generous ceiling for a household/friend-group app (a big
+// extended-family or friend-group circle, not a company directory) while
+// still bounding the sequential per-id `isAcceptedFriend` check loop below
+// to something that can't be abused as a cheap way to make one request
+// trigger an unbounded number of DB queries.
+const MAX_GROUP_MEMBER_IDS = 100;
+
 const CreateGroupSchema = z.object({
   name: z.string().trim().min(1, "name can't be empty.").max(200),
-  memberUserIds: z.array(z.string().uuid()).optional().default([]),
+  memberUserIds: z
+    .array(z.string().uuid())
+    .max(MAX_GROUP_MEMBER_IDS, `memberUserIds can't have more than ${MAX_GROUP_MEMBER_IDS} entries.`)
+    .optional()
+    .default([]),
 });
 
 // POST /groups
@@ -141,17 +152,44 @@ router.get("/:groupId", asyncHandler(async (req, res) => {
 
 // POST /groups/:groupId/invite
 // Body: { userId } (an existing friend) or { phoneNumber } (anyone else —
-// already a Home Eats user or not). Only an existing member may invite.
-// A `userId` invite, and a `phoneNumber` invite that turns out to already
-// belong to a user, must both be one of the caller's accepted friends —
-// same restriction as group creation, so this can't be used as a second
-// way to add an arbitrary stranger. A `phoneNumber` that isn't a user yet
-// creates an Invite with this groupId, auto-resolved into membership on
-// signup (see POST /auth/verify-code).
+// already a Home Eats user, a user who isn't yet a friend, or not a user at
+// all). Only an existing member may invite.
+//
+// `userId` must be one of the caller's accepted friends — same restriction
+// as group creation — and, if so, is added as a member directly. Since the
+// caller supplied this id themselves (e.g. from their own friends list),
+// there's no new information for a 400 here to leak.
+//
+// `phoneNumber` is different: if it happens to match one of the caller's
+// *own* accepted friends, they're added directly, same as the `userId`
+// path (again no leak — the caller already knows their own friend's phone
+// number). Anything else a `phoneNumber` could resolve to — a user who
+// isn't yet an accepted friend, or no user at all — queues the exact same
+// kind of standing Invite with this `groupId`, and reports back with the
+// exact same response shape/status either way. Treating "real user, not
+// yet a friend" and "not a user at all" identically (instead of the former
+// 400ing with "must be an accepted friend") is deliberate: a caller could
+// otherwise send phone numbers here purely to learn which ones belong to
+// registered Home Eats users, with no actual relationship to the caller
+// required — see backend/README.md's note on this. The Invite queued
+// either way resolves into real GroupMembership only once the caller and
+// that phone number's eventual account become mutual, ACCEPTED friends
+// with the caller as the friendship's requester (see
+// `resolveInvitesForAcceptedFriendship` in routes/friends.js) — i.e. it's
+// exactly as if the caller had also sent that person a friend request, they
+// just have to actually accept it before anything is granted.
 const InviteSchema = z.union([
   z.object({ userId: z.string().uuid() }),
   z.object({ phoneNumber: phoneNumberField }),
 ]);
+
+// The one success shape for "I sent something to this phone number" (the
+// `phoneNumber`-and-not-an-accepted-friend branch below) — see the route's
+// own doc comment above for why this must be identical whether the number
+// belongs to a not-yet-friend user or no user at all.
+function invitedResponse(res) {
+  return res.status(201).json({ status: "invited" });
+}
 
 router.post("/:groupId/invite", asyncHandler(async (req, res) => {
   const membership = await membershipFor(req.params.groupId, req.userId);
@@ -168,19 +206,8 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Provide either userId or phoneNumber." });
   }
 
-  // Resolve to a target userId either directly (userId given) or by
-  // looking up an existing user with that phone number — both paths share
-  // the same "must be an accepted friend, must not already be a member"
-  // checks below.
-  let targetUserId = null;
   if ("userId" in parsed.data) {
-    targetUserId = parsed.data.userId;
-  } else {
-    const existingUser = await prisma.user.findUnique({ where: { phoneNumber: parsed.data.phoneNumber } });
-    if (existingUser) targetUserId = existingUser.id;
-  }
-
-  if (targetUserId) {
+    const targetUserId = parsed.data.userId;
     if (!(await isAcceptedFriend(req.userId, targetUserId))) {
       return res.status(400).json({ error: "You can only add your accepted friends to a group." });
     }
@@ -195,19 +222,68 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
     return res.status(201).json({ member: publicUser(newMembership.user) });
   }
 
-  // Not yet a user — queue an Invite that auto-resolves into membership
-  // (and a friendship with the inviter) on signup.
   const phoneNumber = parsed.data.phoneNumber;
+  const existingUser = await prisma.user.findUnique({ where: { phoneNumber } });
+
+  if (existingUser && (await isAcceptedFriend(req.userId, existingUser.id))) {
+    const existingMembership = await membershipFor(req.params.groupId, existingUser.id);
+    if (existingMembership) {
+      return res.status(409).json({ error: "That person is already a member of this group." });
+    }
+    const newMembership = await prisma.groupMembership.create({
+      data: { userId: existingUser.id, groupId: req.params.groupId },
+      include: { user: true },
+    });
+    return res.status(201).json({ member: publicUser(newMembership.user) });
+  }
+
+  // Either not a Home Eats user yet, or one who isn't yet an accepted
+  // friend of the caller — both queue the same standing Invite (see the
+  // route's own doc comment above for why these two must not be
+  // distinguishable from the response).
   const existingInvite = await prisma.invite.findFirst({
     where: { invitedPhoneNumber: phoneNumber, groupId: req.params.groupId, status: "PENDING" },
   });
   if (existingInvite) {
     return res.status(409).json({ error: "That phone number has already been invited to this group." });
   }
-  const invite = await prisma.invite.create({
-    data: { invitingUserId: req.userId, invitedPhoneNumber: phoneNumber, groupId: req.params.groupId },
+
+  await prisma.$transaction(async (tx) => {
+    await tx.invite.create({
+      data: { invitingUserId: req.userId, invitedPhoneNumber: phoneNumber, groupId: req.params.groupId },
+    });
+
+    // The Invite above only ever turns into GroupMembership once there's a
+    // Friendship between the caller and that phone number's account, ACCEPTED
+    // with the caller as its requester (see
+    // `resolveInvitesForAcceptedFriendship` in routes/friends.js) — so if
+    // that phone number already belongs to a user and there's no Friendship
+    // row between them at all yet, send that ordinary friend request right
+    // now, same as routes/friends.js's own POST /request would. An existing
+    // Friendship in some other state (already PENDING either direction, or
+    // DECLINED) is deliberately left untouched — this only ever creates a
+    // *fresh* request; the queued Invite still stands either way, it just
+    // won't auto-resolve into membership unless/until that separate
+    // friend-request situation is itself resolved with the caller ending up
+    // as the accepted friendship's requester.
+    if (existingUser) {
+      const existingFriendship = await tx.friendship.findFirst({
+        where: {
+          OR: [
+            { requesterId: req.userId, recipientId: existingUser.id },
+            { requesterId: existingUser.id, recipientId: req.userId },
+          ],
+        },
+      });
+      if (!existingFriendship) {
+        await tx.friendship.create({
+          data: { requesterId: req.userId, recipientId: existingUser.id, status: "PENDING" },
+        });
+      }
+    }
   });
-  res.status(201).json({ invite });
+
+  return invitedResponse(res);
 }));
 
 // DELETE /groups/:groupId/members/:userId — leave (self) or remove (any

@@ -106,7 +106,14 @@ struct FriendsList: Codable {
 struct GroupSummary: Codable, Identifiable {
     let id: String
     let name: String
-    let createdByUserID: String
+    /// Nullable: the backend's `Group.createdByUserId` clears (`SetNull`)
+    /// rather than cascade-deletes the group when the creator's account is
+    /// later deleted — see the doc comment on `Group` in
+    /// prisma/schema.prisma — so a group with a deleted creator legitimately
+    /// has no value here. Nothing in this app currently reads this field at
+    /// all (no "created by ..." UI yet), but it's modeled as optional now so
+    /// decoding never crashes on a `null` the moment that UI is added.
+    let createdByUserID: String?
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -122,7 +129,9 @@ struct GroupSummary: Codable, Identifiable {
 struct GroupDetail: Codable, Identifiable {
     let id: String
     let name: String
-    let createdByUserID: String
+    /// Nullable — see `GroupSummary.createdByUserID`'s doc comment; same
+    /// reasoning applies here.
+    let createdByUserID: String?
     let createdAt: Date
     let members: [PublicUser]
 

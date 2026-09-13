@@ -88,14 +88,20 @@ model Friendship {
 // The "household" or "trip" — deliberately generic, name is user-chosen.
 // createdByUserId is kept mainly for provenance/display ("created by...");
 // v1 has no elevated admin role for the creator (see GroupMembership doc
-// comment and DELETE /groups/:groupId/members/:userId).
+// comment and DELETE /groups/:groupId/members/:userId). Nullable, with
+// `onDelete: SetNull` rather than `Cascade`: the creator is just the one who
+// happened to tap "Create" — deleting their User row (no such route exists
+// yet, but will) must not take the whole Group down with it and thereby
+// destroy every other member's membership, invites, and recipe shares tied
+// to it. SetNull just clears who created it; the group and its remaining
+// members are unaffected.
 model Group {
   id              String   @id @default(uuid())
   name            String
-  createdByUserId String
+  createdByUserId String?
   createdAt       DateTime @default(now())
 
-  createdBy    User              @relation("GroupCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  createdBy    User?             @relation("GroupCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   memberships  GroupMembership[]
   invites      Invite[]
   recipeShares RecipeShare[]
@@ -129,10 +135,17 @@ enum InviteStatus {
 // for a plain "become my friend" invite, or set for "join my group"
 // (routes/groups.js's POST /groups/:groupId/invite). When that phone number
 // eventually verifies (POST /auth/verify-code), every PENDING Invite for it
-// is auto-resolved in the same transaction as the new User row: a
-// friendship with the inviter is created (accepted immediately — an invite
-// is already an unambiguous mutual signal, unlike a cold friend request)
-// and, if groupId is set, a GroupMembership too. See routes/auth.js.
+// gets the inviter turned into an ordinary PENDING Friendship (an incoming
+// request the new user sees and can accept/decline like any other — see
+// GET /friends' incomingRequests) — deliberately NOT auto-accepted, and
+// NOT auto-joined to `groupId`'s Group yet even if set: an invite is a
+// strong signal, but the invited person still has to actually agree before
+// anything is granted. The Invite row itself is left PENDING at signup and
+// only resolves once that Friendship is actually accepted or declined (see
+// `resolveInvitesForAcceptedFriendship`/`cancelInvitesForDeclinedFriendship`
+// in routes/friends.js): accepting moves it to RESOLVED and, if `groupId`
+// was set, creates the GroupMembership at that moment; declining moves it
+// to CANCELLED and grants nothing. See routes/auth.js and routes/friends.js.
 model Invite {
   id                 String       @id @default(uuid())
   invitingUserId     String

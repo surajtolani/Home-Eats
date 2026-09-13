@@ -60,7 +60,7 @@ enum KeychainTokenStore {
         // code it was exchanged for went to this specific device), so there
         // is no reason for it to roam, and every reason to keep the blast
         // radius of a leaked/restored backup as small as possible.
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(addQuery as CFDictionary, nil)
     }
 

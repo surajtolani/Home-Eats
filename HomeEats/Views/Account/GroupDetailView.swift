@@ -143,7 +143,7 @@ private struct InviteToGroupView: View {
                 } header: {
                     Text("By Phone Number")
                 } footer: {
-                    Text("If they're not on Home Eats yet, this becomes a standing invite that adds them to the group the moment they sign up.")
+                    Text("If they're not one of your accepted friends yet (whether or not they're on Home Eats already), this sends a friend request and queues them for this group — they'll join it once they accept.")
                 }
                 if isInviting {
                     ProgressView()

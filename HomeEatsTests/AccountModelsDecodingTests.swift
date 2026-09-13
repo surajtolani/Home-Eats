@@ -133,6 +133,30 @@ final class AccountModelsDecodingTests: XCTestCase {
         XCTAssertEqual(response.group.members.count, 1)
     }
 
+    /// `Group.createdByUserId` is nullable on the backend (`onDelete:
+    /// SetNull` — see the `Group` doc comment in prisma/schema.prisma): the
+    /// creator's account can be deleted later without taking the group down
+    /// with it, leaving this field `null`. Regression guard for exactly that
+    /// response shape — this must decode cleanly, not throw.
+    func testGroupDetailDecodesNullCreatedByUserId() throws {
+        struct GroupResponseFixture: Decodable { let group: GroupDetail }
+        let json = """
+        {
+          "group": {
+            "id": "g1",
+            "name": "Household",
+            "createdByUserId": null,
+            "createdAt": "2024-02-01T00:00:00.000Z",
+            "members": [
+              { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001" }
+            ]
+          }
+        }
+        """
+        let response = try decoder.decode(GroupResponseFixture.self, from: data(json))
+        XCTAssertNil(response.group.createdByUserID)
+    }
+
     // MARK: - Recipe sharing (routes/recipeLibrary.js)
 
     func testSharedRecipeEntryUsesShareIdNotRecipeIdAsItsIdentity() throws {

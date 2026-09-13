@@ -172,6 +172,37 @@ struct RecipesHomeView: View {
                 Task { await loadSharedRecipes() }
             }
         }
+        // The signed-in identity can change out from under this view at any
+        // time — `RecipesHomeView` lives inside `RootView`'s always-alive
+        // `TabView`, so it never gets torn down/recreated on sign-out or a
+        // fresh sign-in the way a pushed screen would. Without this,
+        // `sharedRecipes`/`savedShareIDs` fetched for one account would just
+        // sit there and render as if they belonged to whoever's signed in
+        // now. Both `currentUser?.id` (covers switching to a *different*
+        // signed-in account) and `isSignedIn` (covers sign-out specifically,
+        // where `currentUser` also goes `nil` but there's no "different id"
+        // to compare against) are watched since either alone misses a case.
+        .onChange(of: accountSession.currentUser?.id) { _, _ in
+            sharedRecipes = []
+            savedShareIDs = []
+            sharedLoadError = nil
+            if section == .shared && accountSession.isSignedIn {
+                Task { await loadSharedRecipes() }
+            }
+        }
+        .onChange(of: accountSession.isSignedIn) { _, isSignedIn in
+            if !isSignedIn {
+                // Sign-out: drop stale rows immediately. `sharedSectionContent`
+                // already renders the "Sign In to See Shared Recipes" state
+                // whenever `!accountSession.isSignedIn`, so clearing here is
+                // enough to avoid a stale list ever being visible — no
+                // separate signed-out state needed beyond that existing check.
+                sharedRecipes = []
+                savedShareIDs = []
+                sharedLoadError = nil
+                isLoadingShared = false
+            }
+        }
     }
 
     // MARK: Shared section

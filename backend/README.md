@@ -194,9 +194,41 @@ number + SMS code, so it isn't tied to Apple/iOS), a personal friends list,
 and groups built from that list — modeled after Splitwise, right down to a
 person being able to belong to several groups at once (a "household" and a
 separate "our Peru trip" group, say). See `prisma/schema.prisma` for the
-full data model and the reasoning behind each table. This is backend-only
-so far — the iOS app doesn't call any of this yet; that's a later pass once
-this API has settled.
+full data model and the reasoning behind each table. As of Phase 3
+(`ae15dcd` and the fix round after it), the iOS app calls all of this:
+`FriendsListView` (friends list, requests, add-by-phone) and
+`GroupsListView`/`GroupDetailView` (groups, members, invites) are its main
+screens for it — see `HomeEats/Services/AccountsAPIClient.swift` for the
+full client.
+
+**Invites and consent.** An `Invite` (someone added by phone number who
+either isn't a Home Eats user yet, or is one but not yet an accepted friend
+of the inviter) never grants anything by itself. It resolves into an
+ordinary incoming friend request — the same `PENDING` `Friendship` row, and
+the same `GET /friends`'s `incomingRequests` entry, as a friend request sent
+directly — that the invited person has to explicitly accept via
+`POST /friends/:friendshipId/accept` like any other. An invite that also
+named a `groupId` (from `POST /groups/:groupId/invite`) only grants that
+`GroupMembership` at the moment that specific friend request is accepted,
+never before — see the `Invite` model's doc comment in
+`prisma/schema.prisma` and `resolveInvitesForAcceptedFriendship` in
+`routes/friends.js` for exactly how that resolution works, including its one
+known limitation (it only fires when the original inviter also ends up as
+that friendship's requester — see that function's own doc comment).
+Declining the friend request cancels any tied invite(s) instead
+(`cancelInvitesForDeclinedFriendship`) rather than leaving them `PENDING`
+forever.
+
+**Phone-number privacy.** `POST /friends/request` and
+`POST /groups/:groupId/invite` both report success back the same way
+(`{ "status": "requested" }` / `{ "status": "invited" }`, both `201`)
+whether the phone number given belongs to a registered user or not —
+otherwise the response shape/status would double as a way to check which
+phone numbers are Home Eats users, without any actual relationship to the
+caller required. Genuinely different outcomes the caller already has a
+legitimate reason to know about (already friends, already a group member,
+already invited, adding one of your own accepted friends by `userId` or by
+their phone number) still report back distinctly.
 
 Every route below except the two `/auth/*` ones requires
 `Authorization: Bearer <token>` (the token `POST /auth/verify-code`
@@ -205,20 +237,20 @@ response has the shape `{ "error": "..." }`.
 
 | Method | Path | Auth | Body | Notes |
 |---|---|---|---|---|
-| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). |
-| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code; finds-or-creates the `User`, resolves any pending `Invite`s for that number, and returns `{ token, user }`. |
+| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). Rate-limited (see "Rate limiting" below); `429` if exceeded. |
+| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code; finds-or-creates the `User`, turns any pending `Invite`s for that number into ordinary `PENDING` friend requests (see "Invites and consent" above — this does **not** auto-accept a friendship or auto-join a group), and returns `{ token, user }`. |
 | GET | `/me` | required | — | Returns `{ user: { id, phoneNumber, displayName, createdAt } }` for the caller. |
 | PATCH | `/me` | required | `{ displayName }` | Sets the caller's display name. Returns the updated `{ user }`. |
-| POST | `/friends/request` | required | `{ phoneNumber }` | Sends a friend request. If that number belongs to an existing user, creates/updates a `Friendship`; if a request in the other direction was already pending, this accepts it instead. If the number isn't a user yet, creates an `Invite` (no group) that auto-resolves into an accepted friendship when they sign up. `409` if already friends or already pending. |
-| POST | `/friends/:friendshipId/accept` | required | — | Recipient only; `403` otherwise, `409` if not `PENDING`. |
-| POST | `/friends/:friendshipId/decline` | required | — | Recipient only; same error shape as accept. |
+| POST | `/friends/request` | required | `{ phoneNumber }` | Sends a friend request. If that number belongs to an existing user with no prior relationship, creates a `PENDING` `Friendship`; if a request in the other direction was already pending, this accepts it instead (`200`, `{ friendship, autoAccepted: true }`). If the number isn't a user yet, creates an `Invite` (no group). The first two of those report back identically — `201`, `{ "status": "requested" }` — see "Phone-number privacy" above. `409` if already friends, already pending, or already invited. |
+| POST | `/friends/:friendshipId/accept` | required | — | Recipient only; `403` otherwise, `409` if not `PENDING`. Also resolves any tied `Invite`(s) into `GroupMembership` — see "Invites and consent" above. |
+| POST | `/friends/:friendshipId/decline` | required | — | Recipient only; same error shape as accept. Also cancels any tied `Invite`(s) (see "Invites and consent" above). |
 | GET | `/friends` | required | — | `{ friends: [...], incomingRequests: [...], outgoingRequests: [...] }` — accepted friends, plus separate pending lists for requests you've received and sent. |
-| POST | `/groups` | required | `{ name, memberUserIds?: string[] }` | Creates a group with the caller as a member, plus any `memberUserIds` — each must already be an accepted friend of the caller (`400` otherwise, so you can't add a stranger's id). Returns `{ group }` including the member list. |
+| POST | `/groups` | required | `{ name, memberUserIds?: string[] }` | Creates a group with the caller as a member, plus any `memberUserIds` — each must already be an accepted friend of the caller (`400` otherwise, so you can't add a stranger's id). `memberUserIds` is capped at 100 entries (`400` if exceeded). Returns `{ group }` including the member list. |
 | GET | `/groups` | required | — | `{ groups: [...] }` — every group the caller belongs to (a lightweight list; use the next route for members). |
 | GET | `/groups/:groupId` | required | — | `{ group }` with the full member list, phone numbers included (safe here — everyone returned is a fellow member of this same group). `403` if the caller isn't a member. |
-| POST | `/groups/:groupId/invite` | required | `{ userId }` **or** `{ phoneNumber }` | Only current members may invite. `userId` (or a `phoneNumber` that turns out to belong to an existing user) must be an accepted friend of the caller — same anti-stranger rule as group creation — and is added as a member directly. A `phoneNumber` that isn't a user yet creates an `Invite` with this `groupId`, which turns into membership (and a friendship with the inviter) on signup. `409` if already a member / already invited. |
+| POST | `/groups/:groupId/invite` | required | `{ userId }` **or** `{ phoneNumber }` | Only current members may invite. `userId`, or a `phoneNumber` that matches one of the caller's own accepted friends, is added as a member directly (`201`, `{ member }`). Any other `phoneNumber` — a Home Eats user who isn't yet an accepted friend of the caller, or not a user at all — queues an `Invite` with this `groupId` (and, if that phone number is already a user with no prior relationship to the caller, also sends them an ordinary friend request) and reports back identically either way (`201`, `{ "status": "invited" }`) — see "Phone-number privacy" above. `409` if already a member / already invited. |
 | DELETE | `/groups/:groupId/members/:userId` | required | — | Leave (pass your own id) or remove another member — v1 has no admin role, any current member can remove any other. `403` if the caller isn't a member, `404` if the target isn't. |
-| POST | `/recipe-library` | required | `{ title, summary?, ingredients: [{ name, quantity?, unit? }], instructions: string[], servings?, prepMinutes?, cookMinutes? }` | Creates a recipe owned by the caller, starting `PRIVATE`. Returns `{ recipe }` including its ingredients. |
+| POST | `/recipe-library` | required | `{ title, summary?, ingredients: [{ name, quantity?, unit? }], instructions: string[], servings?, prepMinutes?, cookMinutes? }` | Creates a recipe owned by the caller, starting `PRIVATE`. `ingredients`/`instructions` are each capped at 200 entries (`400` if exceeded). Returns `{ recipe }` including its ingredients. |
 | GET | `/recipe-library/mine` | required | — | `{ recipes: [...] }` — every recipe the caller owns, any visibility. |
 | GET | `/recipe-library/shared-with-me` | required | — | `{ recipes: [...] }` — every recipe shared directly with the caller, or via any group they belong to. One entry per share (a recipe shared with you two ways appears twice); each entry carries a `share: { sharedAt, sharedBy, sharedWithGroup }` so the UI can show who shared it / via which group. |
 | GET | `/recipe-library/:recipeId` | required | — | `{ recipe }` with full ingredient detail. `403` unless the caller is the owner, a direct share target, or a member of a group it's shared with; `404` if it doesn't exist. |
@@ -231,10 +263,12 @@ response has the shape `{ "error": "..." }`.
 
 Phase 2a: recipes move from purely on-device SwiftData storage to something
 that can also live on this backend and be shared between people, built
-directly on the friends/groups layer above. This is **backend-only** so far,
-same as Phase 1 — the iOS app doesn't call any of this yet; wiring
-`HomeEats/Models/Recipe.swift`/`RecipeIngredientEntry.swift` up to it is a
-separate, later task. See `prisma/schema.prisma`'s `Recipe`,
+directly on the friends/groups layer above. As of Phase 3, the iOS app calls
+this too — sharing a recipe from `RecipeDetailView` (via
+`RecipeSharePickerSheet`) creates it here and shares it, and the "Shared"
+segment of `RecipesHomeView` lists what's been shared back
+(`GET /recipe-library/shared-with-me`) and can save a copy locally. See
+`prisma/schema.prisma`'s `Recipe`,
 `RecipeIngredient`, and `RecipeShare` models for the full data model — field
 names there deliberately mirror the iOS model's fields (title, summary,
 ordered `instructions`, `servings`/`prepMinutes`/`cookMinutes`, and each
@@ -315,6 +349,23 @@ is fine since nothing outside this feature references one.
   configured" story as the `/recipes/*` Claude calls above — fine at
   household/friend-group scale, worth knowing before wiring this up to
   something high-traffic.
+- **Rate limiting**: `POST /auth/request-code` is throttled by a small
+  in-memory limiter (`lib/rateLimit.js`) — 5 requests per phone number per
+  hour, 20 per IP per hour — on top of Twilio Verify's own Fraud
+  Guard/rate-limiting, since this route fires a billed Twilio call before
+  Twilio ever gets a say. `429` with `{ "error": "..." }` when exceeded. The
+  limiter's state is per-process (fine for this app's single Render
+  instance — see the deploy section above — but it resets on every
+  deploy/restart and wouldn't be shared across instances if this ever
+  scales past one); `index.js` sets `app.set("trust proxy", true)` so the
+  per-IP half of this actually sees the real client IP through Render's
+  reverse proxy rather than the proxy's own address.
+- `Group.createdByUserId` is nullable (`onDelete: SetNull` on its relation
+  to `User`) rather than the group cascading away when its creator's
+  account is later deleted (there's no delete-account route yet, but there
+  will be) — deleting the creator just clears who created it; the group and
+  every other member's membership, invites, and recipe shares are
+  unaffected.
 - There's no delete-account, remove-phone-number, or admin-role system yet
   (see the `DELETE /groups/:groupId/members/:userId` note above — v1 keeps
   group membership deliberately simple/permissive). Those are reasonable

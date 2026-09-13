@@ -152,7 +152,7 @@ private struct AddFriendView: View {
                         .keyboardType(.phonePad)
                         .textContentType(.telephoneNumber)
                 } footer: {
-                    Text("They'll need to accept before you're friends — or if they haven't joined Home Eats yet, this becomes a standing invite that turns into a friendship automatically the moment they do.")
+                    Text("They'll need to accept before you're friends. If they haven't joined Home Eats yet, they'll see your request waiting for them the moment they sign up — same as anyone else's.")
                 }
                 if let errorMessage {
                     Section {

@@ -96,10 +96,22 @@ const IngredientSchema = z.object({
 // defaults explicitly in the route handler instead (`ingredients ?? []`
 // isn't even needed since the field itself is always present in a create
 // body's intent — see CreateRecipeSchema below).
+// 200 each is a generous ceiling — a real recipe never has anywhere close
+// to 200 ingredient lines or 200 instruction steps — while still bounding
+// the request body size and the per-ingredient row count PATCH's
+// delete-and-recreate (see the PATCH handler below) ever has to write in
+// one transaction.
+const MAX_INGREDIENTS = 200;
+const MAX_INSTRUCTIONS = 200;
+
 const titleField = z.string().trim().min(1, "title can't be empty.").max(200);
 const summaryField = z.string().trim().max(4000).nullable();
-const ingredientsField = z.array(IngredientSchema);
-const instructionsField = z.array(z.string().trim().min(1));
+const ingredientsField = z
+  .array(IngredientSchema)
+  .max(MAX_INGREDIENTS, `A recipe can't have more than ${MAX_INGREDIENTS} ingredients.`);
+const instructionsField = z
+  .array(z.string().trim().min(1))
+  .max(MAX_INSTRUCTIONS, `A recipe can't have more than ${MAX_INSTRUCTIONS} instruction steps.`);
 const servingsField = z.number().int().positive().nullable();
 const prepMinutesField = z.number().int().nonnegative().nullable();
 const cookMinutesField = z.number().int().nonnegative().nullable();

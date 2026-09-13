@@ -16,12 +16,27 @@ const { prisma } = require("../lib/prisma");
 const { twilioClient } = require("../lib/twilio");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
+const { createRateLimiter } = require("../lib/rateLimit");
 
 const router = express.Router();
 
 const PhoneSchema = z.object({
   phoneNumber: phoneNumberField,
 });
+
+// POST /request-code costs real money the moment it fires a real Twilio
+// Verify send, and that happens before Twilio's own Fraud Guard/rate
+// limiting ever gets a say — so this adds a lightweight limiter in front of
+// it. Two independent limits: per phone number (5/hour comfortably covers
+// normal sign-in — typo'd a digit, code expired, resend — without letting
+// someone rack up real charges hammering one number) and per IP (20/hour,
+// looser since a shared household/office IP can plausibly have several
+// people signing in independently, but still caps one IP cycling through
+// many numbers). See `lib/rateLimit.js`'s own doc comment on why a small
+// in-memory limiter is enough here (single Render instance, not a hard
+// security boundary).
+const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5 });
+const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
 
 function firstIssue(error, fallback) {
   return error.issues[0]?.message || fallback;
@@ -47,6 +62,15 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   }
   const { phoneNumber } = parsed.data;
 
+  // Checked (and counted) after body validation, so a malformed request
+  // doesn't burn either quota, same reasoning as the pre-existing "cheap
+  // format check before the billed Twilio call" comment below.
+  const phoneLimited = requestCodePhoneLimiter.check(phoneNumber).limited;
+  const ipLimited = requestCodeIPLimiter.check(req.ip).limited;
+  if (phoneLimited || ipLimited) {
+    return res.status(429).json({ error: "Too many verification code requests. Please wait a bit and try again." });
+  }
+
   const client = twilioClient();
   const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
   if (!client || !verifyServiceSid) {
@@ -70,11 +94,14 @@ router.post("/request-code", asyncHandler(async (req, res) => {
 
 // POST /auth/verify-code
 // Body: { phoneNumber, code }. Checks the code with Twilio Verify; on
-// success, finds-or-creates the User by phone number and auto-resolves any
-// pending Invites addressed to that number (see the Invite model's doc
-// comment in prisma/schema.prisma), all inside one transaction so a signup
-// either fully succeeds — user row, plus any invite-derived friendships and
-// group memberships — or fully fails, never half-applied. Returns a JWT.
+// success, finds-or-creates the User by phone number and turns any pending
+// Invites addressed to that number into ordinary PENDING friend requests
+// (see the Invite model's doc comment in prisma/schema.prisma — this
+// deliberately does NOT auto-accept the friendship or auto-join any tied
+// group; that only happens later, if and when the new user actually
+// accepts the resulting request), all inside one transaction so a signup
+// either fully succeeds — user row plus any invite-derived friend requests
+// — or fully fails, never half-applied. Returns a JWT.
 const VerifySchema = PhoneSchema.extend({
   // Twilio Verify codes are typically 4-10 digits depending on channel/
   // configuration; validated loosely here and authoritatively by Twilio.
@@ -127,57 +154,52 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
 
       const newUser = await tx.user.create({ data: { phoneNumber } });
 
-      // Resolve every pending invite addressed to this phone number. An
-      // invite is a stronger, unambiguous mutual signal than a cold friend
-      // request (someone who already knows this number specifically asked
-      // for it to join them), so the resulting friendship is created
-      // already ACCEPTED rather than PENDING.
+      // Turn every pending invite addressed to this phone number into an
+      // ordinary incoming friend request — NOT an instantly-accepted
+      // friendship, and NOT instant group membership even when the invite
+      // named a `groupId` (see the Invite model's doc comment in
+      // prisma/schema.prisma for why: both of those are deferred to the
+      // moment the new user actually accepts the request, in
+      // routes/friends.js). Several Invite rows can share the same inviter
+      // (e.g. a bare friend invite plus one or more separate group invites
+      // from the same person) — those must still collapse into exactly one
+      // Friendship, not one per invite, hence deduping by inviter id here.
       const pendingInvites = await tx.invite.findMany({
         where: { invitedPhoneNumber: phoneNumber, status: "PENDING" },
       });
+      const inviterIds = [...new Set(pendingInvites.map((invite) => invite.invitingUserId))];
 
-      for (const invite of pendingInvites) {
+      for (const inviterId of inviterIds) {
+        // Sequential on purpose, same reasoning as the similar loops in
+        // routes/groups.js — this list is small (however many people
+        // happened to invite this one phone number before it signed up).
+        // eslint-disable-next-line no-await-in-loop
         const existingFriendship = await tx.friendship.findFirst({
           where: {
             OR: [
-              { requesterId: invite.invitingUserId, recipientId: newUser.id },
-              { requesterId: newUser.id, recipientId: invite.invitingUserId },
+              { requesterId: inviterId, recipientId: newUser.id },
+              { requesterId: newUser.id, recipientId: inviterId },
             ],
           },
         });
-        if (existingFriendship) {
-          if (existingFriendship.status !== "ACCEPTED") {
-            await tx.friendship.update({
-              where: { id: existingFriendship.id },
-              data: { status: "ACCEPTED" },
-            });
-          }
-        } else {
+        if (!existingFriendship) {
+          // eslint-disable-next-line no-await-in-loop
           await tx.friendship.create({
-            data: {
-              requesterId: invite.invitingUserId,
-              recipientId: newUser.id,
-              status: "ACCEPTED",
-            },
+            data: { requesterId: inviterId, recipientId: newUser.id, status: "PENDING" },
           });
         }
-
-        if (invite.groupId) {
-          // upsert rather than create: if the inviter also separately added
-          // this person to the same group by user id in the meantime, don't
-          // fail on the GroupMembership unique constraint.
-          await tx.groupMembership.upsert({
-            where: { userId_groupId: { userId: newUser.id, groupId: invite.groupId } },
-            update: {},
-            create: { userId: newUser.id, groupId: invite.groupId },
-          });
-        }
-
-        await tx.invite.update({
-          where: { id: invite.id },
-          data: { status: "RESOLVED", resolvedAt: new Date() },
-        });
+        // If a Friendship already exists between this pair (shouldn't
+        // normally happen — this phone number wasn't a user yet — but stay
+        // defensive), leave its current status exactly as it is rather than
+        // forcing it back to PENDING.
       }
+
+      // Every Invite row itself is deliberately left PENDING here — it only
+      // moves to RESOLVED (and, if it named a groupId, grants that
+      // GroupMembership) or CANCELLED once the friendship it stands in for
+      // is actually accepted or declined; see
+      // `resolveInvitesForAcceptedFriendship`/
+      // `cancelInvitesForDeclinedFriendship` in routes/friends.js.
 
       return newUser;
     });

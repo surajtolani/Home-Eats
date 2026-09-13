@@ -94,4 +94,80 @@ final class RecipeLibraryPayloadTests: XCTestCase {
         let decoded = try JSONDecoder().decode(RecipeSource.self, from: encoded)
         XCTAssertEqual(decoded, .shared)
     }
+
+    // MARK: - RecipeLibraryUpdatePayload (PATCH /recipe-library/:id)
+
+    /// `.unchanged` (the default) must leave a nilable field's key out of
+    /// the body entirely — the backend reads an omitted key as "don't touch
+    /// this field" (see `UpdateRecipeSchema` in
+    /// backend/routes/recipeLibrary.js). This is the case every field
+    /// defaults to, so an update that only names, say, `title` shouldn't
+    /// accidentally also clear `summary`/`servings`/`prepMinutes`/
+    /// `cookMinutes`.
+    func testUnchangedFieldsAreOmitted() {
+        var payload = RecipeLibraryUpdatePayload()
+        payload.title = "New Title"
+
+        let object = payload.asJSONObject()
+
+        XCTAssertEqual(object["title"] as? String, "New Title")
+        XCTAssertNil(object["summary"], "an untouched field must be omitted, not sent as JSON null")
+        XCTAssertNil(object["servings"])
+        XCTAssertNil(object["prepMinutes"])
+        XCTAssertNil(object["cookMinutes"])
+        XCTAssertNil(object["ingredients"])
+        XCTAssertNil(object["instructions"])
+    }
+
+    /// `.set(nil)` is the "explicitly clear this field" case — this is the
+    /// exact bug this type exists to fix: unlike a plain `String?`, this
+    /// must actually reach the wire as JSON `null`, not silently vanish
+    /// from the body the way assigning Swift's own `nil` through a
+    /// `[String: Any]` subscript would.
+    func testExplicitNilFieldsAreSentAsJSONNull() {
+        var payload = RecipeLibraryUpdatePayload()
+        payload.summary = .set(nil)
+        payload.servings = .set(nil)
+        payload.prepMinutes = .set(nil)
+        payload.cookMinutes = .set(nil)
+
+        let object = payload.asJSONObject()
+
+        XCTAssertTrue(object.keys.contains("summary"), "an explicit clear must still be present as a key")
+        XCTAssertTrue(object["summary"] is NSNull, "an explicit clear must serialize as JSON null")
+        XCTAssertTrue(object["servings"] is NSNull)
+        XCTAssertTrue(object["prepMinutes"] is NSNull)
+        XCTAssertTrue(object["cookMinutes"] is NSNull)
+    }
+
+    /// `.set(value)` must carry the real value through, same as any other
+    /// present field.
+    func testSetFieldsAreIncludedWithTheirValue() {
+        var payload = RecipeLibraryUpdatePayload()
+        payload.summary = .set("Updated summary.")
+        payload.servings = .set(8)
+
+        let object = payload.asJSONObject()
+
+        XCTAssertEqual(object["summary"] as? String, "Updated summary.")
+        XCTAssertEqual(object["servings"] as? Int, 8)
+    }
+
+    /// A round trip through `JSONSerialization` itself — belt-and-suspenders
+    /// against the `NSNull`-vs-"key absent" distinction being right in this
+    /// struct's own `asJSONObject()` but breaking once actually serialized
+    /// to bytes and re-parsed (which is what really goes over the wire).
+    func testExplicitNilSurvivesRealJSONSerialization() throws {
+        var payload = RecipeLibraryUpdatePayload()
+        payload.title = "Kept Title"
+        payload.summary = .set(nil)
+
+        let data = try JSONSerialization.data(withJSONObject: payload.asJSONObject())
+        let reparsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let reparsedObject = try XCTUnwrap(reparsed)
+
+        XCTAssertEqual(reparsedObject["title"] as? String, "Kept Title")
+        XCTAssertTrue(reparsedObject.keys.contains("summary"))
+        XCTAssertTrue(reparsedObject["summary"] is NSNull)
+    }
 }
