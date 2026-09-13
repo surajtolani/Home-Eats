@@ -14,6 +14,13 @@ struct FriendsListView: View {
     @State private var errorMessage: String?
 
     @State private var showAddFriend = false
+    /// Set only when a pick from `ContactOrPhoneNumberPickerView` fails
+    /// (already friends, already pending, ...) — surfaced as an `.alert`
+    /// rather than routed through `errorMessage` below, since that property
+    /// replaces this entire list's content the moment it's set (see the
+    /// `if/else if` chain in `body`) and a failed add shouldn't blank out
+    /// the friends someone can already see.
+    @State private var addFriendFailure: String?
 
     var body: some View {
         List {
@@ -77,8 +84,47 @@ struct FriendsListView: View {
         }
         .task { await load() }
         .refreshable { await load() }
+        // Reuses the exact same "search Contacts by name, or type a phone
+        // number" sheet the group-invite flows already share (see
+        // `ContactOrPhoneNumberPickerView`'s doc comment) — a plain
+        // phone-number-only `AddFriendView` used to live here, replaced
+        // outright rather than kept alongside this, per the user's own
+        // request to search by name too, "via a search bar vs the + button."
+        // The "+" button still opens the sheet (there's no natural place for
+        // an always-visible inline search bar above "Requests"/"Sent"
+        // sections that also need to render), but what it opens now leads
+        // with a search bar instead of a single bare text field.
         .sheet(isPresented: $showAddFriend, onDismiss: { Task { await load() } }) {
-            AddFriendView()
+            ContactOrPhoneNumberPickerView(onPick: handlePicked)
+        }
+        .alert(
+            "Couldn't Add Friend",
+            isPresented: Binding(
+                get: { addFriendFailure != nil },
+                set: { isPresented in if !isPresented { addFriendFailure = nil } }
+            ),
+            presenting: addFriendFailure
+        ) { _ in
+            Button("OK") {}
+        } message: { message in
+            Text(message)
+        }
+    }
+
+    /// Sends a friend request for whatever `ContactOrPhoneNumberPickerView`
+    /// handed back — the picker itself has no concept of "friend request"
+    /// vs. "group invite" (see its own doc comment); this is the Friends-
+    /// specific half of that contract. Fired as its own `Task` rather than
+    /// awaited inline: `onPick` isn't `async`, matching every other caller
+    /// of this same picker.
+    private func handlePicked(_ picked: PickedPhoneContact) {
+        Task {
+            do {
+                try await AccountsAPIClient.sendFriendRequest(phoneNumber: picked.phoneNumber)
+                await load()
+            } catch {
+                addFriendFailure = error.localizedDescription
+            }
         }
     }
 
@@ -123,69 +169,6 @@ struct FriendsListView: View {
                 try await AccountsAPIClient.declineFriendRequest(id: friendshipID)
             }
             await load()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-}
-
-/// "Add Friend" by phone number — its own small sheet rather than an inline
-/// row in `FriendsListView`, matching how this app already pulls a
-/// multi-field add flow into its own sheet elsewhere (e.g.
-/// `RecipeAIImportView`) rather than cramming it into a list.
-private struct AddFriendView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var phoneNumber = ""
-    @State private var isSending = false
-    @State private var errorMessage: String?
-
-    private var canSend: Bool {
-        PhoneNumberFormatting.e164(from: phoneNumber) != nil
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Phone number", text: $phoneNumber)
-                        .keyboardType(.phonePad)
-                        .textContentType(.telephoneNumber)
-                } footer: {
-                    Text("They'll need to accept before you're friends. If they haven't joined Home Eats yet, they'll see your request waiting for them the moment they sign up — same as anyone else's.")
-                }
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage).foregroundStyle(.red)
-                    }
-                }
-            }
-            .navigationTitle("Add Friend")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if isSending {
-                        ProgressView()
-                    } else {
-                        Button("Send") { Task { await send() } }
-                            .disabled(!canSend)
-                    }
-                }
-            }
-        }
-    }
-
-    private func send() async {
-        guard let e164 = PhoneNumberFormatting.e164(from: phoneNumber) else { return }
-        isSending = true
-        errorMessage = nil
-        defer { isSending = false }
-        do {
-            try await AccountsAPIClient.sendFriendRequest(phoneNumber: e164)
-            dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }

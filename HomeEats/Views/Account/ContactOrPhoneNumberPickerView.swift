@@ -14,17 +14,21 @@ struct PickedPhoneContact: Hashable {
 
 /// "Who do you want to add?" — search device Contacts by name, or type a
 /// phone number directly, and hand back a single normalized pick. Built as
-/// one shared sheet specifically so it can be reused, unmodified, from both
-/// places a group can gain a member: `CreateGroupView`'s member step (the
-/// group doesn't exist yet, so its caller queues the pick locally rather
-/// than inviting immediately) and `GroupDetailView`'s `InviteToGroupView`
-/// (the group already exists, so its caller invites right away). Neither
-/// caller is told *how* a `PickedPhoneContact` was produced — from a tapped
-/// contact or a typed number — since both paths converge on the same shape
-/// and the same next step (`AccountsAPIClient.inviteToGroup(groupID:
-/// phoneNumber:)`, which already creates a friend request alongside the
-/// group invite for a phone number that isn't yet an accepted friend — see
-/// that method's own doc comment).
+/// one shared sheet specifically so it can be reused, unmodified, across
+/// every place this app adds someone by phone number: `CreateGroupView`'s
+/// member step (the group doesn't exist yet, so its caller queues the pick
+/// locally rather than inviting immediately), `GroupDetailView`'s
+/// `InviteToGroupView` (the group already exists, so its caller invites
+/// right away), and `FriendsListView`'s "Add Friend" flow (no group
+/// involved at all — its caller sends a plain friend request). None of
+/// those callers are told *how* a `PickedPhoneContact` was produced — from a
+/// tapped contact or a typed number — since they all converge on the same
+/// shape and each just does its own thing with the resulting phone number
+/// (`AccountsAPIClient.inviteToGroup(groupID:phoneNumber:)` for the first
+/// two, which already creates a friend request alongside the group invite
+/// for a phone number that isn't yet an accepted friend — see that method's
+/// own doc comment — or a plain `sendFriendRequest(phoneNumber:)` for the
+/// third).
 ///
 /// This intentionally does NOT also offer "from your accepted friends" —
 /// `CreateGroupView.friendToggleRow` and `InviteToGroupView`'s "From Your
