@@ -731,11 +731,15 @@ struct GroupDaySlotsView: View {
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
             }
 
-            // MANAGER-only "decide now" buttons, plus a "suggest instead"
-            // menu open to everyone — same role split, and the same
-            // single-tap-buttons-plus-a-menu shape, as the personal
-            // `DaySlotsView.slotSection`; see that property's own doc
-            // comment for why three buttons rather than a two-tap "Add" menu.
+            // MANAGER-only "decide now" buttons (green), plus a "suggest
+            // instead" row open to everyone. A PARTICIPANT sees only the
+            // suggest row — as its own three boxes, matching the MANAGER
+            // row's shape exactly rather than a single Menu button, so
+            // "here are your three options" reads the same way regardless
+            // of role — just in `.brandTerracotta` instead of
+            // `.brandForest`, so the two rows are still tellable apart at a
+            // glance as "decide" vs. "suggest" (a MANAGER, who sees both
+            // rows stacked, gets that same visual cue).
             VStack(spacing: 4) {
                 if isManager {
                     HStack(spacing: 8) {
@@ -751,20 +755,17 @@ struct GroupDaySlotsView: View {
                     }
                 }
 
-                Menu {
-                    Button { presentAfterMenuDismiss { activeSheet = .suggestRecipe(slot) } } label: {
-                        Label("Suggest a Recipe", systemImage: "bubble.left")
+                HStack(spacing: 8) {
+                    GroupSlotAddButton(title: "Suggest a Recipe", systemImage: "frying.pan", tint: .brandTerracotta) {
+                        activeSheet = .suggestRecipe(slot)
                     }
-                    Button { presentAfterMenuDismiss { activeSheet = .suggestRestaurant(slot, isOrderIn: false) } } label: {
-                        Label("Suggest Eating Out", systemImage: "bubble.left")
+                    GroupSlotAddButton(title: "Suggest Eat Out", systemImage: "fork.knife", tint: .brandTerracotta) {
+                        activeSheet = .suggestRestaurant(slot, isOrderIn: false)
                     }
-                    Button { presentAfterMenuDismiss { activeSheet = .suggestRestaurant(slot, isOrderIn: true) } } label: {
-                        Label("Suggest Ordering In", systemImage: "bubble.left")
+                    GroupSlotAddButton(title: "Suggest Order In", systemImage: "bag", tint: .brandTerracotta) {
+                        activeSheet = .suggestRestaurant(slot, isOrderIn: true)
                     }
-                } label: {
-                    Text(isManager ? "Suggest something instead (for a vote)" : "Suggest for a Vote")
                 }
-                .font(.brandCaption)
             }
             .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 0, leading: 16, bottom: 12, trailing: 16))
             .listRowSeparator(.hidden)
@@ -943,6 +944,12 @@ private var pendingIndicator: some View {
 private struct GroupSlotAddButton: View {
     let title: String
     let systemImage: String
+    /// `.brandForest` (a MANAGER deciding a meal directly) by default —
+    /// every existing call site keeps that color unchanged. The PARTICIPANT
+    /// "suggest" row below passes `.brandTerracotta` instead, so the two
+    /// rows read as visually distinct actions (decide vs. suggest) at a
+    /// glance, not just via their different button labels.
+    var tint: Color = .brandForest
     let action: () -> Void
 
     var body: some View {
@@ -961,7 +968,7 @@ private struct GroupSlotAddButton: View {
             .padding(.vertical, 2)
             .background {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.brandForest)
+                    .fill(tint)
             }
         }
         .buttonStyle(.plain)

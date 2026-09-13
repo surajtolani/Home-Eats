@@ -120,26 +120,24 @@ struct GroupDetailView: View {
         }
     }
 
+    // Name only, no phone-number subtitle — same "identify people by who
+    // they are, not the number tied to their account" reasoning as
+    // `FriendsListView.friendRow`; see its own doc comment.
     private func memberRow(_ member: GroupMember) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(member.displayNameOrPhoneNumber)
-                    // Phase 3's role, surfaced here so it's visible without
-                    // a separate screen — matches `GET /groups/:groupId`
-                    // now including `role` per member (see
-                    // backend/README.md's "Group roles" section).
-                    if member.role == .manager {
-                        Text("Manager")
-                            .font(.brandCaption2.bold())
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.brandForest.opacity(0.15)))
-                            .foregroundStyle(Color.brandForest)
-                    }
-                }
-                if member.displayName?.isEmpty == false {
-                    Text(member.phoneNumber).font(.brandCaption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(member.displayNameOrPhoneNumber)
+                // Phase 3's role, surfaced here so it's visible without
+                // a separate screen — matches `GET /groups/:groupId`
+                // now including `role` per member (see
+                // backend/README.md's "Group roles" section).
+                if member.role == .manager {
+                    Text("Manager")
+                        .font(.brandCaption2.bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.brandForest.opacity(0.15)))
+                        .foregroundStyle(Color.brandForest)
                 }
             }
             Spacer()

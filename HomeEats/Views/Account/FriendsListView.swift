@@ -131,13 +131,14 @@ struct FriendsListView: View {
         }
     }
 
+    /// Name only — no phone-number subtitle. A friend's phone number used to
+    /// show here as a secondary line whenever a display name was also set,
+    /// but a friend should be identified by who they are, not by the number
+    /// tied to their account; `displayNameOrPhoneNumber`'s phone-number
+    /// fallback still covers the (now rare, since a name is required going
+    /// forward) case of a friend who somehow has no name at all.
     private func friendRow(_ user: PublicUser) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(user.displayNameOrPhoneNumber)
-            if user.displayName?.isEmpty == false {
-                Text(user.phoneNumber).font(.brandCaption).foregroundStyle(.secondary)
-            }
-        }
+        Text(user.displayNameOrPhoneNumber)
     }
 
     private func incomingRequestRow(_ request: IncomingFriendRequest) -> some View {
