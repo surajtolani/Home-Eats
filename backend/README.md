@@ -60,6 +60,7 @@ environment variable in production — see below), apply the schema:
 
 ```bash
 cd backend
+npx prisma generate
 npx prisma migrate deploy
 ```
 
@@ -114,6 +115,7 @@ cp .env.example .env
 # edit .env: paste in GOOGLE_PLACES_API_KEY, ANTHROPIC_API_KEY, DATABASE_URL,
 # TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID, JWT_SECRET
 npm install
+npx prisma generate         # regenerates the Prisma Client from the current schema
 npx prisma migrate deploy   # creates the accounts/friends/groups tables
 npm start
 ```
@@ -159,10 +161,22 @@ curl "http://localhost:4000/recipe-library/mine" -H "Authorization: Bearer <toke
 1. [render.com](https://render.com) → New → Web Service → connect this
    GitHub repo.
 2. **Root Directory**: `backend`
-3. **Build Command**: `npm install && npx prisma migrate deploy`
-   — runs any not-yet-applied migrations as part of every deploy, so the
-   database schema always matches the code being deployed. (Render Postgres
-   works fine here; so does any external Postgres reachable from Render.)
+3. **Build Command**: `npm install && npx prisma generate && npx prisma migrate deploy`
+   — `migrate deploy` applies any not-yet-applied migrations so the
+   *database* schema matches the code being deployed, but it does NOT
+   regenerate the Prisma *Client* (the actual JS code `require("@prisma/
+   client")` returns) — that's a separate step, `prisma generate`, and
+   `npm install` only re-triggers it when `package.json`'s dependencies
+   actually changed, not just because `schema.prisma` did. Skipping the
+   explicit `prisma generate` here is exactly what caused a real
+   production bug once: the server kept running against a stale,
+   previously-generated Client that didn't know about a field
+   (`GroupMembership.role`) a newer `schema.prisma`/route had already
+   added, throwing `PrismaClientValidationError: Unknown argument`
+   on every request that touched it — even though the migration itself
+   had applied fine and the column really did exist in the database.
+   (Render Postgres works fine here; so does any external Postgres
+   reachable from Render.)
 4. **Start Command**: `npm start`
 5. **Environment** → add `GOOGLE_PLACES_API_KEY`, `ANTHROPIC_API_KEY`,
    `DATABASE_URL`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
