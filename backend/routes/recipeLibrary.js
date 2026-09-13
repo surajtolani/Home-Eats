@@ -63,6 +63,14 @@ function serializeRecipe(recipe) {
     prepMinutes: recipe.prepMinutes,
     cookMinutes: recipe.cookMinutes,
     visibility: recipe.visibility,
+    // Base64 text, straight out of the `photoBase64` column — see that
+    // column's own doc comment in prisma/schema.prisma for why it's stored
+    // as text (so this needs no encode/decode step here) and for the size/
+    // bloat tradeoff of sending it inline on every fetch of a recipe that
+    // has one. `null` for the overwhelming majority of recipes (no
+    // user-picked photo at all, or a `.library` recipe's bundled asset,
+    // which never had bytes to send in the first place).
+    photoBase64: recipe.photoBase64,
     createdAt: recipe.createdAt,
     updatedAt: recipe.updatedAt,
     ingredients: (recipe.ingredients || []).map((ingredient) => ({
@@ -104,6 +112,49 @@ const IngredientSchema = z.object({
 const MAX_INGREDIENTS = 200;
 const MAX_INSTRUCTIONS = 200;
 
+// A recipe photo, base64-encoded (see `Recipe.photoBase64`'s doc comment in
+// prisma/schema.prisma for the full storage-shape/size-tradeoff reasoning).
+// Checked against the DECODED byte length, not the base64 string's own
+// length — base64 inflates size by ~33%, so capping the string length
+// itself would actually cap the photo more tightly than this number
+// suggests. 5MB decoded is real headroom above what the iOS upload path
+// should ever actually send (`ImageResizing.downsized(...)` caps a photo at
+// 800px on its long edge, JPEG-compressed, before it's ever base64-encoded
+// for upload — see `RecipeSharePickerSheet`/`RecipeEditorView` — typically
+// well under 500KB) while still bounding how much a single misbehaving or
+// malicious request can bloat this table: a 5MB decoded photo is ~6.7MB of
+// base64 JSON, comfortably inside the global 15mb `express.json` body limit
+// (see index.js) with room for the rest of the request body around it.
+const MAX_PHOTO_BYTES_DECODED = 5 * 1024 * 1024; // 5MB
+
+// `Buffer.byteLength(str, "base64")` computes the decoded size directly
+// from the encoded string's length (and its trailing `=` padding) without
+// actually allocating/decoding a buffer — cheap enough to run on every
+// create/update even for a multi-MB photo.
+function decodedPhotoByteLength(base64) {
+  return Buffer.byteLength(base64, "base64");
+}
+
+// Loose but real validation: base64 only ever uses these characters (plus
+// up to two trailing `=` padding characters) — this catches an obviously
+// malformed value (stray whitespace from a copy-paste, a data URI's
+// `data:image/jpeg;base64,` prefix left on by mistake, ...) with a clear
+// 400 rather than silently storing garbage text that will fail to decode
+// as an image on every future viewer's device instead of failing loudly
+// once, here, at write time.
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+const photoBase64Field = z
+  .string()
+  .min(1, "photoBase64 can't be an empty string — omit the field or send null instead.")
+  .refine((value) => BASE64_PATTERN.test(value), {
+    message: "photoBase64 must be valid base64 (no data URI prefix, no whitespace).",
+  })
+  .refine((value) => decodedPhotoByteLength(value) <= MAX_PHOTO_BYTES_DECODED, {
+    message: `Recipe photo can't be more than ${Math.floor(MAX_PHOTO_BYTES_DECODED / (1024 * 1024))}MB.`,
+  })
+  .nullable();
+
 const titleField = z.string().trim().min(1, "title can't be empty.").max(200);
 const summaryField = z.string().trim().max(4000).nullable();
 const ingredientsField = z
@@ -124,6 +175,10 @@ const CreateRecipeSchema = z.object({
   servings: servingsField.optional(),
   prepMinutes: prepMinutesField.optional(),
   cookMinutes: cookMinutesField.optional(),
+  // Optional and omittable, same as every other nullable field here — most
+  // recipes (especially anything created before this field existed) have no
+  // photo at all. See `photoBase64Field`'s own doc comment for the size cap.
+  photoBase64: photoBase64Field.optional(),
 });
 
 // PATCH accepts the same fields but every one is optional with NO default:
@@ -139,19 +194,24 @@ const UpdateRecipeSchema = z.object({
   servings: servingsField.optional(),
   prepMinutes: prepMinutesField.optional(),
   cookMinutes: cookMinutesField.optional(),
+  // Omitted -> unchanged; explicit `null` -> clears the photo (e.g. the
+  // owner removes it in the editor); a base64 string -> replaces it. Same
+  // "omitted vs. explicit null" distinction `summary`/`servings`/etc. above
+  // already rely on (see the PATCH handler's `data.X !== undefined` checks).
+  photoBase64: photoBase64Field.optional(),
 });
 
 // POST /recipe-library
 // Body: { title, summary?, ingredients: [{ name, quantity?, unit? }],
-// instructions: string[], servings?, prepMinutes?, cookMinutes? }. Owner is
-// always the caller; a new recipe always starts PRIVATE (only sharing it
-// via POST /:recipeId/share moves it to SHARED).
+// instructions: string[], servings?, prepMinutes?, cookMinutes?,
+// photoBase64? }. Owner is always the caller; a new recipe always starts
+// PRIVATE (only sharing it via POST /:recipeId/share moves it to SHARED).
 router.post("/", asyncHandler(async (req, res) => {
   const parsed = CreateRecipeSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
   }
-  const { title, summary, ingredients, instructions, servings, prepMinutes, cookMinutes } = parsed.data;
+  const { title, summary, ingredients, instructions, servings, prepMinutes, cookMinutes, photoBase64 } = parsed.data;
 
   const recipe = await prisma.recipe.create({
     data: {
@@ -162,6 +222,7 @@ router.post("/", asyncHandler(async (req, res) => {
       servings: servings ?? null,
       prepMinutes: prepMinutes ?? null,
       cookMinutes: cookMinutes ?? null,
+      photoBase64: photoBase64 ?? null,
       ingredients: {
         create: ingredients.map((ingredient, index) => ({
           name: ingredient.name,
@@ -299,6 +360,7 @@ router.patch("/:recipeId", asyncHandler(async (req, res) => {
   if (data.servings !== undefined) scalarUpdates.servings = data.servings;
   if (data.prepMinutes !== undefined) scalarUpdates.prepMinutes = data.prepMinutes;
   if (data.cookMinutes !== undefined) scalarUpdates.cookMinutes = data.cookMinutes;
+  if (data.photoBase64 !== undefined) scalarUpdates.photoBase64 = data.photoBase64;
 
   // Ingredients are replaced wholesale — delete every existing
   // RecipeIngredient row for this recipe and recreate from the incoming

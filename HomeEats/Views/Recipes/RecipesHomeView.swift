@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit // For `SharedRecipeEntryThumbnail`'s `UIImage(data:)` decode.
 
 struct RecipesHomeView: View {
     @Environment(\.modelContext) private var modelContext
@@ -239,18 +240,29 @@ struct RecipesHomeView: View {
     }
 
     private func sharedRecipeRow(_ entry: SharedRecipeEntry) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(entry.title).font(.brandHeadline)
-            Text(entry.sharedByCaption)
-                .font(.brandCaption)
-                .foregroundStyle(.secondary)
-            if savedShareIDs.contains(entry.id) {
-                Label("Saved to My Recipes", systemImage: "checkmark.circle.fill")
+        HStack(alignment: .top, spacing: 12) {
+            // Shows the sender's photo before the recipe is even saved —
+            // this row used to have no thumbnail at all (nothing here ever
+            // had a photo to show before `photoBase64` existed), so this is
+            // new, not a fix to something that regressed. Kept as its own
+            // small view (`SharedRecipeEntryThumbnail` below) rather than
+            // reusing `RecipeThumbnail`, which takes a local `Recipe` and
+            // has no reason to learn about a wire-format `SharedRecipeEntry`
+            // that doesn't exist as a `Recipe` until the moment it's saved.
+            SharedRecipeEntryThumbnail(photoData: entry.photoData)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.title).font(.brandHeadline)
+                Text(entry.sharedByCaption)
                     .font(.brandCaption)
-                    .foregroundStyle(.green)
-            } else {
-                Button("Save to My Recipes") { saveSharedRecipe(entry) }
-                    .font(.brandCaption)
+                    .foregroundStyle(.secondary)
+                if savedShareIDs.contains(entry.id) {
+                    Label("Saved to My Recipes", systemImage: "checkmark.circle.fill")
+                        .font(.brandCaption)
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Save to My Recipes") { saveSharedRecipe(entry) }
+                        .font(.brandCaption)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -275,6 +287,16 @@ struct RecipesHomeView: View {
     /// already saved (`isSavedToCollection` defaults to `true`) and tagged
     /// with the backend id it came from so re-sharing it later reuses that
     /// same backend recipe rather than creating a duplicate.
+    ///
+    /// `photoData: entry.photoData` is what actually fixes this recipe's
+    /// photo showing up at all: `entry.photoData` decodes `entry.photoBase64`
+    /// (see `SharedRecipeEntry`'s own doc comment) straight into the same
+    /// `Data?` `RecipeThumbnail` already knows how to render for any other
+    /// `Recipe` — no new display code needed here, since a `.shared` recipe
+    /// becomes an ordinary local `Recipe` the moment it's saved, and every
+    /// existing recipe list/detail view already shows `photoData` when
+    /// present. `nil` when the shared recipe had no photo at all, same as
+    /// every other recipe source.
     private func saveSharedRecipe(_ entry: SharedRecipeEntry) {
         let recipe = Recipe(
             title: entry.title,
@@ -288,6 +310,7 @@ struct RecipesHomeView: View {
             prepMinutes: entry.prepMinutes ?? 0,
             cookMinutes: entry.cookMinutes ?? 0,
             tags: ["Shared"],
+            photoData: entry.photoData,
             backendRecipeID: entry.recipeID
         )
         modelContext.insert(recipe)
@@ -393,6 +416,35 @@ private struct RecipeCardContent: View {
         .background(Color.brandCream)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.06)))
+    }
+}
+
+/// A small square photo for one `sharedRecipeRow` — deliberately much
+/// simpler than `RecipeThumbnail` (no remote-URL/bundled-asset cases: a
+/// `SharedRecipeEntry` that hasn't been saved yet only ever has a decoded
+/// photo or nothing), but the same placeholder look (sage tint, a plain
+/// fork-and-knife glyph) so a shared recipe with no photo doesn't look
+/// broken or different from any other "no photo" recipe elsewhere in this
+/// app.
+private struct SharedRecipeEntryThumbnail: View {
+    let photoData: Data?
+
+    var body: some View {
+        Group {
+            if let photoData, let uiImage = UIImage(data: photoData) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Color.brandSage.opacity(0.15)
+                    Image(systemName: "fork.knife")
+                        .foregroundStyle(Color.brandSage)
+                }
+            }
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

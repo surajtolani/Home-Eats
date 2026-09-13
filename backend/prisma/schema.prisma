@@ -238,11 +238,14 @@ model Invite {
 // (HomeEats/Models/Recipe.swift, HomeEats/Models/RecipeIngredientEntry.swift)
 // so wiring the app up to this API later is a straightforward mapping, not
 // a redesign. A few iOS-only fields have no counterpart here on purpose:
-// `source`/`sourceURL`/`imageName`/`photoData`/`tags`/`isFavorite`/
-// `isSavedToCollection`/`createdByMemberID` are either purely device-local
-// concerns (a photo blob, a local family-member id) or not yet needed for
-// sharing itself — that's for the later iOS-wiring task to reconcile, not
-// this one.
+// `source`/`sourceURL`/`imageName`/`tags`/`isFavorite`/`isSavedToCollection`/
+// `createdByMemberID` are either purely device-local concerns (a local
+// family-member id) or not yet needed for sharing itself — that's for a
+// later iOS-wiring task to reconcile, not this one. `photoData` is the one
+// exception: see `Recipe.photoBase64` below — a recipe's user-picked photo
+// *is* wired through to sharing, since a shared recipe with no photo at all
+// was the actual bug this field exists to fix (see the recipe-sharing task
+// that added it, and its own doc comment on `photoBase64`).
 enum RecipeVisibility {
   PRIVATE
   SHARED
@@ -267,6 +270,42 @@ model Recipe {
   prepMinutes  Int?
   cookMinutes  Int?
   visibility   RecipeVisibility @default(PRIVATE)
+  // The iOS `Recipe.photoData`'s bytes, base64-encoded — stored as plain
+  // text rather than a Postgres `bytea` column so `serializeRecipe(...)` in
+  // routes/recipeLibrary.js can hand it straight to `res.json(...)` with no
+  // extra encode/decode step at the API boundary (a `bytea` would come back
+  // from `pg`/Prisma as either a Buffer needing manual base64 conversion or
+  // Postgres's own `\x`-prefixed hex text, neither of which is what a JSON
+  // API consumer wants). `@db.Text` rather than the default `String`
+  // (`varchar`, unbounded here but still worth being explicit) since this
+  // column can legitimately hold a few MB of text — see
+  // `MAX_PHOTO_BYTES_DECODED` in routes/recipeLibrary.js for the actual
+  // server-enforced cap, chosen with the size/bloat tradeoff this comment
+  // describes in mind.
+  //
+  // Nullable, and expected to be null for most rows: only recipes with a
+  // user-picked photo (`RecipeSource.manual`/`.imported` with `photoData`
+  // set — see that property's doc comment in HomeEats/Models/Recipe.swift)
+  // ever populate this; a `.library` recipe's bundled-asset-name photo
+  // (`imageName`) has no bytes to send at all and stays purely local, same
+  // as before this field existed.
+  //
+  // Base64-in-JSON costs ~33% more bytes over the wire than the raw photo
+  // would, and there's no separate thumbnail column — every viewer of a
+  // recipe with a photo pays that recipe's full photo size on every fetch,
+  // not just once. Judged an acceptable tradeoff for this app's actual
+  // scale (a household/friend-group app sharing a handful of recipes at a
+  // time, not a photo-sharing platform serving many viewers per photo per
+  // minute) given the iOS upload path (see `RecipeSharePickerSheet`) already
+  // downsizes to a small JPEG before this column is ever written — the same
+  // `ImageResizing.downsized(...)` cap already applied to every locally-
+  // captured recipe photo (`RecipeEditorView`), so sharing a recipe adds no
+  // new "how big can this get" case beyond what local storage already
+  // accepts. Revisit (a real object-store + CDN URL instead of inline
+  // base64) only if this app ever grows past that household/friend-group
+  // scale — flagged here explicitly for whoever owns that call next, not
+  // decided unilaterally by this comment.
+  photoBase64  String?          @db.Text
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit // For `ImageResizing.downsized(...)`'s `CGFloat` parameter — see `RecipeLibraryPayload.init(recipe:)`.
 
 /// Every error `AccountsAPIClient` throws — kept top-level (not nested
 /// inside the enum below) to match `ClaudeRecipeServiceError`'s own
@@ -824,10 +825,35 @@ struct RecipeLibraryPayload {
     var servings: Int?
     var prepMinutes: Int?
     var cookMinutes: Int?
+    /// The recipe's photo, base64-encoded — `nil` when the local recipe has
+    /// no `photoData` (the overwhelming majority: no photo at all, or a
+    /// `.library` recipe's bundled `imageName` asset, which has no bytes to
+    /// send in the first place — see `Recipe.photoData`'s own doc comment
+    /// on that distinction). Built by `init(recipe:)` below, never set
+    /// directly, so it's always already downsized — see that init for why.
+    var photoBase64: String?
 
     /// Builds the create/update body straight from a local, on-device
     /// `Recipe` — this is what `RecipeSharePickerSheet` calls the moment a
     /// recipe is shared for the first time (`recipe.backendRecipeID == nil`).
+    ///
+    /// `photoData` is re-downsized here, right before it's ever sent over
+    /// the network, rather than trusted as-is: `RecipeEditorView` already
+    /// caps a manually-added photo at 800px on its long edge before it's
+    /// even written to `photoData` (and `RecipeAIImportView`'s imported
+    /// photos at 1000px), so this is normally a no-op re-encode of an
+    /// already-small JPEG — but re-applying the same 800px cap here, right
+    /// at the upload boundary, means the backend's own size limit (see
+    /// `MAX_PHOTO_BYTES_DECODED` in backend/routes/recipeLibrary.js) is
+    /// never at the mercy of some other, future local capture path this
+    /// file doesn't know about forgetting to downsize first. Falls back to
+    /// the original bytes if `ImageResizing.downsized(...)` can't decode
+    /// them as an image at all (shouldn't happen for anything that made it
+    /// into `photoData` in the first place, but failing open here — sending
+    /// the original rather than silently dropping the photo — means a
+    /// decode hiccup costs some upload bandwidth, not the whole photo;
+    /// the backend's own size cap still guards against that original being
+    /// unreasonably large).
     init(recipe: Recipe) {
         title = recipe.title
         summary = recipe.summary
@@ -838,6 +864,12 @@ struct RecipeLibraryPayload {
         servings = recipe.servings
         prepMinutes = recipe.prepMinutes
         cookMinutes = recipe.cookMinutes
+        if let photoData = recipe.photoData {
+            let uploadData = ImageResizing.downsized(photoData, maxDimension: 800) ?? photoData
+            photoBase64 = uploadData.base64EncodedString()
+        } else {
+            photoBase64 = nil
+        }
     }
 
     /// `[String: Any]` for `JSONSerialization`, matching how
@@ -862,6 +894,7 @@ struct RecipeLibraryPayload {
         object["servings"] = servings
         object["prepMinutes"] = prepMinutes
         object["cookMinutes"] = cookMinutes
+        object["photoBase64"] = photoBase64
         return object
     }
 }
@@ -906,7 +939,9 @@ enum FieldUpdate<Value> {
 /// nullable on the backend (there's no such thing as clearing a recipe's
 /// title), so a plain `nil` = "unchanged" is unambiguous for those three;
 /// only the genuinely nilable fields (`summary`/`servings`/`prepMinutes`/
-/// `cookMinutes`) need the `FieldUpdate` wrapper.
+/// `cookMinutes`/`photoBase64`) need the `FieldUpdate` wrapper — a recipe's
+/// photo can legitimately be cleared (the owner removes it), same as its
+/// summary can.
 struct RecipeLibraryUpdatePayload {
     var title: String?
     var ingredients: [RecipeIngredientPayload]?
@@ -915,6 +950,14 @@ struct RecipeLibraryUpdatePayload {
     var servings: FieldUpdate<Int> = .unchanged
     var prepMinutes: FieldUpdate<Int> = .unchanged
     var cookMinutes: FieldUpdate<Int> = .unchanged
+    /// `.set(base64String)` to replace the photo, `.set(nil)` to clear it,
+    /// `.unchanged` (the default) to leave it alone. Nothing in this app
+    /// builds one of these with a photo update yet (no shared-recipe-photo
+    /// editing flow exists today — see `RecipeSharePickerSheet`'s doc
+    /// comment on the create path being the only wiring done so far), but
+    /// it's included for the same "complete against the documented API"
+    /// reasoning `getMyRecipes()`'s own doc comment gives.
+    var photoBase64: FieldUpdate<String> = .unchanged
 
     func asJSONObject() -> [String: Any] {
         var object: [String: Any] = [:]
@@ -925,6 +968,7 @@ struct RecipeLibraryUpdatePayload {
         object.setFieldUpdate(servings, forKey: "servings")
         object.setFieldUpdate(prepMinutes, forKey: "prepMinutes")
         object.setFieldUpdate(cookMinutes, forKey: "cookMinutes")
+        object.setFieldUpdate(photoBase64, forKey: "photoBase64")
         return object
     }
 }

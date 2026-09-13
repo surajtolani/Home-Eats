@@ -260,13 +260,37 @@ struct RemoteRecipe: Codable, Identifiable {
     /// this app is updated to know what to do with it, where a
     /// `String`-backed `enum` would instead throw on that unknown case.
     let visibility: String
+    /// The recipe's photo, base64-encoded — exactly `Recipe.photoBase64` in
+    /// backend/prisma/schema.prisma, `null` for the (overwhelming majority
+    /// of) recipes with no user-picked photo. Kept as the raw base64
+    /// `String?` here rather than eagerly decoding to `Data?` in a custom
+    /// `init(from:)` — same "don't build machinery a plain stored property
+    /// already covers" reasoning as `visibility` above, and it means a
+    /// malformed/corrupt value from the backend fails only where it's
+    /// actually used (`photoData`, decoded on demand) instead of failing
+    /// this whole recipe's decode outright. Use `photoData` below to
+    /// actually render it — see `RecipeThumbnail`, which already knows how
+    /// to turn `Data` into an `Image` for a local `Recipe.photoData`; this
+    /// gives the same bytes for a remote one.
+    let photoBase64: String?
     let createdAt: Date
     let updatedAt: Date
     let ingredients: [RemoteIngredient]
 
     enum CodingKeys: String, CodingKey {
-        case id, title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, createdAt, updatedAt, ingredients
+        case id, title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, photoBase64, createdAt, updatedAt, ingredients
         case ownerID = "ownerId"
+    }
+
+    /// `photoBase64` decoded to raw bytes, ready for `UIImage(data:)` —
+    /// `nil` both when there's no photo at all and when the string somehow
+    /// isn't valid base64 (shouldn't happen: the backend validates this at
+    /// write time — see `photoBase64Field` in routes/recipeLibrary.js — but
+    /// decoding defensively here means a corrupt value quietly falls back
+    /// to "no photo" instead of crashing or throwing this recipe's whole
+    /// decode away over one bad field).
+    var photoData: Data? {
+        photoBase64.flatMap { Data(base64Encoded: $0) }
     }
 }
 
@@ -304,6 +328,13 @@ struct SharedRecipeEntry: Codable, Identifiable {
     let prepMinutes: Int?
     let cookMinutes: Int?
     let visibility: String
+    /// Same field, same reasoning, as `RemoteRecipe.photoBase64` — see that
+    /// property's doc comment. Before this field existed, a shared recipe's
+    /// photo never made it across the wire at all — this is the field that
+    /// actually fixes the reported bug ("when recipes are shared... it
+    /// doesn't show the photo"), specifically for the "Shared" section this
+    /// type powers (`RecipesHomeView`/`saveSharedRecipe(_:)`).
+    let photoBase64: String?
     let createdAt: Date
     let updatedAt: Date
     let ingredients: [RemoteIngredient]
@@ -332,8 +363,14 @@ struct SharedRecipeEntry: Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case recipeID = "id"
-        case title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, createdAt, updatedAt, ingredients, share
+        case title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, photoBase64, createdAt, updatedAt, ingredients, share
         case ownerID = "ownerId"
+    }
+
+    /// `photoBase64` decoded to raw bytes — see `RemoteRecipe.photoData`'s
+    /// doc comment; same reasoning applies verbatim.
+    var photoData: Data? {
+        photoBase64.flatMap { Data(base64Encoded: $0) }
     }
 }
 

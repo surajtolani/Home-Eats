@@ -297,11 +297,11 @@ response has the shape `{ "error": "..." }`.
 | GET | `/groups/:groupId` | required | — | `{ group }` with the full member list (each entry includes `role`), phone numbers included (safe here — everyone returned is a fellow member of this same group). `403` if the caller isn't a member. |
 | POST | `/groups/:groupId/invite` | **MANAGER only** | `{ userId }` **or** `{ phoneNumber }` | A member who isn't a `MANAGER` gets `403` (see "Group roles" above); a non-member also gets `403`. `userId`, or a `phoneNumber` that matches one of the caller's own accepted friends, is added as a member directly, starting `PARTICIPANT` (`201`, `{ member }`). Any other `phoneNumber` — a Home Eats user who isn't yet an accepted friend of the caller, or not a user at all — queues an `Invite` with this `groupId` (and, if that phone number is already a user with no prior relationship to the caller, also sends them an ordinary friend request) and reports back identically either way (`201`, `{ "status": "invited" }`) — see "Phone-number privacy" above. `409` if already a member / already invited. |
 | DELETE | `/groups/:groupId/members/:userId` | required (self always allowed; **MANAGER** for anyone else) | — | Leave (pass your own id) — always allowed for any member, regardless of role. Removing someone ELSE's membership is `MANAGER`-only (`403` for a `PARTICIPANT` trying to remove another member). `403` if the caller isn't a member at all, `404` if the target isn't a member. |
-| POST | `/recipe-library` | required | `{ title, summary?, ingredients: [{ name, quantity?, unit? }], instructions: string[], servings?, prepMinutes?, cookMinutes? }` | Creates a recipe owned by the caller, starting `PRIVATE`. `ingredients`/`instructions` are each capped at 200 entries (`400` if exceeded). Returns `{ recipe }` including its ingredients. |
+| POST | `/recipe-library` | required | `{ title, summary?, ingredients: [{ name, quantity?, unit? }], instructions: string[], servings?, prepMinutes?, cookMinutes?, photoBase64? }` | Creates a recipe owned by the caller, starting `PRIVATE`. `ingredients`/`instructions` are each capped at 200 entries (`400` if exceeded). `photoBase64` is the recipe's photo, base64-encoded, decoded-size-capped at 5MB (`400` if exceeded, or if it's not valid base64) — see "Recipe sharing" below. Returns `{ recipe }` including its ingredients. |
 | GET | `/recipe-library/mine` | required | — | `{ recipes: [...] }` — every recipe the caller owns, any visibility. |
 | GET | `/recipe-library/shared-with-me` | required | — | `{ recipes: [...] }` — every recipe shared directly with the caller, or via any group they belong to. One entry per share (a recipe shared with you two ways appears twice); each entry carries a `share: { sharedAt, sharedBy, sharedWithGroup }` so the UI can show who shared it / via which group. |
 | GET | `/recipe-library/:recipeId` | required | — | `{ recipe }` with full ingredient detail. `403` unless the caller is the owner, a direct share target, or a member of a group it's shared with; `404` if it doesn't exist. |
-| PATCH | `/recipe-library/:recipeId` | required | Any subset of the POST body's fields | Owner only (`403` otherwise). Omitted fields are left unchanged; an included `ingredients` array wholesale-replaces the recipe's ingredient list (delete-and-recreate, not diffed/patched row-by-row). |
+| PATCH | `/recipe-library/:recipeId` | required | Any subset of the POST body's fields | Owner only (`403` otherwise). Omitted fields are left unchanged; an included `ingredients` array wholesale-replaces the recipe's ingredient list (delete-and-recreate, not diffed/patched row-by-row); an explicit `photoBase64: null` clears the photo, same omitted-vs-null rule as `summary`/`servings`/etc. |
 | DELETE | `/recipe-library/:recipeId` | required | — | Owner only (`403` otherwise). Cascades to its ingredients and shares. |
 | POST | `/recipe-library/:recipeId/share` | required | `{ userId }` **or** `{ groupId }` | Owner only — sharing further isn't delegated to someone it's already shared with. `userId` must be an accepted friend of the owner; `groupId` must be a group the owner belongs to (`400` otherwise, same anti-stranger rule as `/groups`). Flips visibility `PRIVATE` → `SHARED` if needed. `409` if already shared with that exact user/group. |
 | DELETE | `/recipe-library/:recipeId/share/:shareId` | required | — | Un-share, owner only (`403` otherwise). Does **not** revert visibility back to `PRIVATE` even if it was the last share — see "Recipe sharing" below. |
@@ -377,6 +377,39 @@ diffing/matching individual rows (incoming ingredients have no stable id to
 match an existing row against anyway). The one visible side effect: an
 ingredient's row `id` changes on every edit that touches ingredients, which
 is fine since nothing outside this feature references one.
+
+**Recipe photos** (`photoBase64`): a recipe's user-picked photo — the iOS
+`Recipe.photoData`'s raw bytes, base64-encoded — travels through this API
+as plain text, stored in a `@db.Text` column rather than a Postgres `bytea`
+(see the `Recipe.photoBase64` doc comment in `prisma/schema.prisma` for why:
+mainly, it lets `serializeRecipe(...)` hand the value straight to
+`res.json(...)` with no encode/decode step at either end). This used to be
+the actual bug this field exists to fix: recipe photos were purely local
+(`Recipe.photoData`, never sent anywhere), so a recipe with a photo lost it
+completely the moment it was shared — the recipient's saved copy had no
+image at all. Most recipes still have no photo at all (`photoBase64: null`)
+— nothing changed there.
+
+Two things worth calling out about the size/cost tradeoff of sending a photo
+inline as base64 JSON rather than, say, a link to object storage: base64
+costs ~33% more bytes over the wire than the raw photo, and there's no
+separate thumbnail column, so a recipe with a photo is that much heavier to
+fetch for every viewer, every time, not just once. This is judged
+acceptable for this app's actual scale (a household/friend-group app
+sharing a handful of recipes among a handful of people, not a photo-sharing
+platform) given the iOS upload path already downsizes to a small JPEG
+before it's ever sent — `ImageResizing.downsized(...)` caps every
+locally-captured recipe photo at 800px on its long edge, JPEG-compressed,
+whether or not it's ever shared, so sharing adds no new "how big can a
+photo get" case beyond what on-device storage already accepted. The route
+also enforces its own server-side ceiling regardless of what any particular
+client sends: `photoBase64` is capped at 5MB **decoded** (not counting
+base64's own ~33% inflation) — a `400` if a request's photo decodes larger
+than that, or isn't valid base64 at all — see `MAX_PHOTO_BYTES_DECODED` in
+routes/recipeLibrary.js. If this app ever grows well past
+household/friend-group scale, revisit this with a real object store + CDN
+URL and a separate thumbnail size instead of inline base64; that's a
+deliberate "not yet" for v1, not an oversight.
 
 ## 7. Group meal planning
 

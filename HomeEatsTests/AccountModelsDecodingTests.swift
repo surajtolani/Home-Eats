@@ -259,6 +259,113 @@ final class AccountModelsDecodingTests: XCTestCase {
         XCTAssertEqual(viaGroup.sharedByCaption, "Shared by Alex via Household")
     }
 
+    /// `RemoteRecipe` (the shape `POST/GET/PATCH /recipe-library`(`/:id`)
+    /// all return) with a photo present — regression guard for the bug this
+    /// field exists to fix: recipe photos used to be purely local, so a
+    /// shared recipe never carried one across at all. `photoBase64` here is
+    /// a tiny 1x1 fixture (not a real photo — the actual bytes don't matter
+    /// for a decode test, only that the string round-trips and
+    /// `photoData`'s base64 decode succeeds).
+    func testRemoteRecipeDecodesWithPhotoBase64Present() throws {
+        struct RecipeResponseFixture: Decodable { let recipe: RemoteRecipe }
+        let tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        let json = """
+        {
+          "recipe": {
+            "id": "r1", "ownerId": "u1", "title": "Weeknight Chili", "summary": null,
+            "instructions": ["Brown the beef."],
+            "servings": 4, "prepMinutes": 10, "cookMinutes": 30, "visibility": "PRIVATE",
+            "photoBase64": "\(tinyPNGBase64)",
+            "createdAt": "2024-03-01T12:00:00.000Z", "updatedAt": "2024-03-02T08:15:30.500Z",
+            "ingredients": []
+          }
+        }
+        """
+        let response = try decoder.decode(RecipeResponseFixture.self, from: data(json))
+        XCTAssertEqual(response.recipe.photoBase64, tinyPNGBase64)
+        let decodedPhoto = try XCTUnwrap(response.recipe.photoData)
+        XCTAssertFalse(decodedPhoto.isEmpty)
+    }
+
+    /// The common case: no photo at all. `photoBase64` must decode as `nil`
+    /// cleanly (not throw) whether the backend omits the key entirely or
+    /// sends an explicit JSON `null` — `serializeRecipe(...)` in
+    /// routes/recipeLibrary.js always sends the key with a `null` value for
+    /// a photo-less recipe (a plain JS `undefined`/`null` field still
+    /// appears in `res.json(...)`'s output as `null`, not an omitted key),
+    /// so this fixture matches that exact shape rather than omitting the
+    /// key, which would only prove the *more* lenient case works.
+    func testRemoteRecipeDecodesWithNullPhotoBase64() throws {
+        struct RecipeResponseFixture: Decodable { let recipe: RemoteRecipe }
+        let json = """
+        {
+          "recipe": {
+            "id": "r1", "ownerId": "u1", "title": "Weeknight Chili", "summary": null,
+            "instructions": ["Brown the beef."],
+            "servings": 4, "prepMinutes": 10, "cookMinutes": 30, "visibility": "PRIVATE",
+            "photoBase64": null,
+            "createdAt": "2024-03-01T12:00:00.000Z", "updatedAt": "2024-03-02T08:15:30.500Z",
+            "ingredients": []
+          }
+        }
+        """
+        let response = try decoder.decode(RecipeResponseFixture.self, from: data(json))
+        XCTAssertNil(response.recipe.photoBase64)
+        XCTAssertNil(response.recipe.photoData)
+    }
+
+    /// Same field, same "present vs. null" pair, on `SharedRecipeEntry` —
+    /// this is the shape that actually matters most for the reported bug,
+    /// since it's what powers `RecipesHomeView`'s "Shared" section and
+    /// `saveSharedRecipe(_:)`'s `photoData: entry.photoData`.
+    func testSharedRecipeEntryDecodesPhotoBase64PresentAndNull() throws {
+        struct SharedResponseFixture: Decodable { let recipes: [SharedRecipeEntry] }
+        let tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        let json = """
+        {
+          "recipes": [
+            {
+              "id": "r1", "ownerId": "u2", "title": "Weeknight Chili", "summary": null,
+              "instructions": ["Brown the beef."],
+              "servings": 4, "prepMinutes": 10, "cookMinutes": 30, "visibility": "SHARED",
+              "photoBase64": "\(tinyPNGBase64)",
+              "createdAt": "2024-03-01T12:00:00.000Z", "updatedAt": "2024-03-02T08:15:30.500Z",
+              "ingredients": [],
+              "share": {
+                "id": "s1", "sharedAt": "2024-03-05T09:00:00.000Z",
+                "sharedBy": { "id": "u2", "displayName": "Alex", "phoneNumber": "+14155550002" },
+                "sharedWithGroup": null
+              }
+            },
+            {
+              "id": "r2", "ownerId": "u2", "title": "Plain Toast", "summary": null,
+              "instructions": ["Toast the bread."],
+              "servings": 1, "prepMinutes": 1, "cookMinutes": 2, "visibility": "SHARED",
+              "photoBase64": null,
+              "createdAt": "2024-03-01T12:00:00.000Z", "updatedAt": "2024-03-02T08:15:30.500Z",
+              "ingredients": [],
+              "share": {
+                "id": "s2", "sharedAt": "2024-03-05T09:00:00.000Z",
+                "sharedBy": { "id": "u2", "displayName": "Alex", "phoneNumber": "+14155550002" },
+                "sharedWithGroup": null
+              }
+            }
+          ]
+        }
+        """
+        let response = try decoder.decode(SharedResponseFixture.self, from: data(json))
+        XCTAssertEqual(response.recipes.count, 2)
+
+        let withPhoto = response.recipes[0]
+        XCTAssertEqual(withPhoto.photoBase64, tinyPNGBase64)
+        let decodedPhoto = try XCTUnwrap(withPhoto.photoData)
+        XCTAssertFalse(decodedPhoto.isEmpty)
+
+        let withoutPhoto = response.recipes[1]
+        XCTAssertNil(withoutPhoto.photoBase64)
+        XCTAssertNil(withoutPhoto.photoData)
+    }
+
     // MARK: - Error shape (every route file's `{ "error": "..." }` responses)
 
     func testServerErrorResponseDecodesTheSharedErrorShape() throws {
