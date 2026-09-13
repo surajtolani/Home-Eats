@@ -3,6 +3,7 @@ import SwiftData
 
 struct RecipesHomeView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var accountSession: AccountSession
     @Query(sort: \Recipe.title) private var allRecipes: [Recipe]
     @Query private var history: [MealHistoryEntry]
 
@@ -14,10 +15,29 @@ struct RecipesHomeView: View {
     @State private var showRecommendSheet = false
     @State private var quickAddRecipe: Recipe?
 
+    // MARK: Shared (backend recipe-sharing) state
+    //
+    // Unlike `.mine`/`.favorites`/`.library` above, "Shared" isn't backed by
+    // `allRecipes` at all — recipes shared with the caller live only on the
+    // backend until explicitly saved (see `RecipeSource.shared`'s doc
+    // comment), so this section fetches `GET /recipe-library/shared-with-me`
+    // live instead, the same "no local mirror, backend is the source of
+    // truth" reasoning `FriendsListView`/`GroupsListView` already use for
+    // friends/groups.
+    @State private var sharedRecipes: [SharedRecipeEntry] = []
+    @State private var isLoadingShared = false
+    @State private var sharedLoadError: String?
+    /// Shares already saved into a local `Recipe` this session, so their row
+    /// can show a checkmark instead of a "Save to My Recipes" button that
+    /// would otherwise happily create a second local copy on a second tap.
+    @State private var savedShareIDs: Set<String> = []
+    @State private var showSignIn = false
+
     enum Section: String, CaseIterable, Identifiable {
         case mine = "My Recipes"
         case favorites = "Favorites"
         case library = "Library"
+        case shared = "Shared"
         var id: String { rawValue }
     }
 
@@ -34,6 +54,7 @@ struct RecipesHomeView: View {
         case .mine: base = myRecipes
         case .favorites: base = myRecipes.filter { $0.isFavorite }
         case .library: base = libraryRecipes
+        case .shared: base = [] // Rendered separately — see `sharedSectionContent`.
         }
         if !searchText.isEmpty {
             base = base.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
@@ -54,34 +75,38 @@ struct RecipesHomeView: View {
             .padding(.top, 8)
 
             List {
-                if displayedRecipes.isEmpty {
-                    ContentUnavailableView(
-                        emptyStateTitle,
-                        systemImage: section == .favorites ? "heart" : "book.closed",
-                        description: Text(emptyStateDescription)
-                    )
-                }
-                if section == .library {
-                    ForEach(displayedRecipes) { recipe in
-                        recipeCard(recipe)
-                    }
+                if section == .shared {
+                    sharedSectionContent
                 } else {
-                    // Swipe-to-delete only makes sense for "mine"/"favorites"
-                    // — a Library recipe the user hasn't saved isn't theirs
-                    // to delete, so the row wouldn't do anything if swiped
-                    // there.
-                    ForEach(displayedRecipes) { recipe in
-                        recipeCard(recipe)
+                    if displayedRecipes.isEmpty {
+                        ContentUnavailableView(
+                            emptyStateTitle,
+                            systemImage: section == .favorites ? "heart" : "book.closed",
+                            description: Text(emptyStateDescription)
+                        )
                     }
-                    .onDelete { offsets in
-                        for index in offsets {
-                            let recipe = displayedRecipes[index]
-                            if recipe.source == .library {
-                                // "Un-save" a library recipe instead of deleting the shared copy.
-                                recipe.isSavedToCollection = false
-                            } else {
-                                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-                                modelContext.delete(recipe)
+                    if section == .library {
+                        ForEach(displayedRecipes) { recipe in
+                            recipeCard(recipe)
+                        }
+                    } else {
+                        // Swipe-to-delete only makes sense for "mine"/"favorites"
+                        // — a Library recipe the user hasn't saved isn't theirs
+                        // to delete, so the row wouldn't do anything if swiped
+                        // there.
+                        ForEach(displayedRecipes) { recipe in
+                            recipeCard(recipe)
+                        }
+                        .onDelete { offsets in
+                            for index in offsets {
+                                let recipe = displayedRecipes[index]
+                                if recipe.source == .library {
+                                    // "Un-save" a library recipe instead of deleting the shared copy.
+                                    recipe.isSavedToCollection = false
+                                } else {
+                                    CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+                                    modelContext.delete(recipe)
+                                }
                             }
                         }
                     }
@@ -139,6 +164,103 @@ struct RecipesHomeView: View {
         .sheet(item: $quickAddRecipe) { recipe in
             QuickAddToPlanSheet(recipe: recipe)
         }
+        .sheet(isPresented: $showSignIn) {
+            AccountSignInView()
+        }
+        .onChange(of: section) { _, newValue in
+            if newValue == .shared {
+                Task { await loadSharedRecipes() }
+            }
+        }
+    }
+
+    // MARK: Shared section
+
+    /// The "Shared" segment's content — separate from the `displayedRecipes`
+    /// `ForEach` above since this isn't rendering local `Recipe` rows at
+    /// all, just whatever `GET /recipe-library/shared-with-me` last
+    /// returned.
+    @ViewBuilder
+    private var sharedSectionContent: some View {
+        if !accountSession.isSignedIn {
+            ContentUnavailableView(
+                "Sign In to See Shared Recipes",
+                systemImage: "person.2",
+                description: Text("Friends and groups can share recipes with you once you're signed in.")
+            )
+            Button("Sign In") { showSignIn = true }
+        } else if isLoadingShared {
+            ProgressView()
+        } else if let sharedLoadError {
+            Text(sharedLoadError).foregroundStyle(.red)
+            Button("Retry") { Task { await loadSharedRecipes() } }
+        } else if sharedRecipes.isEmpty {
+            ContentUnavailableView(
+                "No Shared Recipes Yet",
+                systemImage: "square.and.arrow.up",
+                description: Text("Recipes friends or groups share with you will show up here.")
+            )
+        } else {
+            ForEach(sharedRecipes) { entry in
+                sharedRecipeRow(entry)
+            }
+        }
+    }
+
+    private func sharedRecipeRow(_ entry: SharedRecipeEntry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(entry.title).font(.brandHeadline)
+            Text(entry.sharedByCaption)
+                .font(.brandCaption)
+                .foregroundStyle(.secondary)
+            if savedShareIDs.contains(entry.id) {
+                Label("Saved to My Recipes", systemImage: "checkmark.circle.fill")
+                    .font(.brandCaption)
+                    .foregroundStyle(.green)
+            } else {
+                Button("Save to My Recipes") { saveSharedRecipe(entry) }
+                    .font(.brandCaption)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func loadSharedRecipes() async {
+        isLoadingShared = true
+        sharedLoadError = nil
+        defer { isLoadingShared = false }
+        do {
+            sharedRecipes = try await AccountsAPIClient.getSharedRecipes()
+        } catch {
+            sharedLoadError = error.localizedDescription
+        }
+    }
+
+    /// Materializes a shared recipe into a local `Recipe` — the "Shared"
+    /// counterpart to `RecipeDetailView`'s existing Library-save path
+    /// (`recipe.isSavedToCollection = true`), except a shared recipe has no
+    /// pre-existing local row to flip that flag on (see
+    /// `RecipeSource.shared`'s doc comment), so this creates one instead,
+    /// already saved (`isSavedToCollection` defaults to `true`) and tagged
+    /// with the backend id it came from so re-sharing it later reuses that
+    /// same backend recipe rather than creating a duplicate.
+    private func saveSharedRecipe(_ entry: SharedRecipeEntry) {
+        let recipe = Recipe(
+            title: entry.title,
+            source: .shared,
+            summary: entry.summary,
+            instructions: entry.instructions,
+            ingredients: entry.ingredients.map {
+                RecipeIngredientEntry(name: $0.name, quantity: $0.quantity, unit: $0.unit)
+            },
+            servings: entry.servings ?? 4,
+            prepMinutes: entry.prepMinutes ?? 0,
+            cookMinutes: entry.cookMinutes ?? 0,
+            tags: ["Shared"],
+            backendRecipeID: entry.recipeID
+        )
+        modelContext.insert(recipe)
+        savedShareIDs.insert(entry.id)
     }
 
     private var emptyStateTitle: String {
@@ -146,6 +268,7 @@ struct RecipesHomeView: View {
         case .mine: return "No Recipes Yet"
         case .favorites: return "No Favorites Yet"
         case .library: return "Library is Empty"
+        case .shared: return "No Shared Recipes Yet" // Unused — see `sharedSectionContent`.
         }
     }
 
@@ -154,6 +277,7 @@ struct RecipesHomeView: View {
         case .mine: return "Add your own recipe or import one from a link."
         case .favorites: return "Tap the heart on a recipe to save it here."
         case .library: return "Check back soon for more built-in recipes."
+        case .shared: return "" // Unused — see `sharedSectionContent`.
         }
     }
 
@@ -225,6 +349,9 @@ private struct RecipeCardContent: View {
                     Label("serves \(recipe.servings)", systemImage: "person.2")
                     if recipe.source == .imported {
                         Label("imported", systemImage: "link")
+                    }
+                    if recipe.source == .shared {
+                        Label("shared", systemImage: "person.2")
                     }
                 }
                 .font(.brandCaption)

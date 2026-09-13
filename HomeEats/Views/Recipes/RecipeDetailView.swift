@@ -5,7 +5,15 @@ struct RecipeDetailView: View {
     @Bindable var recipe: Recipe
 
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var accountSession: AccountSession
     @State private var showEditor = false
+    @State private var showShareSheet = false
+    @State private var showSignIn = false
+    /// Set right before presenting the sign-in sheet from `shareTapped()`,
+    /// so the `onDismiss:` below knows to continue straight into sharing
+    /// once sign-in succeeds, rather than just closing back to this screen
+    /// having done nothing — see `shareTapped()`'s own doc comment.
+    @State private var pendingShareAfterSignIn = false
 
     var body: some View {
         ScrollView {
@@ -74,6 +82,13 @@ struct RecipeDetailView: View {
                 .tint(.brandTerracotta)
             }
             ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    shareTapped()
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 if recipe.source == .library && !recipe.isSavedToCollection {
                     Button("Save") {
                         recipe.isSavedToCollection = true
@@ -85,6 +100,37 @@ struct RecipeDetailView: View {
         }
         .sheet(isPresented: $showEditor) {
             RecipeEditorView(existing: recipe)
+        }
+        .sheet(isPresented: $showShareSheet) {
+            RecipeSharePickerSheet(recipe: recipe)
+        }
+        .sheet(isPresented: $showSignIn, onDismiss: {
+            // Only continue into sharing if sign-in actually succeeded —
+            // dismissing without completing it (tapping Cancel) should just
+            // land back here having done nothing, not force the share
+            // sheet open anyway.
+            if pendingShareAfterSignIn && accountSession.isSignedIn {
+                showShareSheet = true
+            }
+            pendingShareAfterSignIn = false
+        }) {
+            AccountSignInView()
+        }
+    }
+
+    /// Sharing is one of the few things in this app that requires being
+    /// signed in (see `AccountSession`'s doc comment on why almost nothing
+    /// else does) — someone tapping Share while signed out is prompted
+    /// straight into sign-in rather than the button just failing or being
+    /// disabled with no explanation, then dropped straight into the share
+    /// picker the moment that succeeds so they don't have to tap Share
+    /// again.
+    private func shareTapped() {
+        if accountSession.isSignedIn {
+            showShareSheet = true
+        } else {
+            pendingShareAfterSignIn = true
+            showSignIn = true
         }
     }
 

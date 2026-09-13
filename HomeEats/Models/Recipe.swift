@@ -8,6 +8,20 @@ enum RecipeSource: String, Codable {
     case imported
     /// Came from the app's built-in recipe library.
     case library
+    /// Saved from another Home Eats user's "Shared" recipe (a friend or a
+    /// group shared it via the backend's recipe-sharing API — see
+    /// `AccountsAPIClient`/`RecipesHomeView`'s "Shared" section). Reuses the
+    /// exact same "browseable, not yet mine until saved" idea `.library`
+    /// already established rather than inventing a second mechanism — the
+    /// difference is *where* the not-yet-saved copy lives: a `.library`
+    /// recipe already exists locally with `isSavedToCollection == false`,
+    /// while a `.shared` recipe isn't a local `Recipe` row at all until the
+    /// moment it's saved (friends/groups are fetched live from the backend
+    /// per that feature's design, not mirrored into SwiftData) — so a
+    /// `.shared` recipe is only ever created already-saved
+    /// (`isSavedToCollection` defaults to `true`, same as `.manual`/
+    /// `.imported`).
+    case shared
 }
 
 @Model
@@ -46,6 +60,22 @@ final class Recipe {
     var createdAt: Date
     /// The family member who added/imported this recipe, if known.
     var createdByMemberID: UUID?
+    /// This recipe's id on the backend's recipe-sharing API
+    /// (`POST /recipe-library`'s response — see `AccountsAPIClient`), once
+    /// it's ever been shared. `nil` for the overwhelming majority of
+    /// recipes, which stay purely local/on-device forever per this app's
+    /// local-first design — sharing is opt-in and per-recipe, not a
+    /// big-bang migration of existing data to the backend (see
+    /// `RecipeSharePickerSheet`, which sets this the first time a recipe is
+    /// shared). Kept around after that first share so re-sharing or editing
+    /// later reuses the same backend row instead of creating a duplicate
+    /// one on every share. Optional with no explicit default needed for
+    /// migration (a `String?` already defaults to `nil`) — same reasoning
+    /// as `sourceURL`/`imageName` above; unlike `layoutOrderIndex` on
+    /// `GroceryItem` (a non-optional `Double` that needs an explicit
+    /// `= 0` for SwiftData's lightweight migration to apply this field to
+    /// existing rows), an optional needs no such default.
+    var backendRecipeID: String?
 
     init(
         id: UUID = UUID(),
@@ -64,7 +94,8 @@ final class Recipe {
         photoData: Data? = nil,
         isFavorite: Bool = false,
         createdAt: Date = .now,
-        createdByMemberID: UUID? = nil
+        createdByMemberID: UUID? = nil,
+        backendRecipeID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -83,6 +114,7 @@ final class Recipe {
         self.isFavorite = isFavorite
         self.createdAt = createdAt
         self.createdByMemberID = createdByMemberID
+        self.backendRecipeID = backendRecipeID
     }
 
     var totalMinutes: Int { prepMinutes + cookMinutes }

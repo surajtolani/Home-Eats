@@ -6,6 +6,13 @@ struct HomeEatsApp: App {
     let modelContainer: ModelContainer
     @StateObject private var reminderRouter = PlanningReminderRouter()
     @StateObject private var activeUserSession = ActiveUserSession()
+    /// The opt-in accounts/friends/groups/sharing session — see its own doc
+    /// comment for why this is deliberately separate from
+    /// `activeUserSession` above. Injected into the environment the same
+    /// way, so any view under `RootView` (including sheets presented from
+    /// deep inside it, like `AccountSignInView` or `RecipeSharePickerSheet`)
+    /// can read it with `@EnvironmentObject`.
+    @StateObject private var accountSession = AccountSession()
 
     init() {
         // Nav bar / tab bar chrome is drawn by UIKit, which SwiftUI's
@@ -88,6 +95,7 @@ struct HomeEatsApp: App {
                 .preferredColorScheme(.light)
                 .environmentObject(reminderRouter)
                 .environmentObject(activeUserSession)
+                .environmentObject(accountSession)
                 .task {
                     reminderRouter.install()
                     await scheduleReminderIfConfigured()

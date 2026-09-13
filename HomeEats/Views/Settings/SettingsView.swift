@@ -3,12 +3,14 @@ import SwiftData
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var accountSession: AccountSession
     @Query private var settingsRows: [AppSettings]
     @Query(sort: \GroceryReminder.createdAt) private var groceryReminders: [GroceryReminder]
 
     @State private var reminderTime: Date = Calendar.current.date(
         from: DateComponents(hour: 18, minute: 0)
     ) ?? .now
+    @State private var showSignIn = false
 
     // `settings` is read several times per `body` pass (the toggle, the day
     // picker, the reminder-time handler...). Inserting a new row from inside
@@ -33,6 +35,58 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            // Account sign-in is entirely opt-in — see AccountSession's doc
+            // comment and backend/README.md's "Accounts, friends, and
+            // groups" section. Nothing else in this app has ever required
+            // signing in, and nothing outside recipe-sharing does now
+            // either; this section is just the front door for the people
+            // who *do* want to add friends, build groups, or share a
+            // recipe with someone.
+            Section("Account") {
+                if accountSession.isSignedIn, let user = accountSession.currentUser {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(user.displayNameOrPhoneNumber)
+                            .font(.brandHeadline)
+                        // Only show the phone number as a subtitle when
+                        // there's an actual name above it to distinguish it
+                        // from — otherwise `displayNameOrPhoneNumber`
+                        // already fell back to showing it up top, and
+                        // repeating it here would just be the same string
+                        // twice.
+                        if user.displayName?.isEmpty == false {
+                            Text(user.phoneNumber)
+                                .font(.brandCaption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    NavigationLink {
+                        FriendsListView()
+                    } label: {
+                        Label("Friends", systemImage: "person.2")
+                    }
+                    NavigationLink {
+                        GroupsListView()
+                    } label: {
+                        Label("Groups", systemImage: "person.3")
+                    }
+                    Button("Sign Out", role: .destructive) {
+                        accountSession.signOut()
+                    }
+                } else if accountSession.isSignedIn {
+                    // A token is stored but GET /me hasn't resolved yet
+                    // (see AccountSession.init) — a brief state right after
+                    // launch, not worth its own error handling.
+                    HStack {
+                        ProgressView()
+                        Text("Loading your account…").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Sign In") { showSignIn = true }
+                }
+            } footer: {
+                Text("Sign in with your phone number to add friends, build groups, and share recipes with them. Everything else in Home Eats works fully offline without an account.")
+            }
+
             Section("Household") {
                 TextField("Household name", text: Binding(
                     get: { settings.householdName },
@@ -119,6 +173,9 @@ struct SettingsView: View {
             reminderTime = Calendar.current.date(
                 from: DateComponents(hour: settings.reminderHour, minute: settings.reminderMinute)
             ) ?? .now
+        }
+        .sheet(isPresented: $showSignIn) {
+            AccountSignInView()
         }
     }
 
