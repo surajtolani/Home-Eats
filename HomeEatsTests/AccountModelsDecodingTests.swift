@@ -25,14 +25,25 @@ final class AccountModelsDecodingTests: XCTestCase {
 
     // MARK: - Auth / profile (routes/auth.js, routes/me.js)
 
-    func testVerifyCodeResponseDecodesWithNoDisplayNameOrCreatedAt() throws {
-        // Exactly routes/auth.js's POST /verify-code success body — note
-        // there's no `createdAt` key at all here, unlike GET /me below.
+    func testVerifyCodeResponseDecodesWithNoDisplayNameOrProfileFields() throws {
+        // Exactly routes/auth.js's POST /verify-code success body — this
+        // used to omit `createdAt` entirely (a smaller, ad-hoc shape from
+        // before profile fields existed), but now returns the same full
+        // `selfProfile` shape GET/PATCH /me do (see auth.js's doc comment on
+        // why: every endpoint that hands back a "self" user object should
+        // agree on one shape). `firstName`/`lastName`/`city`/`country` are
+        // all `null` here — the common case right after a brand-new
+        // account's very first sign-in, before the post-sign-up name step
+        // has run at all.
         struct VerifyResponseFixture: Decodable { let token: String; let user: AccountUser }
         let json = """
         {
           "token": "eyJhbGciOiJIUzI1NiJ9.fake.token",
-          "user": { "id": "u1", "phoneNumber": "+14155551234", "displayName": null }
+          "user": {
+            "id": "u1", "phoneNumber": "+14155551234", "displayName": null,
+            "firstName": null, "lastName": null, "city": null, "country": null,
+            "createdAt": "2024-01-15T10:30:00.123Z"
+          }
         }
         """
         let response = try decoder.decode(VerifyResponseFixture.self, from: data(json))
@@ -40,31 +51,41 @@ final class AccountModelsDecodingTests: XCTestCase {
         XCTAssertEqual(response.user.id, "u1")
         XCTAssertEqual(response.user.phoneNumber, "+14155551234")
         XCTAssertNil(response.user.displayName)
-        XCTAssertNil(response.user.createdAt)
+        XCTAssertNil(response.user.firstName)
+        XCTAssertNil(response.user.fullName)
         XCTAssertEqual(response.user.displayNameOrPhoneNumber, "+14155551234")
     }
 
-    func testGetMeResponseDecodesWithFractionalSecondsCreatedAt() throws {
+    func testGetMeResponseDecodesWithFractionalSecondsCreatedAtAndProfileFields() throws {
         // routes/me.js's GET / includes createdAt, serialized by Node's
         // default Date -> JSON as ISO-8601 WITH milliseconds — the exact
         // shape `AccountsAPIClient.decoder`'s custom date strategy exists
         // to handle (see its own doc comment on why plain `.iso8601`
-        // wouldn't parse this).
+        // wouldn't parse this). Also covers the full profile-fields case —
+        // an account that's completed the post-sign-up name step and set a
+        // city/country via `EditProfileView`.
         struct MeResponseFixture: Decodable { let user: AccountUser }
         let json = """
         {
           "user": {
             "id": "u1",
             "phoneNumber": "+14155551234",
-            "displayName": "Suraj",
+            "displayName": "Suraj Tolani",
+            "firstName": "Suraj",
+            "lastName": "Tolani",
+            "city": "Greenwich",
+            "country": "United States",
             "createdAt": "2024-01-15T10:30:00.123Z"
           }
         }
         """
         let response = try decoder.decode(MeResponseFixture.self, from: data(json))
-        XCTAssertEqual(response.user.displayName, "Suraj")
-        XCTAssertEqual(response.user.displayNameOrPhoneNumber, "Suraj")
-        let createdAt = try XCTUnwrap(response.user.createdAt)
+        XCTAssertEqual(response.user.displayName, "Suraj Tolani")
+        XCTAssertEqual(response.user.displayNameOrPhoneNumber, "Suraj Tolani")
+        XCTAssertEqual(response.user.fullName, "Suraj Tolani")
+        XCTAssertEqual(response.user.city, "Greenwich")
+        XCTAssertEqual(response.user.country, "United States")
+        let createdAt = response.user.createdAt
         XCTAssertEqual(Calendar(identifier: .gregorian).component(.year, from: createdAt), 2024)
     }
 

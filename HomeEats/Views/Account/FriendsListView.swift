@@ -14,13 +14,16 @@ struct FriendsListView: View {
     @State private var errorMessage: String?
 
     @State private var showAddFriend = false
-    /// Set only when a pick from `ContactOrPhoneNumberPickerView` fails
-    /// (already friends, already pending, ...) — surfaced as an `.alert`
-    /// rather than routed through `errorMessage` below, since that property
-    /// replaces this entire list's content the moment it's set (see the
-    /// `if/else if` chain in `body`) and a failed add shouldn't blank out
-    /// the friends someone can already see.
-    @State private var addFriendFailure: String?
+    /// Any failure from an action taken *after* the list has already loaded
+    /// once — a failed add-friend pick, or a failed accept/decline — shown
+    /// as a non-blocking `.alert` instead of through `errorMessage` below.
+    /// `errorMessage` replaces this entire list's content the moment it's
+    /// set (see the `if/else if` chain in `body`), which is the right
+    /// behavior for "the very first load failed, there's nothing to show
+    /// yet" but would otherwise blank out a friends list someone can
+    /// already see just because one accept/decline tap or one add-friend
+    /// pick happened to fail.
+    @State private var actionFailure: String?
 
     var body: some View {
         List {
@@ -98,12 +101,12 @@ struct FriendsListView: View {
             ContactOrPhoneNumberPickerView(onPick: handlePicked)
         }
         .alert(
-            "Couldn't Add Friend",
+            "Something Went Wrong",
             isPresented: Binding(
-                get: { addFriendFailure != nil },
-                set: { isPresented in if !isPresented { addFriendFailure = nil } }
+                get: { actionFailure != nil },
+                set: { isPresented in if !isPresented { actionFailure = nil } }
             ),
-            presenting: addFriendFailure
+            presenting: actionFailure
         ) { _ in
             Button("OK") {}
         } message: { message in
@@ -123,7 +126,7 @@ struct FriendsListView: View {
                 try await AccountsAPIClient.sendFriendRequest(phoneNumber: picked.phoneNumber)
                 await load()
             } catch {
-                addFriendFailure = error.localizedDescription
+                actionFailure = error.localizedDescription
             }
         }
     }
@@ -154,10 +157,22 @@ struct FriendsListView: View {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+        // Only a *first* load's failure blanks the screen down to an error
+        // + Retry button (there's genuinely nothing else to show yet). A
+        // refresh failure (pull-to-refresh, or the re-fetch after an
+        // accept/decline/add-friend action below) with an already-loaded
+        // list on screen goes through `actionFailure`'s non-blocking alert
+        // instead, leaving whatever was already showing exactly as it was —
+        // same reasoning as `actionFailure`'s own doc comment.
+        let isFirstLoad = friendsList == nil
         do {
             friendsList = try await AccountsAPIClient.getFriends()
         } catch {
-            errorMessage = error.localizedDescription
+            if isFirstLoad {
+                errorMessage = error.localizedDescription
+            } else {
+                actionFailure = error.localizedDescription
+            }
         }
     }
 
@@ -170,7 +185,10 @@ struct FriendsListView: View {
             }
             await load()
         } catch {
-            errorMessage = error.localizedDescription
+            // Not `errorMessage` — see `actionFailure`'s doc comment. A
+            // failed accept/decline tap shouldn't blank out the whole list
+            // the user was just looking at.
+            actionFailure = error.localizedDescription
         }
     }
 }
