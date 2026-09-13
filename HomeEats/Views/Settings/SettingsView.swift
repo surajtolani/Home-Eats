@@ -78,6 +78,11 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    NavigationLink {
+                        EditProfileView()
+                    } label: {
+                        Label("Edit Profile", systemImage: "person.crop.circle")
+                    }
                     Button("Sign Out", role: .destructive) {
                         // Signing out purges every locally-cached group-sync
                         // row unconditionally, pending or not — see

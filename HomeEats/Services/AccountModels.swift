@@ -16,16 +16,28 @@ import Foundation
 // rather than mirroring the backend's own casing verbatim.
 
 /// The caller's own account — `GET /me`'s `user`, and also what
-/// `POST /auth/verify-code` returns. `createdAt` is `nil` for the
-/// verify-code response (see routes/auth.js — that response's `user` object
-/// only ever includes `id`/`phoneNumber`/`displayName`) but present from
-/// `GET /me`/`PATCH /me`; optional here so one type can decode both instead
-/// of needing two near-identical structs.
+/// `POST /auth/verify-code` returns. Every field here is present in both
+/// responses (see routes/auth.js's `selfProfile`-matching verify-code
+/// response, added alongside these profile fields — before that, verify-code
+/// used to return a smaller ad-hoc shape, which is why `createdAt` used to
+/// be modeled as optional here; now both endpoints genuinely agree on one
+/// shape, so one non-optional type covers both with no compromise).
 struct AccountUser: Codable, Identifiable, Equatable {
     let id: String
     let phoneNumber: String
     let displayName: String?
-    let createdAt: Date?
+    /// First/last name and city/country (see routes/me.js's `selfProfile`) —
+    /// all independently optional: `firstName`/`lastName` are asked for once
+    /// at the end of sign-up (see `AccountSignInView`'s name step) but
+    /// nothing stops a still-unnamed account existing briefly in between,
+    /// and `city`/`country` are never asked for at sign-up at all (that
+    /// would add friction to first launch for no immediate payoff) — only
+    /// ever set later, if at all, via `EditProfileView`.
+    let firstName: String?
+    let lastName: String?
+    let city: String?
+    let country: String?
+    let createdAt: Date
 
     /// Same fallback idea as `PublicUser.displayNameOrPhoneNumber` — kept as
     /// a separate property on this separate type rather than a shared
@@ -37,6 +49,17 @@ struct AccountUser: Codable, Identifiable, Equatable {
     var displayNameOrPhoneNumber: String {
         if let displayName, !displayName.isEmpty { return displayName }
         return phoneNumber
+    }
+
+    /// `firstName` + `lastName` joined with a space, trimmed — `nil` if
+    /// neither is set. Used to build `displayName` automatically from the
+    /// sign-up name step rather than asking for a separate "display name"
+    /// on top of the two fields it's already collecting (see
+    /// `AccountSignInView.saveName()`).
+    var fullName: String? {
+        let joined = [firstName, lastName].compactMap { $0 }.joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return joined.isEmpty ? nil : joined
     }
 }
 

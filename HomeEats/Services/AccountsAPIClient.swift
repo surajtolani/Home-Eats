@@ -258,15 +258,33 @@ extension AccountsAPIClient {
         return response.user
     }
 
-    /// Sets the caller's display name — used once by the post-sign-in name
-    /// prompt (`AccountSignInView`), and available for a future profile
-    /// editor.
-    static func updateDisplayName(_ displayName: String) async throws -> AccountUser {
+    /// A partial `PATCH /me` — every parameter is independently optional and
+    /// only the ones actually passed are sent, matching the backend's own
+    /// "omitted key means leave it alone" semantics (see routes/me.js's
+    /// `UpdateMeSchema`) rather than always sending every field (which would
+    /// silently overwrite anything not passed with whatever stale value the
+    /// caller happened to have). Used by `AccountSignInView`'s post-sign-up
+    /// name step (`displayName`+`firstName`+`lastName` together) and by
+    /// `EditProfileView` (any subset of all five).
+    ///
+    /// Callable with zero arguments would build an empty `PATCH` body the
+    /// backend's own `.refine()` rejects with a 400 — callers are expected
+    /// to pass at least one field, same contract the backend documents.
+    static func updateProfile(
+        displayName: String? = nil,
+        firstName: String? = nil,
+        lastName: String? = nil,
+        city: String? = nil,
+        country: String? = nil
+    ) async throws -> AccountUser {
         struct Response: Decodable { let user: AccountUser }
-        let response: Response = try await send(
-            "PATCH", path: "me",
-            body: ["displayName": displayName]
-        )
+        var body: [String: Any] = [:]
+        if let displayName { body["displayName"] = displayName }
+        if let firstName { body["firstName"] = firstName }
+        if let lastName { body["lastName"] = lastName }
+        if let city { body["city"] = city }
+        if let country { body["country"] = country }
+        let response: Response = try await send("PATCH", path: "me", body: body)
         return response.user
     }
 }

@@ -50,7 +50,8 @@ struct AccountSignInView: View {
     /// fallback.
     @State private var phoneInput = ""
     @State private var codeInput = ""
-    @State private var nameInput = ""
+    @State private var firstNameInput = ""
+    @State private var lastNameInput = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
     /// The phone number actually sent to the backend, normalized to E.164 —
@@ -78,7 +79,8 @@ struct AccountSignInView: View {
         codeInput.trimmingCharacters(in: .whitespaces).count >= 4
     }
     private var canSaveName: Bool {
-        !nameInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !firstNameInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !lastNameInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -256,10 +258,12 @@ struct AccountSignInView: View {
     private var nameStep: some View {
         Group {
             Section {
-                TextField("Display name", text: $nameInput)
-                    .textContentType(.name)
+                TextField("First name", text: $firstNameInput)
+                    .textContentType(.givenName)
+                TextField("Last name", text: $lastNameInput)
+                    .textContentType(.familyName)
             } footer: {
-                Text("Shown to friends and group members when you share recipes with them.")
+                Text("Shown to friends and group members when you share recipes or invite them. You can add your city and country later from Settings.")
             }
             .disabled(isLoading)
 
@@ -314,12 +318,12 @@ struct AccountSignInView: View {
                 code: codeInput.trimmingCharacters(in: .whitespaces)
             )
             accountSession.completeSignIn(token: token, user: user)
-            if let displayName = user.displayName, !displayName.isEmpty {
+            if user.fullName != nil {
                 dismiss()
             } else {
                 // Brand new (or never-named) account — ask once before
-                // dismissing, since a display name is how this person will
-                // show up to friends/groups once they start sharing.
+                // dismissing, since a name is how this person will show up
+                // to friends/groups once they start sharing.
                 step = .name
             }
         } catch {
@@ -331,9 +335,18 @@ struct AccountSignInView: View {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+        let firstName = firstNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lastName = lastNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            let updated = try await AccountsAPIClient.updateDisplayName(
-                nameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            // `displayName` is set alongside `firstName`/`lastName` here
+            // (rather than being asked for as its own separate field) so
+            // every existing "shown to friends" reader
+            // (`displayNameOrPhoneNumber`) keeps working unchanged — see
+            // `AccountUser.fullName`'s doc comment.
+            let updated = try await AccountsAPIClient.updateProfile(
+                displayName: "\(firstName) \(lastName)",
+                firstName: firstName,
+                lastName: lastName
             )
             accountSession.updateCurrentUser(updated)
             dismiss()
