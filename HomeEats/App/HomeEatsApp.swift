@@ -50,7 +50,14 @@ struct HomeEatsApp: App {
             // fields on those — see each model's own doc comment for why.
             GroupPlannedMeal.self,
             GroupMealSuggestion.self,
-            GroupSharedGroceryItem.self
+            GroupSharedGroceryItem.self,
+            // Phase 4 continued — group-scoped "My Layout" aisles, staples,
+            // and grocery history (see HomeEats/Models/GroupGroceryLayout.swift),
+            // the group counterparts of the personal StoreAisle/StapleItem/
+            // HistoricalGroceryItem models above.
+            GroupStoreAisle.self,
+            GroupStapleItem.self,
+            GroupGroceryHistoryEntry.self
         ])
         // Local-first storage per spec: everything lives on-device by
         // default. `cloudKitDatabase: .none` keeps that explicit; flipping

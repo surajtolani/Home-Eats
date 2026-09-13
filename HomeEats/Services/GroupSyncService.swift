@@ -200,6 +200,11 @@ enum GroupSyncService {
         allSucceeded = await pushPlannedMeals(groupID: groupID, modelContext: modelContext) && allSucceeded
         allSucceeded = await pushSuggestions(groupID: groupID, modelContext: modelContext) && allSucceeded
         allSucceeded = await pushGroceryItems(groupID: groupID, modelContext: modelContext) && allSucceeded
+        // Phase 4 — "My Layout" aisles and staples. Grocery history has no
+        // push counterpart at all (see `reconcileGroceryHistory`'s own doc
+        // comment: it's a read-only, server-populated catalog).
+        allSucceeded = await pushAisles(groupID: groupID, modelContext: modelContext) && allSucceeded
+        allSucceeded = await pushStaples(groupID: groupID, modelContext: modelContext) && allSucceeded
         try? modelContext.save()
         return allSucceeded
     }
@@ -373,30 +378,64 @@ enum GroupSyncService {
                 // method's doc comment.
                 let dispatchedIsChecked = row.isChecked
                 let dispatchedOrderIndex = row.orderIndex
+                // Same race-capture idea, extended to "My Layout" placement
+                // (Phase 4): a manual aisle move made in this same in-flight
+                // window can't be sent as part of THIS create call either
+                // (`POST .../grocery` never accepts `aisleId` — see
+                // `CreateItemSchema` in routes/groupGrocery.js), so it has to
+                // be detected the same "snapshot, compare after the await"
+                // way and preserved rather than silently lost the moment
+                // `applyRemote` would otherwise mark this row `.synced`.
+                let dispatchedAisleID = row.aisleID
+                let dispatchedAisleManuallySet = row.aisleManuallySet
                 do {
                     let created = try await AccountsAPIClient.createGroupGroceryItem(
                         groupID: groupID, name: row.name, category: row.category, section: row.section,
                         quantityText: row.quantityText, orderIndex: row.orderIndex
                     )
-                    let localChangedSinceDispatch = GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+                    let checkedOrOrderChangedSinceDispatch = GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
                         dispatchedIsChecked: dispatchedIsChecked, currentIsChecked: row.isChecked,
                         dispatchedOrderIndex: dispatchedOrderIndex, currentOrderIndex: row.orderIndex
                     )
-                    applyRemote(created, to: row, preserveLocalCheckedAndOrder: localChangedSinceDispatch)
+                    let aisleChangedSinceDispatch = row.aisleID != dispatchedAisleID
+                        || row.aisleManuallySet != dispatchedAisleManuallySet
+                    applyRemote(
+                        created, to: row,
+                        preserveLocalCheckedAndOrder: checkedOrOrderChangedSinceDispatch,
+                        preserveLocalAisle: aisleChangedSinceDispatch
+                    )
                 } catch {
                     allOK = false
                 }
             case .pendingUpdate:
-                // Deliberately narrow — see `GroupSharedGroceryItem.syncState`'s
-                // doc comment for why only `isChecked`/`orderIndex` are ever
-                // queued through this offline path at all, and why a
+                // `isChecked`/`orderIndex` are always sent (see
+                // `GroupSharedGroceryItem.syncState`'s doc comment for why a
                 // manager's name/category/quantityText/section edit is
                 // handled by `editGroceryItem` below instead, never by
-                // marking a row `.pendingUpdate`.
+                // marking a row `.pendingUpdate`). `aisleId` is sent ONLY
+                // when `aisleManuallySet` is true — see
+                // `updateGroupGroceryItem`'s own doc comment on `aisleID`:
+                // sending the key at all (even explicit `null`) permanently
+                // marks the item as manually placed server-side, so a row
+                // that was only marked `.pendingUpdate` for an unrelated
+                // checkbox/reorder change must never send it by accident.
+                // Resending an already-`true` `aisleManuallySet`'s current
+                // `aisleID` on every subsequent update (even one that didn't
+                // touch placement) is deliberately idempotent-safe — same
+                // value in, same value out, no harm beyond one extra field
+                // in the request body.
                 do {
-                    let updated = try await AccountsAPIClient.updateGroupGroceryItem(
-                        groupID: groupID, id: row.id, isChecked: row.isChecked, orderIndex: row.orderIndex
-                    )
+                    let updated: RemoteGroupGroceryItem
+                    if row.aisleManuallySet {
+                        updated = try await AccountsAPIClient.updateGroupGroceryItem(
+                            groupID: groupID, id: row.id, isChecked: row.isChecked, orderIndex: row.orderIndex,
+                            aisleID: .set(row.aisleID)
+                        )
+                    } else {
+                        updated = try await AccountsAPIClient.updateGroupGroceryItem(
+                            groupID: groupID, id: row.id, isChecked: row.isChecked, orderIndex: row.orderIndex
+                        )
+                    }
                     applyRemote(updated, to: row)
                 } catch {
                     allOK = false
@@ -425,24 +464,28 @@ enum GroupSyncService {
     /// `.pendingUpdate` instead of `.synced`, so a local change made while
     /// this row's create call was still in flight isn't clobbered — the
     /// row's next push then sends those corrected values via the normal
-    /// `updateGroupGroceryItem` path. Every other caller (a `.pendingUpdate`
-    /// push's own response, and `reconcileGroceryItems`'s pull-side upsert,
-    /// both of which are never racing a create) leaves this at its default
-    /// `false`, i.e. today's existing "the response is authoritative"
-    /// behavior, unchanged.
-    // Not `private`, and explicitly `nonisolated` — unlike every other
-    // helper in this file, this is called directly by `HomeEatsTests` (see
-    // `GroupGroceryItemCreateRaceTests`), from plain synchronous test
-    // methods with no actor context of their own, so the exact state
-    // transition a create response applies can be exercised without a live
-    // network call or a `ModelContext` — same reasoning as
-    // `ReconciliationAction.decide` being a standalone testable function.
-    // Safe to opt out of this enum's `@MainActor` isolation here because
-    // this method only ever mutates the single `row` instance it's handed
-    // — it touches no other actor-isolated state of its own.
+    /// `updateGroupGroceryItem` path. `preserveLocalAisle` (Phase 4) is the
+    /// "My Layout" placement counterpart of the same idea — same race, same
+    /// fix, see that same `.pendingCreate` case for the one caller that ever
+    /// passes it `true`. Every other caller (a `.pendingUpdate` push's own
+    /// response, and `reconcileGroceryItems`'s pull-side upsert, neither of
+    /// which race a create) leaves both flags at their default `false`, i.e.
+    /// today's existing "the response is authoritative" behavior, unchanged.
+    ///
+    /// Not `private`, and explicitly `nonisolated` — unlike every other
+    /// helper in this file, this is called directly by `HomeEatsTests` (see
+    /// `GroupGroceryItemCreateRaceTests`), from plain synchronous test
+    /// methods with no actor context of their own, so the exact state
+    /// transition a create response applies can be exercised without a live
+    /// network call or a `ModelContext` — same reasoning as
+    /// `ReconciliationAction.decide` being a standalone testable function.
+    /// Safe to opt out of this enum's `@MainActor` isolation here because
+    /// this method only ever mutates the single `row` instance it's handed
+    /// — it touches no other actor-isolated state of its own.
     nonisolated static func applyRemote(
         _ remote: RemoteGroupGroceryItem, to row: GroupSharedGroceryItem,
-        preserveLocalCheckedAndOrder: Bool = false
+        preserveLocalCheckedAndOrder: Bool = false,
+        preserveLocalAisle: Bool = false
     ) {
         row.id = remote.id
         row.name = remote.name
@@ -453,9 +496,13 @@ enum GroupSyncService {
             row.isChecked = remote.isChecked
             row.orderIndex = remote.orderIndex
         }
+        if !preserveLocalAisle {
+            row.aisleID = remote.aisleID
+            row.aisleManuallySet = remote.aisleManuallySet
+        }
         row.addedByUserID = remote.addedByUserID
         row.serverUpdatedAt = remote.updatedAt
-        row.syncState = preserveLocalCheckedAndOrder ? .pendingUpdate : .synced
+        row.syncState = (preserveLocalCheckedAndOrder || preserveLocalAisle) ? .pendingUpdate : .synced
     }
 
     // MARK: - Pull + reconcile
@@ -469,12 +516,31 @@ enum GroupSyncService {
     private static func pull(groupID: String, modelContext: ModelContext) async -> Bool {
         async let mealPlanResult = try? AccountsAPIClient.getGroupMealPlan(groupID: groupID)
         async let groceryResult = try? AccountsAPIClient.getGroupGroceryList(groupID: groupID)
-        let (mealPlan, grocery) = await (mealPlanResult, groceryResult)
-        guard let mealPlan, let grocery else { return false }
+        // Phase 4 — "My Layout" aisles, staples, and grocery history. Fetched
+        // every sync cycle (not only when their screens happen to be on
+        // screen), same "small, household-scale, low-traffic" reasoning the
+        // rest of this file's periodic-resync design already accepts — and,
+        // for aisles specifically, load-bearing: `getGroupGroceryAisles` is
+        // also what lazily seeds a group's ten starter aisles the first time
+        // it's ever called (see that method's own doc comment) — calling it
+        // here, on every sync, means those starter aisles are already seeded
+        // and synced locally well before someone first switches "My Layout"
+        // on, rather than "My Layout" opening to an empty/all-Unsorted list
+        // for the one sync cycle it would otherwise take to catch up.
+        async let aislesResult = try? AccountsAPIClient.getGroupGroceryAisles(groupID: groupID)
+        async let staplesResult = try? AccountsAPIClient.getGroupGroceryStaples(groupID: groupID)
+        async let historyResult = try? AccountsAPIClient.getGroupGroceryHistory(groupID: groupID)
+        let (mealPlan, grocery, aisles, staples, history) = await (
+            mealPlanResult, groceryResult, aislesResult, staplesResult, historyResult
+        )
+        guard let mealPlan, let grocery, let aisles, let staples, let history else { return false }
 
         await reconcilePlannedMeals(remote: mealPlan.plannedMeals, groupID: groupID, modelContext: modelContext)
         await reconcileSuggestions(remote: mealPlan.suggestions, groupID: groupID, modelContext: modelContext)
         reconcileGroceryItems(remote: grocery.items, groupID: groupID, modelContext: modelContext)
+        reconcileAisles(remote: aisles.aisles, groupID: groupID, modelContext: modelContext)
+        reconcileStaples(remote: staples.staples, groupID: groupID, modelContext: modelContext)
+        reconcileGroceryHistory(remote: history.items, groupID: groupID, modelContext: modelContext)
         try? modelContext.save()
         return true
     }
@@ -603,7 +669,8 @@ enum GroupSyncService {
                 let item = GroupSharedGroceryItem(
                     id: remoteItem.id, groupID: groupID, name: remoteItem.name, category: remoteItem.category.localCategory,
                     section: remoteItem.section, quantityText: remoteItem.quantityText, isChecked: remoteItem.isChecked,
-                    orderIndex: remoteItem.orderIndex, addedByUserID: remoteItem.addedByUserID, createdAt: remoteItem.createdAt,
+                    orderIndex: remoteItem.orderIndex, aisleID: remoteItem.aisleID, aisleManuallySet: remoteItem.aisleManuallySet,
+                    addedByUserID: remoteItem.addedByUserID, createdAt: remoteItem.createdAt,
                     syncState: .synced, serverUpdatedAt: remoteItem.updatedAt
                 )
                 modelContext.insert(item)
@@ -614,6 +681,235 @@ enum GroupSyncService {
             if ReconciliationAction.decide(localSyncState: row.syncState, presentInPull: false) == .deleteLocal {
                 modelContext.delete(row)
             }
+        }
+    }
+
+    // MARK: - Push + pull + reconcile: "My Layout" aisles (Phase 4)
+
+    private static func localAisles(groupID: String, modelContext: ModelContext) -> [GroupStoreAisle] {
+        let descriptor = FetchDescriptor<GroupStoreAisle>(predicate: #Predicate { $0.groupID == groupID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func pushAisles(groupID: String, modelContext: ModelContext) async -> Bool {
+        var allOK = true
+        for row in localAisles(groupID: groupID, modelContext: modelContext) {
+            switch row.syncState {
+            case .synced:
+                continue
+            case .pendingCreate:
+                do {
+                    let created = try await AccountsAPIClient.createGroupGroceryAisle(groupID: groupID, name: row.name)
+                    applyRemote(created, to: row)
+                } catch {
+                    allOK = false
+                }
+            case .pendingUpdate:
+                // Always sends both `name` and `sortIndex` together, same
+                // "no per-field-dirty-tracking, just resend the row's whole
+                // current state" simplicity as `pushGroceryItems`'s
+                // `isChecked`/`orderIndex` pair — harmless to resend a field
+                // that didn't actually change, since it's still this row's
+                // own correct current value either way.
+                do {
+                    let updated = try await AccountsAPIClient.updateGroupGroceryAisle(
+                        groupID: groupID, id: row.id, name: row.name, sortIndex: row.sortIndex
+                    )
+                    applyRemote(updated, to: row)
+                } catch {
+                    allOK = false
+                }
+            case .pendingDelete:
+                if row.isLocalPlaceholderID {
+                    modelContext.delete(row)
+                    continue
+                }
+                do {
+                    try await AccountsAPIClient.deleteGroupGroceryAisle(groupID: groupID, id: row.id)
+                    modelContext.delete(row)
+                } catch {
+                    allOK = false
+                }
+            }
+        }
+        return allOK
+    }
+
+    /// Not `private`, and explicitly `nonisolated` — same "`HomeEatsTests`
+    /// calls this directly, from a plain synchronous test method with no
+    /// actor context of its own" reasoning as the grocery-item `applyRemote`
+    /// overload above (see its own doc comment); this one has no
+    /// create/dispatch race to guard against (aisles have no analogous
+    /// "checked/order changed mid-flight" concern), so it's a plain
+    /// field-mapping function, still worth unit-testing directly without a
+    /// `ModelContext`. Safe to opt out of this enum's `@MainActor` isolation
+    /// for the same reason as that overload: it only ever mutates the single
+    /// `row` instance it's handed.
+    nonisolated static func applyRemote(_ remote: RemoteGroupStoreAisle, to row: GroupStoreAisle) {
+        row.id = remote.id
+        row.name = remote.name
+        row.sortIndex = remote.sortIndex
+        row.linkedCategory = remote.linkedCategory?.localCategory
+        row.syncState = .synced
+    }
+
+    private static func reconcileAisles(remote: [RemoteGroupStoreAisle], groupID: String, modelContext: ModelContext) {
+        let localRows = localAisles(groupID: groupID, modelContext: modelContext)
+        var localByID: [String: GroupStoreAisle] = [:]
+        for row in localRows where !row.isLocalPlaceholderID { localByID[row.id] = row }
+        let remoteIDs = Set(remote.map(\.id))
+
+        for remoteAisle in remote {
+            let existing = localByID[remoteAisle.id]
+            guard ReconciliationAction.decide(localSyncState: existing?.syncState, presentInPull: true) == .upsertFromServer else { continue }
+
+            if let existing {
+                applyRemote(remoteAisle, to: existing)
+            } else {
+                modelContext.insert(GroupStoreAisle(
+                    id: remoteAisle.id, groupID: groupID, name: remoteAisle.name, sortIndex: remoteAisle.sortIndex,
+                    linkedCategory: remoteAisle.linkedCategory?.localCategory, createdAt: remoteAisle.createdAt,
+                    syncState: .synced
+                ))
+            }
+        }
+
+        for row in localRows where !row.isLocalPlaceholderID && !remoteIDs.contains(row.id) {
+            if ReconciliationAction.decide(localSyncState: row.syncState, presentInPull: false) == .deleteLocal {
+                modelContext.delete(row)
+            }
+        }
+    }
+
+    // MARK: - Push + pull + reconcile: staples (Phase 4)
+
+    private static func localStaples(groupID: String, modelContext: ModelContext) -> [GroupStapleItem] {
+        let descriptor = FetchDescriptor<GroupStapleItem>(predicate: #Predicate { $0.groupID == groupID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func pushStaples(groupID: String, modelContext: ModelContext) async -> Bool {
+        var allOK = true
+        for row in localStaples(groupID: groupID, modelContext: modelContext) {
+            switch row.syncState {
+            case .synced:
+                continue
+            case .pendingCreate:
+                do {
+                    let created = try await AccountsAPIClient.createGroupGroceryStaple(
+                        groupID: groupID, name: row.name, category: row.category, defaultQuantityText: row.defaultQuantityText
+                    )
+                    applyRemote(created, to: row)
+                } catch {
+                    allOK = false
+                }
+            case .pendingUpdate:
+                // Only ever `isActive` in practice — see
+                // `GroupStaplesManagerView` and
+                // `AccountsAPIClient.updateGroupGroceryStaple`'s own doc
+                // comment on why this app's UI never edits a staple's
+                // name/category once created (matching the local, personal
+                // `StaplesManagerView`'s own reference UI exactly).
+                do {
+                    let updated = try await AccountsAPIClient.updateGroupGroceryStaple(
+                        groupID: groupID, id: row.id, isActive: row.isActive
+                    )
+                    applyRemote(updated, to: row)
+                } catch {
+                    allOK = false
+                }
+            case .pendingDelete:
+                if row.isLocalPlaceholderID {
+                    modelContext.delete(row)
+                    continue
+                }
+                do {
+                    try await AccountsAPIClient.deleteGroupGroceryStaple(groupID: groupID, id: row.id)
+                    modelContext.delete(row)
+                } catch {
+                    allOK = false
+                }
+            }
+        }
+        return allOK
+    }
+
+    /// Not `private`, and explicitly `nonisolated` — same reasoning as the
+    /// `RemoteGroupStoreAisle` overload above.
+    nonisolated static func applyRemote(_ remote: RemoteGroupStapleItem, to row: GroupStapleItem) {
+        row.id = remote.id
+        row.name = remote.name
+        row.category = remote.category.localCategory
+        row.defaultQuantityText = remote.defaultQuantityText
+        row.isActive = remote.isActive
+        row.addedByUserID = remote.addedByUserID
+        row.syncState = .synced
+    }
+
+    private static func reconcileStaples(remote: [RemoteGroupStapleItem], groupID: String, modelContext: ModelContext) {
+        let localRows = localStaples(groupID: groupID, modelContext: modelContext)
+        var localByID: [String: GroupStapleItem] = [:]
+        for row in localRows where !row.isLocalPlaceholderID { localByID[row.id] = row }
+        let remoteIDs = Set(remote.map(\.id))
+
+        for remoteStaple in remote {
+            let existing = localByID[remoteStaple.id]
+            guard ReconciliationAction.decide(localSyncState: existing?.syncState, presentInPull: true) == .upsertFromServer else { continue }
+
+            if let existing {
+                applyRemote(remoteStaple, to: existing)
+            } else {
+                modelContext.insert(GroupStapleItem(
+                    id: remoteStaple.id, groupID: groupID, name: remoteStaple.name, category: remoteStaple.category.localCategory,
+                    defaultQuantityText: remoteStaple.defaultQuantityText, isActive: remoteStaple.isActive,
+                    addedByUserID: remoteStaple.addedByUserID, createdAt: remoteStaple.createdAt, syncState: .synced
+                ))
+            }
+        }
+
+        for row in localRows where !row.isLocalPlaceholderID && !remoteIDs.contains(row.id) {
+            if ReconciliationAction.decide(localSyncState: row.syncState, presentInPull: false) == .deleteLocal {
+                modelContext.delete(row)
+            }
+        }
+    }
+
+    // MARK: - Pull + reconcile: grocery history (Phase 4, read-only)
+
+    private static func localGroceryHistory(groupID: String, modelContext: ModelContext) -> [GroupGroceryHistoryEntry] {
+        let descriptor = FetchDescriptor<GroupGroceryHistoryEntry>(predicate: #Predicate { $0.groupID == groupID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    /// Unlike every other reconcile method in this file, this one needs no
+    /// `ReconciliationAction` decision at all: `GroupGroceryHistoryEntry` has
+    /// no `syncState` and no local write path ever creates/edits/deletes one
+    /// (see that model's own doc comment) — every local row is always,
+    /// implicitly, "synced", so simply replacing this group's whole local
+    /// set with the latest pull is correct on every cycle, no conflict ever
+    /// possible.
+    private static func reconcileGroceryHistory(remote: [RemoteGroupGroceryHistoryEntry], groupID: String, modelContext: ModelContext) {
+        let localRows = localGroceryHistory(groupID: groupID, modelContext: modelContext)
+        var localByID: [String: GroupGroceryHistoryEntry] = [:]
+        for row in localRows { localByID[row.id] = row }
+
+        var remoteIDs = Set<String>()
+        for entry in remote {
+            let id = GroupGroceryHistoryEntry.makeID(groupID: groupID, name: entry.name)
+            remoteIDs.insert(id)
+            if let existing = localByID[id] {
+                existing.name = entry.name
+                existing.category = entry.category.localCategory
+                existing.addedAt = entry.addedAt
+            } else {
+                modelContext.insert(GroupGroceryHistoryEntry(
+                    groupID: groupID, name: entry.name, category: entry.category.localCategory, addedAt: entry.addedAt
+                ))
+            }
+        }
+
+        for row in localRows where !remoteIDs.contains(row.id) {
+            modelContext.delete(row)
         }
     }
 
@@ -693,6 +989,16 @@ extension GroupSyncService {
         deleteAllRows(of: GroupPlannedMeal.self, modelContext: modelContext)
         deleteAllRows(of: GroupMealSuggestion.self, modelContext: modelContext)
         deleteAllRows(of: GroupSharedGroceryItem.self, modelContext: modelContext)
+        // Phase 4 — the same shared-device/wrong-account-attribution risk
+        // this method's own doc comment describes applies identically to
+        // these three newer mirrors; `GroupGroceryHistoryEntry` has no
+        // pending state of its own to misattribute, but purging it too keeps
+        // this method's "every group-sync mirror, unconditionally" contract
+        // simple and exhaustive rather than special-casing the one type that
+        // happens not to need it for this particular reason.
+        deleteAllRows(of: GroupStoreAisle.self, modelContext: modelContext)
+        deleteAllRows(of: GroupStapleItem.self, modelContext: modelContext)
+        deleteAllRows(of: GroupGroceryHistoryEntry.self, modelContext: modelContext)
         try? modelContext.save()
     }
 
