@@ -166,7 +166,7 @@ struct GroupMember: Codable, Identifiable, Equatable, Hashable {
 /// every member's public info and role — safe here specifically because, per
 /// backend/README.md, "everyone returned is a fellow member of this same
 /// group."
-struct GroupDetail: Codable, Identifiable {
+struct GroupDetail: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     /// Nullable — see `GroupSummary.createdByUserID`'s doc comment; same
@@ -179,6 +179,15 @@ struct GroupDetail: Codable, Identifiable {
         case id, name, createdAt, members
         case createdByUserID = "createdByUserId"
     }
+
+    // Equatable/Hashable by `id` alone (not every field — `members` would
+    // need to be Hashable too, and equal-by-content isn't what anything
+    // here actually needs): required by `.navigationDestination(item:)`
+    // in `GroupsListView`, which pushes straight into a freshly-created
+    // group and needs `GroupDetail` to satisfy `Hashable`, not just
+    // `Identifiable`.
+    static func == (lhs: GroupDetail, rhs: GroupDetail) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 
     /// This group as the *signed-in caller* sees it — `nil` only if the
     /// caller's own membership is somehow missing from `members` (shouldn't
