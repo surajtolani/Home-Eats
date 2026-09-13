@@ -5,10 +5,8 @@ Places API and the Claude API, so the real API keys live only here (as
 environment variables) and never ship inside the iOS app — see
 `GooglePlacesService.swift` and `ClaudeRecipeService.swift` in the iOS app
 for the client side of that. Second — new as of this feature — the real
-backend for accounts, friends, and groups: phone number based sign-up/
-log-in with a password (SMS only for the one-time signup/forgot-password
-steps — see "Sign up, log in, forgot password" below), a friends list, and
-Splitwise-style groups, backed by Postgres — and, new as
+backend for accounts, friends, and groups: phone number + SMS sign-in, a
+friends list, and Splitwise-style groups, backed by Postgres — and, new as
 of Phase 2a, recipe sharing on top of that same layer. Phase 3 adds a
 MANAGER/PARTICIPANT role to group membership, plus a group's single shared
 meal plan and shared grocery list built on top of it. See "Accounts,
@@ -68,9 +66,7 @@ npx prisma migrate deploy
 This creates every table in `prisma/schema.prisma` (`User`, `Friendship`,
 `Group`, `GroupMembership`, `Invite`, `Recipe`, `RecipeIngredient`,
 `RecipeShare`, `PlannedMeal`, `MealSuggestion`, `MealSuggestionVote`,
-`GroupGroceryItem`) and applies later schema changes (like `User.passwordHash`
-for the sign-up/log-in/forgot-password flow — see "Accounts, friends, and
-groups" below). Run it again after pulling any future change to
+`GroupGroceryItem`). Run it again after pulling any future change to
 `prisma/schema.prisma`/`prisma/migrations/` — it's safe to run repeatedly, it
 only applies migrations that haven't run yet. (`prisma migrate dev` also
 works locally if you want an interactive flow that can generate new
@@ -106,17 +102,9 @@ migration, not a drop-in version bump.
 
 **A JWT signing secret**: any long random string works as
 `JWT_SECRET` — e.g. generate one with `openssl rand -hex 32`. This signs
-every token this backend issues — both real session tokens (from
-`POST /auth/login`, `/auth/complete-signup`, `/auth/reset-password`) and the
-short-lived signup/reset tokens `POST /auth/verify-code` hands back (see
-"Accounts, friends, and groups" below for the full two-tier token picture) —
-so anyone who has it can mint a valid token of either kind for any user id.
-Treat it like any other secret (env var only, never committed).
-
-No separate setup is needed for password hashing — it uses `bcryptjs` (a
-pure-JS bcrypt implementation, pinned as a normal `npm` dependency, no
-native compilation step to worry about on Render), not an external
-service.
+the tokens issued by `POST /auth/verify-code`; anyone who has it can mint
+valid tokens for any user id, so treat it like any other secret (env var
+only, never committed).
 
 ## 2. Run it locally
 
@@ -149,42 +137,15 @@ curl -X POST "http://localhost:4000/recipes/recommend" \
   -H "Content-Type: application/json" \
   -d '{"ingredients": ["chicken thighs", "rice", "broccoli"]}'
 
-# Accounts — sign up a brand-new phone number: request a code, verify it
-# (this returns a short-lived signupToken, NOT a session token — see
-# "Accounts, friends, and groups" below), then complete signup with a
-# password and display name to get a real session token.
+# Accounts: request a code, verify it, then call an authenticated route
 curl -X POST "http://localhost:4000/auth/request-code" \
   -H "Content-Type: application/json" \
   -d '{"phoneNumber": "+14155551234"}'
 curl -X POST "http://localhost:4000/auth/verify-code" \
   -H "Content-Type: application/json" \
   -d '{"phoneNumber": "+14155551234", "code": "123456"}'
-# ^ copy the "signupToken" from that response's JSON for the next call
-curl -X POST "http://localhost:4000/auth/complete-signup" \
-  -H "Content-Type: application/json" \
-  -d '{"signupToken": "<signupToken>", "password": "a-real-password", "displayName": "Ada"}'
-# ^ copy the "token" from THIS response's JSON — that's the real session token
+# ^ copy the "token" from that response's JSON for the next call
 curl "http://localhost:4000/me" -H "Authorization: Bearer <token>"
-
-# Accounts — log back in later (returning user, no SMS involved at all):
-curl -X POST "http://localhost:4000/auth/login" \
-  -H "Content-Type: application/json" \
-  -d '{"phoneNumber": "+14155551234", "password": "a-real-password"}'
-
-# Accounts — forgot password: request/verify a code again on a number that
-# already has a password (this time verify-code returns a resetToken
-# instead of a signupToken), then set a new password.
-curl -X POST "http://localhost:4000/auth/request-code" \
-  -H "Content-Type: application/json" \
-  -d '{"phoneNumber": "+14155551234"}'
-curl -X POST "http://localhost:4000/auth/verify-code" \
-  -H "Content-Type: application/json" \
-  -d '{"phoneNumber": "+14155551234", "code": "123456"}'
-# ^ copy the "resetToken" from that response's JSON for the next call
-curl -X POST "http://localhost:4000/auth/reset-password" \
-  -H "Content-Type: application/json" \
-  -d '{"resetToken": "<resetToken>", "newPassword": "a-different-password"}'
-# ^ this response's "token" is a real session token too — reset-password logs you straight in
 
 # Recipe sharing: create a recipe, then list "my recipes"
 curl -X POST "http://localhost:4000/recipe-library" \
@@ -233,8 +194,8 @@ sync). That's the only change needed on the app side:
 ## 5. Accounts, friends, and groups
 
 Phase 1 of turning Home Eats into a real multi-person app: accounts (phone
-number based, so it isn't tied to Apple/iOS), a personal friends list, and
-groups built from that list — modeled after Splitwise, right down to a
+number + SMS code, so it isn't tied to Apple/iOS), a personal friends list,
+and groups built from that list — modeled after Splitwise, right down to a
 person being able to belong to several groups at once (a "household" and a
 separate "our Peru trip" group, say). See `prisma/schema.prisma` for the
 full data model and the reasoning behind each table. As of Phase 3
@@ -242,58 +203,7 @@ full data model and the reasoning behind each table. As of Phase 3
 `FriendsListView` (friends list, requests, add-by-phone) and
 `GroupsListView`/`GroupDetailView` (groups, members, invites) are its main
 screens for it — see `HomeEats/Services/AccountsAPIClient.swift` for the
-full client. **Note for the iOS side:** the sign-in flow described right
-below this is a breaking change from what that client currently assumes —
-see "Sign up, log in, forgot password" for exactly what changed.
-
-**Sign up, log in, forgot password.** Sign-in used to mean "verify an SMS
-code, every single time" (Splitwise/WhatsApp-style, no password at all) —
-`POST /auth/verify-code` logged you straight in on any successful code
-check. That's no longer how this works. SMS is now only ever used to prove
-phone ownership at two specific moments — signing up for the first time, and
-resetting a forgotten password — never on an ordinary login:
-
-- **Sign up** (a brand-new phone number): `POST /auth/request-code`, then
-  `POST /auth/verify-code` once, then `POST /auth/complete-signup` to set a
-  password and display name. *Only* `complete-signup` returns a real session
-  token — verifying the code by itself does not sign you in anymore.
-- **Log in** (a returning user who already finished signup): just
-  `POST /auth/login` with `{ phoneNumber, password }` — no SMS round-trip at
-  all.
-- **Forgot password**: `POST /auth/request-code`, then
-  `POST /auth/verify-code` again (re-proving phone ownership), then
-  `POST /auth/reset-password` with the new password — which also logs you
-  straight in, same as `complete-signup`.
-
-**The two-tier token model** is what makes the above safe. `POST
-/auth/verify-code`'s success case now returns a short-lived (15 minute),
-single-purpose JWT — `signupToken` or `resetToken` — instead of a full
-session token, carrying a `purpose` claim (`"signup"` or `"reset"`) a real
-session token never has (see `lib/authTokens.js`). That purpose token is
-good for exactly one thing: `POST /auth/complete-signup` (needs a
-`purpose: "signup"` token) or `POST /auth/reset-password` (needs
-`purpose: "reset"`) — and nothing else. Concretely, this token can never be
-used as `Authorization: Bearer <token>` on `/me`, `/friends`, `/groups`, or
-any other authenticated route (`middleware/requireAuth.js`'s
-`verifySessionToken` rejects any token carrying a `purpose` claim outright),
-and conversely a real session token — or the *other* purpose token — is
-rejected by `complete-signup`/`reset-password` just as firmly
-(`verifyPurposeToken` requires an exact `purpose` match). Only
-`POST /auth/login`, `POST /auth/complete-signup`, and
-`POST /auth/reset-password` ever hand back a real, 30-day session token.
-
-Which of `signupToken`/`resetToken` `POST /auth/verify-code` returns depends
-entirely on whether the `User` for that phone number already has a
-`passwordHash` set: no `User` row yet, or one that exists but has never
-finished signup (verified before, closed the app before setting a password —
-a real, valid, resumable state, not an error) returns a `signupToken`
-(`isNewAccount: true`); a `User` that already completed signup once returns
-a `resetToken` (`isNewAccount: false`) — that's the forgot-password case.
-Passwords are hashed with `bcrypt` (via `bcryptjs`, see "Set up accounts"
-above) and never stored or returned in plaintext; `passwordHash` itself
-never appears in any API response — every route below reconstructs a `User`
-response object field-by-field rather than returning a raw database row, so
-a field like this can't leak into a response just by existing on the model.
+full client.
 
 **Invites and consent.** An `Invite` (someone added by phone number who
 either isn't a Home Eats user yet, or is one but not yet an accepted friend
@@ -353,20 +263,15 @@ legitimate reason to know about (already friends, already a group member,
 already invited, adding one of your own accepted friends by `userId` or by
 their phone number) still report back distinctly.
 
-Every route below except the five `/auth/*` ones requires
-`Authorization: Bearer <token>` — a real *session* token, from
-`POST /auth/login`, `/auth/complete-signup`, or `/auth/reset-password` (see
-"Sign up, log in, forgot password" above — a `signupToken`/`resetToken`
-does **not** work here). A missing/invalid/expired/wrong-kind token gets a
-`401`. Every error response has the shape `{ "error": "..." }`.
+Every route below except the two `/auth/*` ones requires
+`Authorization: Bearer <token>` (the token `POST /auth/verify-code`
+returns). A missing/invalid/expired token gets a `401`. Every error
+response has the shape `{ "error": "..." }`.
 
 | Method | Path | Auth | Body | Notes |
 |---|---|---|---|---|
-| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). Purpose-agnostic — used for both signup and forgot-password. Rate-limited (see "Rate limiting" below); `429` if exceeded. |
-| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code via Twilio Verify. If the `User` for this number doesn't exist yet, or exists but has no `passwordHash` (never finished signup — see above), finds-or-creates it (still resolving pending `Invite`s exactly as before — see "Invites and consent" — inside the same transaction) and returns `{ signupToken, isNewAccount: true }`. If the `User` already has a `passwordHash`, returns `{ resetToken, isNewAccount: false }` instead (forgot-password). Neither token is a session token — see "Sign up, log in, forgot password" above. |
-| POST | `/auth/complete-signup` | none (token is a body field) | `{ signupToken, password, displayName }` | Verifies `signupToken` (must be purpose `"signup"`, unexpired, correctly signed — `401` otherwise), sets the password (hashed) and display name on that user, and returns `{ token, user }` — a real session token, completing signup. `password` must be at least 8 characters (`400` otherwise). |
-| POST | `/auth/reset-password` | none (token is a body field) | `{ resetToken, newPassword }` | Verifies `resetToken` (must be purpose `"reset"` — `401` otherwise), updates the password, and returns `{ token, user }` — logs the caller straight in, same as `complete-signup`. |
-| POST | `/auth/login` | none | `{ phoneNumber, password }` | Normal returning-user sign-in, no SMS involved. Returns `{ token, user }` on success. On any failure — wrong password, no such number, or a number that verified once but never finished signup — returns the same generic `401 { "error": "Invalid phone number or password." }`, so the response can never reveal which of those it was (see "Phone-number privacy" above). Rate-limited (see "Rate limiting" below); `429` if exceeded. |
+| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). Rate-limited (see "Rate limiting" below); `429` if exceeded. |
+| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code; finds-or-creates the `User`, turns any pending `Invite`s for that number into ordinary `PENDING` friend requests (see "Invites and consent" above — this does **not** auto-accept a friendship or auto-join a group), and returns `{ token, user }`. |
 | GET | `/me` | required | — | Returns `{ user: { id, phoneNumber, displayName, createdAt } }` for the caller. |
 | PATCH | `/me` | required | `{ displayName }` | Sets the caller's display name. Returns the updated `{ user }`. |
 | POST | `/friends/request` | required | `{ phoneNumber }` | Sends a friend request. If that number belongs to an existing user with no prior relationship, creates a `PENDING` `Friendship`; if a request in the other direction was already pending, this accepts it instead (`200`, `{ friendship, autoAccepted: true }`). If the number isn't a user yet, creates an `Invite` (no group). The first two of those report back identically — `201`, `{ "status": "requested" }` — see "Phone-number privacy" above. `409` if already friends, already pending, or already invited. |
@@ -595,15 +500,7 @@ it.
   in-memory limiter (`lib/rateLimit.js`) — 5 requests per phone number per
   hour, 20 per IP per hour — on top of Twilio Verify's own Fraud
   Guard/rate-limiting, since this route fires a billed Twilio call before
-  Twilio ever gets a say. `POST /auth/login` gets the same treatment for a
-  different reason — it doesn't cost money per call, but a phone number +
-  password login is a real brute-force target (unlimited free password
-  guesses against a known/guessed number otherwise), so it's limited to 10
-  attempts per phone number per hour and 30 per IP per hour — looser than
-  `request-code`'s limits since a mistyped password is a much more likely
-  honest mistake than a mistyped SMS code (no autofill for it), but still
-  tight enough to make brute-forcing an 8+ character password impractical.
-  Both routes return `429` with `{ "error": "..." }` when exceeded. The
+  Twilio ever gets a say. `429` with `{ "error": "..." }` when exceeded. The
   limiter's state is per-process (fine for this app's single Render
   instance — see the deploy section above — but it resets on every
   deploy/restart and wouldn't be shared across instances if this ever

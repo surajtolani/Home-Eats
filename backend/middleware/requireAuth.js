@@ -1,22 +1,13 @@
 // Auth middleware for every route that requires a signed-in user (everything
-// under /me, /friends, /groups — but not any of the /auth/* routes
-// themselves, since those are how you get a token in the first place).
-// Verifies the bearer JWT and attaches the decoded user id as `req.userId`;
-// every downstream handler trusts `req.userId` rather than re-deriving
-// identity from anything the client sent in the body.
-//
-// Only accepts a real *session* token — one returned by POST /auth/login,
-// POST /auth/complete-signup, or POST /auth/reset-password. It deliberately
-// does NOT accept the short-lived "signup"/"reset" purpose tokens
-// POST /auth/verify-code returns (see lib/authTokens.js) — those exist only
-// to bridge "just proved phone ownership via SMS" to "now has a password",
-// not to authenticate as the user on every other route. That rejection
-// lives in `verifySessionToken` itself (it throws on any token carrying a
-// `purpose` claim) rather than being duplicated here, so there's exactly
-// one place that decides what counts as a valid session token.
+// under /me, /friends, /groups — but not /auth/request-code or
+// /auth/verify-code themselves, since those are how you get the token in
+// the first place). Verifies the bearer JWT issued by POST /auth/verify-code
+// and attaches the decoded user id as `req.userId`; every downstream
+// handler trusts `req.userId` rather than re-deriving identity from
+// anything the client sent in the body.
 "use strict";
 
-const { verifySessionToken } = require("../lib/authTokens");
+const jwt = require("jsonwebtoken");
 
 function requireAuth(req, res, next) {
   const header = req.get("authorization") || "";
@@ -31,17 +22,16 @@ function requireAuth(req, res, next) {
   }
 
   try {
-    const payload = verifySessionToken(match[1]);
+    const payload = jwt.verify(match[1], process.env.JWT_SECRET);
     if (!payload || typeof payload.userId !== "string") {
       return res.status(401).json({ error: "Invalid token." });
     }
     req.userId = payload.userId;
     next();
   } catch (error) {
-    // Covers an expired token (TokenExpiredError), a tampered/malformed one
-    // (JsonWebTokenError), and a validly-signed purpose token used here
-    // (verifySessionToken's own thrown Error) — the caller doesn't need to
-    // tell those apart, just that they need to sign in again.
+    // Covers both an expired token (TokenExpiredError) and a tampered/
+    // malformed one (JsonWebTokenError) — the caller doesn't need to tell
+    // those apart, just that they need to sign in again.
     return res.status(401).json({ error: "Invalid or expired token." });
   }
 }
