@@ -173,9 +173,13 @@ private struct InviteToGroupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var friends: [PublicUser] = []
     @State private var isLoadingFriends = false
-    @State private var phoneNumber = ""
     @State private var isInviting = false
     @State private var errorMessage: String?
+    /// Drives `ContactOrPhoneNumberPickerView` — the group already exists
+    /// here (unlike `CreateGroupView`'s member step), so a pick from it
+    /// goes straight into `invite(phoneNumber:)` below rather than being
+    /// queued anywhere.
+    @State private var showContactPicker = false
 
     private var invitableFriends: [PublicUser] {
         friends.filter { !existingMemberIDs.contains($0.id) }
@@ -199,14 +203,16 @@ private struct InviteToGroupView: View {
                     }
                 }
                 Section {
-                    TextField("Phone number", text: $phoneNumber)
-                        .keyboardType(.phonePad)
-                    Button("Invite") { Task { await invite(phoneNumber: phoneNumber) } }
-                        .disabled(PhoneNumberFormatting.e164(from: phoneNumber) == nil || isInviting)
+                    Button {
+                        showContactPicker = true
+                    } label: {
+                        Label("Add by Contact or Phone Number", systemImage: "person.crop.circle.badge.plus")
+                    }
+                    .disabled(isInviting)
                 } header: {
                     Text("By Phone Number")
                 } footer: {
-                    Text("If they're not one of your accepted friends yet (whether or not they're on Home Eats already), this sends a friend request and queues them for this group — they'll join it once they accept.")
+                    Text("Search your contacts by name, or type a number directly. If they're not one of your accepted friends yet (whether or not they're on Home Eats already), this sends a friend request and queues them for this group — they'll join it once they accept.")
                 }
                 if isInviting {
                     ProgressView()
@@ -225,6 +231,11 @@ private struct InviteToGroupView: View {
                 }
             }
             .task { await loadFriends() }
+            .sheet(isPresented: $showContactPicker) {
+                ContactOrPhoneNumberPickerView { picked in
+                    Task { await invite(phoneNumber: picked.phoneNumber) }
+                }
+            }
         }
     }
 

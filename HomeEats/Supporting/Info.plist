@@ -15,6 +15,8 @@
     <string>Home Eats uses your camera to photograph a recipe (a cookbook page, a recipe card, a handwritten note) so it can be added to your recipe box.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Home Eats uses your location to show nearby restaurants first when you search.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>Home Eats can search your contacts to find a friend's phone number when adding them to a group.</string>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UISupportedInterfaceOrientations</key>

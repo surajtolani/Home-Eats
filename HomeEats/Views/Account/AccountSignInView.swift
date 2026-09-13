@@ -343,50 +343,8 @@ struct AccountSignInView: View {
     }
 }
 
-/// A searchable list of `CountryCode.all`, presented as a sheet from the
-/// phone step's dial-code button. Kept as its own small file-private view
-/// rather than inlined — it needs its own search text state and `dismiss`
-/// environment value, same reasoning as every other dedicated picker sheet
-/// in this app (`RecipePickerSheet`, `RestaurantPickerSheet`, ...).
-private struct CountryPickerSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var selected: CountryCode
-    @State private var searchText = ""
-
-    private var filtered: [CountryCode] {
-        guard !searchText.isEmpty else { return CountryCode.all }
-        return CountryCode.all.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText)
-                || $0.dialCode.contains(searchText)
-        }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List(filtered) { country in
-                Button {
-                    selected = country
-                    dismiss()
-                } label: {
-                    HStack {
-                        Text(country.flag)
-                        Text(country.name).foregroundStyle(.primary)
-                        Spacer()
-                        Text(country.dialCode).foregroundStyle(.secondary)
-                        if country.id == selected.id {
-                            Image(systemName: "checkmark").foregroundStyle(Color.brandForest)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Country")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Search countries")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-    }
-}
+// `CountryPickerSheet` used to live here as a `private struct` — it's now
+// its own file (`HomeEats/Views/Shared/CountryPickerSheet.swift`, internal
+// rather than private) so `ContactOrPhoneNumberPickerView`'s manual
+// phone-entry path can reuse the exact same picker. See that file's doc
+// comment for the full reasoning.
