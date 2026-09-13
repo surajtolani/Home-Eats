@@ -1,0 +1,143 @@
+// Home Eats backend — Prisma schema for accounts/friends/groups (Phase 1 of
+// the accounts feature; see backend/README.md for the full picture and
+// migration instructions). Modeled explicitly after Splitwise: a personal
+// friends list, plus groups ("households", but also e.g. "our Peru trip")
+// built from that friends list, where a person can belong to several groups
+// at once — nothing here assumes one user has only one group.
+//
+// A note on the Prisma version pin: as of this writing, Prisma's *current*
+// major version (7) removed the ability to put a datasource `url` here and
+// instead requires an explicit driver adapter (e.g. `@prisma/adapter-pg`)
+// wired up in application code just to run `prisma migrate`/connect the
+// client — a bigger, newer surface than this task needs, and one this
+// sandbox has no live Postgres to test against. Prisma 6.x (still an
+// actively-published, fully supported prior major, not an abandoned one)
+// keeps the classic, simpler model used below: a schema-defined `url =
+// env("DATABASE_URL")` and a zero-argument `new PrismaClient()` that reads
+// it automatically. See backend/package.json, which pins both `prisma` and
+// `@prisma/client` to 6.19.3 for this reason. Revisit the Prisma 7 driver
+// adapter approach in a later pass if there's a real reason to upgrade.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// One row per phone number that has ever verified via Twilio. displayName
+// is null until the person sets it post-verification (see PATCH /me) — the
+// app can still function with a phone-number-only account in the meantime,
+// e.g. to accept a friend request that arrived before they picked a name.
+model User {
+  id          String   @id @default(uuid())
+  phoneNumber String   @unique
+  displayName String?
+  createdAt   DateTime @default(now())
+
+  // Friend requests this user sent / received. A Friendship is queryable
+  // from either side by combining these two relations (see routes/friends.js).
+  sentFriendRequests     Friendship[] @relation("FriendshipRequester")
+  receivedFriendRequests Friendship[] @relation("FriendshipRecipient")
+
+  groupMemberships GroupMembership[]
+  createdGroups    Group[]           @relation("GroupCreator")
+
+  sentInvites Invite[] @relation("InviteSender")
+
+  @@index([phoneNumber])
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+// A directional request (requester -> recipient) that becomes a mutual
+// friendship once ACCEPTED. Only one row should ever exist for a given
+// unordered pair of users — application code (routes/friends.js) enforces
+// this by checking both directions before inserting, since a plain unique
+// constraint here can only cover one direction at the database level; the
+// `@@unique([requesterId, recipientId])` below still catches the exact-same-
+// direction double-submit case outright.
+model Friendship {
+  id          String           @id @default(uuid())
+  requesterId String
+  recipientId String
+  status      FriendshipStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  requester User @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  recipient User @relation("FriendshipRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, recipientId])
+  @@index([recipientId, status])
+  @@index([requesterId, status])
+}
+
+// The "household" or "trip" — deliberately generic, name is user-chosen.
+// createdByUserId is kept mainly for provenance/display ("created by...");
+// v1 has no elevated admin role for the creator (see GroupMembership doc
+// comment and DELETE /groups/:groupId/members/:userId).
+model Group {
+  id              String   @id @default(uuid())
+  name            String
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  createdBy   User              @relation("GroupCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  memberships GroupMembership[]
+  invites     Invite[]
+}
+
+// The many-to-many join between User and Group — this is what makes
+// "overlapping groups" work: a user can have many GroupMembership rows
+// (one per group they're in), and a group can have many members. Nothing
+// in this schema or the route handlers assumes a user has at most one.
+model GroupMembership {
+  id       String   @id @default(uuid())
+  userId   String
+  groupId  String
+  joinedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, groupId])
+  @@index([groupId])
+  @@index([userId])
+}
+
+enum InviteStatus {
+  PENDING
+  RESOLVED
+  CANCELLED
+}
+
+// Invites someone by phone number who isn't a User yet. `groupId` is null
+// for a plain "become my friend" invite, or set for "join my group"
+// (routes/groups.js's POST /groups/:groupId/invite). When that phone number
+// eventually verifies (POST /auth/verify-code), every PENDING Invite for it
+// is auto-resolved in the same transaction as the new User row: a
+// friendship with the inviter is created (accepted immediately — an invite
+// is already an unambiguous mutual signal, unlike a cold friend request)
+// and, if groupId is set, a GroupMembership too. See routes/auth.js.
+model Invite {
+  id                 String       @id @default(uuid())
+  invitingUserId     String
+  invitedPhoneNumber String
+  groupId            String?
+  status             InviteStatus @default(PENDING)
+  createdAt          DateTime     @default(now())
+  resolvedAt         DateTime?
+
+  invitingUser User   @relation("InviteSender", fields: [invitingUserId], references: [id], onDelete: Cascade)
+  group        Group? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([invitedPhoneNumber, status])
+  @@index([invitingUserId])
+}

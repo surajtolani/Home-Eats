@@ -1,18 +1,28 @@
-// Home Eats backend — a small proxy in front of the Google Places API.
+// Home Eats backend — started as a small proxy in front of the Google
+// Places API and the Anthropic API, and now also the accounts/friends/
+// groups backend (see the "Accounts, friends, and groups" block below and
+// routes/, lib/, prisma/ in this folder).
 //
-// Why this exists at all: the Places API needs a billed Google Cloud API
-// key. Shipping that key inside the iOS app (even "restricted" to the
-// app's bundle ID) means it's extracted the moment someone decompiles the
-// binary. This server holds the one real key as a server-side env var; the
-// app only ever talks to *this* server, which adds the key and forwards
-// the request to Google. See README.md in this folder for deployment
-// steps (same shape as the app's other Render-hosted backend).
+// Why the proxy part exists at all: the Places API needs a billed Google
+// Cloud API key. Shipping that key inside the iOS app (even "restricted" to
+// the app's bundle ID) means it's extracted the moment someone decompiles
+// the binary. This server holds the one real key as a server-side env var;
+// the app only ever talks to *this* server, which adds the key and
+// forwards the request to Google. See README.md in this folder for
+// deployment steps and the accounts feature's own setup (Postgres, Twilio
+// Verify, JWT secret).
 "use strict";
 
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const { zodOutputFormat } = require("@anthropic-ai/sdk/helpers/zod");
 const { z } = require("zod");
+const { prisma } = require("./lib/prisma");
+const { requireAuth } = require("./middleware/requireAuth");
+const authRouter = require("./routes/auth");
+const meRouter = require("./routes/me");
+const friendsRouter = require("./routes/friends");
+const groupsRouter = require("./routes/groups");
 
 const app = express();
 // A downsized recipe photo (see ImageResizing.swift in the iOS app - it
@@ -64,8 +74,28 @@ const PRICE_LEVEL_MAP = {
 };
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, googleKeyConfigured: Boolean(GOOGLE_PLACES_API_KEY) });
+  res.json({
+    ok: true,
+    googleKeyConfigured: Boolean(GOOGLE_PLACES_API_KEY),
+    databaseConfigured: Boolean(process.env.DATABASE_URL),
+    twilioConfigured: Boolean(
+      process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_VERIFY_SERVICE_SID
+    ),
+  });
 });
+
+// --- Accounts, friends, and groups -----------------------------------
+// Everything below is the accounts/social layer (Phase 1 of the accounts
+// feature — see backend/README.md): phone number + SMS sign-in, a personal
+// friends list, and groups built from that friends list, modeled after
+// Splitwise. This is genuinely new state for the app (until now the app has
+// been 100% on-device with no accounts) — see prisma/schema.prisma for the
+// data model. /auth/* is unauthenticated (it's how you get a token in the
+// first place); everything else here requires a valid Bearer JWT.
+app.use("/auth", authRouter);
+app.use("/me", requireAuth, meRouter);
+app.use("/friends", requireAuth, friendsRouter);
+app.use("/groups", requireAuth, groupsRouter);
 
 // Shared mapping from a Places API (New) place object to the shape both
 // /restaurants/search and /restaurants/search-natural return — kept in one
@@ -481,6 +511,34 @@ app.post("/recipes/recommend", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Home Eats backend listening on port ${PORT}`);
+// Generic error-handling middleware — Express recognizes it by its 4-arg
+// signature and routes anything passed to `next(error)` here, which is
+// exactly what lib/asyncHandler.js's wrapper does with any error thrown or
+// rejected inside an accounts/friends/groups route. Without this, an
+// unhandled error in one of those routes would otherwise be an unhandled
+// promise rejection — which crashes the whole Node process by default on
+// modern Node, not just that one request. Must be registered after every
+// other app.use/app.get/etc. call above.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error("Unhandled error in request handler:", err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Internal server error." });
 });
+
+// Connect to Postgres before accepting traffic, so a misconfigured
+// DATABASE_URL fails loudly at startup (visible in Render's deploy logs)
+// rather than on the first request that happens to touch the database.
+// The restaurant/recipe routes above don't use Prisma at all, so this only
+// affects the accounts/friends/groups routes in practice.
+prisma
+  .$connect()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Home Eats backend listening on port ${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to connect to the database:", error);
+    process.exit(1);
+  });

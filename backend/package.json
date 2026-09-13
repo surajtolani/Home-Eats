@@ -2,7 +2,7 @@
   "name": "home-eats-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Tiny proxy in front of the Google Places API for the Home Eats iOS app - the app never holds the real Google API key.",
+  "description": "Home Eats backend: a proxy in front of the Google Places and Anthropic APIs, plus the accounts/friends/groups API (Postgres via Prisma, phone+SMS auth via Twilio Verify).",
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
@@ -11,8 +11,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
+    "@prisma/client": "6.19.3",
     "express": "^4.22.2",
+    "jsonwebtoken": "^9.0.3",
+    "twilio": "^6.1.1",
     "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
   },
   "engines": {
     "node": ">=18"
