@@ -26,18 +26,33 @@ struct AccountUser: Codable, Identifiable, Equatable {
     let id: String
     let phoneNumber: String
     let displayName: String?
-    /// First/last name and city/country (see routes/me.js's `selfProfile`) —
-    /// all independently optional: `firstName`/`lastName` are asked for once
-    /// at the end of sign-up (see `AccountSignInView`'s name step) but
-    /// nothing stops a still-unnamed account existing briefly in between,
-    /// and `city`/`country` are never asked for at sign-up at all (that
-    /// would add friction to first launch for no immediate payoff) — only
-    /// ever set later, if at all, via `EditProfileView`.
+    /// First/last name, city/state/country (see routes/me.js's
+    /// `selfProfile`) — modeled as `String?` here because the *wire* value
+    /// genuinely can be `null` (a signed-in-but-not-yet-onboarded account,
+    /// or any account that predates this requirement), even though the app
+    /// now treats all five as mandatory before letting someone use it: see
+    /// `AccountSignInView`'s post-verification profile-completion step
+    /// (which now collects all five, not just the two names it used to) and
+    /// `RootView`'s completion gate, which blocks a signed-in account with
+    /// any of the five still unset from reaching the main tabs at all.
+    /// `EditProfileView` is the only other place these are ever written
+    /// after that first completion.
     let firstName: String?
     let lastName: String?
     let city: String?
+    let state: String?
     let country: String?
     let createdAt: Date
+    /// The backend's own derived "all five mandatory fields are non-empty"
+    /// check (see routes/me.js's `computeProfileComplete`) — decoded
+    /// straight off the wire rather than recomputed client-side from the
+    /// five fields above. Same reasoning as this type already applies to
+    /// e.g. `RemoteMealSuggestion.votedByMe`: the server is the one source
+    /// of truth for a derived boolean like this, and re-deriving it here
+    /// too would just be a second copy of the same five-field check that
+    /// can silently drift from the server's if either side ever changes
+    /// what "complete" means without updating the other.
+    let profileComplete: Bool
 
     /// Same fallback idea as `PublicUser.displayNameOrPhoneNumber` — kept as
     /// a separate property on this separate type rather than a shared
@@ -52,10 +67,14 @@ struct AccountUser: Codable, Identifiable, Equatable {
     }
 
     /// `firstName` + `lastName` joined with a space, trimmed — `nil` if
-    /// neither is set. Used to build `displayName` automatically from the
-    /// sign-up name step rather than asking for a separate "display name"
-    /// on top of the two fields it's already collecting (see
-    /// `AccountSignInView.saveName()`).
+    /// neither is set. `ProfileCompletionStepView`'s own save step builds
+    /// `displayName` the same way inline (from its local text-field state,
+    /// not from an already-decoded `AccountUser`), so this computed
+    /// property currently has no call site inside the app itself — kept
+    /// around anyway as a small, obviously-correct, well-tested (see
+    /// `AccountModelsDecodingTests`) convenience for whatever next screen
+    /// needs "this account's name, or nothing" without duplicating the
+    /// same two-line join.
     var fullName: String? {
         let joined = [firstName, lastName].compactMap { $0 }.joined(separator: " ")
             .trimmingCharacters(in: .whitespaces)

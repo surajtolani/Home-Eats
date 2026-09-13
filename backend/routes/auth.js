@@ -17,6 +17,10 @@ const { twilioClient } = require("../lib/twilio");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { createRateLimiter } = require("../lib/rateLimit");
+// Reuses routes/me.js's own `selfProfile` (attached to its exported router
+// — see that file's doc comment) so this response and GET/PATCH /me's
+// response can never drift apart on shape.
+const meRouter = require("./me");
 
 const router = express.Router();
 
@@ -208,19 +212,15 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
     res.json({
       token,
       // Same full "self" shape GET/PATCH /me return (routes/me.js's
-      // selfProfile) — every caller that gets a `user` object back about
-      // *themselves* should see the identical set of fields, not a partial
-      // one that only fills in after a separate GET /me.
-      user: {
-        id: user.id,
-        phoneNumber: user.phoneNumber,
-        displayName: user.displayName,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        city: user.city,
-        country: user.country,
-        createdAt: user.createdAt,
-      },
+      // selfProfile, `profileComplete` included) — every caller that gets a
+      // `user` object back about *themselves* should see the identical set
+      // of fields, not a partial one that only fills in after a separate
+      // GET /me. In particular, the iOS client needs `profileComplete`
+      // available right here, immediately after verify-code, so it can
+      // decide whether to route a *returning* user straight past the
+      // signup name step (see RootView.swift's completion gate) without an
+      // extra round-trip to GET /me first.
+      user: meRouter.selfProfile(user),
     });
   } catch (error) {
     console.error("Signup/verify transaction failed", error);

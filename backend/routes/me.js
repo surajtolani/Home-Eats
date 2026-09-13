@@ -9,6 +9,31 @@ const { asyncHandler } = require("../lib/asyncHandler");
 
 const router = express.Router();
 
+// True once every one of the five "mandatory profile" fields (see the
+// `User` model's doc comment in prisma/schema.prisma) is a non-empty
+// string. Computed here, server-side, rather than left for each client to
+// re-derive from the raw fields: the iOS app needs this exact same
+// five-field check in two independent places (`RootView`'s completion
+// gate, and to decide whether the signup name step can be skipped for an
+// already-complete account), and duplicating "are all five of these
+// truthy" client-side is exactly the kind of thing that quietly drifts
+// out of sync with the server's own idea of "complete" the moment a sixth
+// field is ever added here. One caveat worth calling out: a field holding
+// only whitespace would pass this `Boolean(...)` check even though
+// `UpdateMeSchema` below never actually lets one get saved that way
+// (`.trim().min(1)` rejects it) — the two are enforced by different code
+// paths but agree in practice, since this is the only route that ever
+// writes these columns.
+function computeProfileComplete(user) {
+  return Boolean(
+    user.firstName &&
+      user.lastName &&
+      user.city &&
+      user.state &&
+      user.country
+  );
+}
+
 // Shared between GET and PATCH's response so the two never drift — every
 // profile field a caller can see/set about themselves.
 function selfProfile(user) {
@@ -19,8 +44,10 @@ function selfProfile(user) {
     firstName: user.firstName,
     lastName: user.lastName,
     city: user.city,
+    state: user.state,
     country: user.country,
     createdAt: user.createdAt,
+    profileComplete: computeProfileComplete(user),
   };
 }
 
@@ -44,12 +71,23 @@ router.get("/", asyncHandler(async (req, res) => {
 // needed for a recipe's optional summary), so a plain `.optional()` field
 // per key is enough. `.refine` below just rejects a genuinely empty
 // request rather than silently no-op'ing it.
+//
+// Note this schema's optionality is a distinct concept from "required to
+// finish onboarding" (see `computeProfileComplete` above and
+// `RootView.swift`'s completion gate): this PATCH endpoint is deliberately
+// still a partial-update endpoint — a client filling in five fields one at
+// a time (e.g. the signup name step, which saves after every field is
+// typed) needs each individual PATCH to succeed without having to resend
+// every other field it doesn't have yet. "Required" is entirely a
+// client-side gate on top of this same endpoint, not a change to what this
+// endpoint itself accepts.
 const UpdateMeSchema = z
   .object({
     displayName: z.string().trim().min(1, "displayName can't be empty.").max(100).optional(),
     firstName: z.string().trim().min(1, "firstName can't be empty.").max(100).optional(),
     lastName: z.string().trim().min(1, "lastName can't be empty.").max(100).optional(),
     city: z.string().trim().min(1, "city can't be empty.").max(100).optional(),
+    state: z.string().trim().min(1, "state can't be empty.").max(100).optional(),
     country: z.string().trim().min(1, "country can't be empty.").max(100).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
@@ -72,5 +110,18 @@ router.patch("/", asyncHandler(async (req, res) => {
   });
   res.json({ user: selfProfile(user) });
 }));
+
+// `selfProfile` is attached to the exported router (an Express `Router()`
+// is itself just a function, so it can carry extra properties fine) rather
+// than exported as a second top-level value, so `index.js`'s existing
+// `const meRouter = require("./routes/me")` — used directly as
+// middleware — keeps working unchanged. routes/auth.js's verify-code
+// response reuses this exact function for its own `user` field: that
+// response needs the identical shape (`profileComplete` included) GET/
+// PATCH /me return, and duplicating this object literal (and
+// `computeProfileComplete`'s five-field check) a second time in auth.js is
+// exactly the kind of copy that quietly drifts the moment a sixth profile
+// field is added here later.
+router.selfProfile = selfProfile;
 
 module.exports = router;

@@ -36,14 +36,30 @@ model User {
   phoneNumber String   @unique
   // `displayName` is the freeform name shown to friends/groups (what
   // `AccountSignInView`'s post-signup name step already sets) — left
-  // exactly as-is. These four are additional, separately-optional profile
-  // fields (nullable, same "not set until someone fills them in" story as
-  // displayName always had) — a fuller profile someone can fill in later
-  // from a dedicated Edit Profile screen, not required at signup.
+  // exactly as-is. `firstName`/`lastName`/`city`/`state`/`country` are the
+  // five fields the app now treats as a *mandatory* profile (see
+  // `RootView.swift`'s completion gate and `AccountSignInView`'s signup
+  // step) — every account is expected to eventually have all five
+  // non-empty. They stay nullable here anyway, deliberately NOT a hard
+  // `NOT NULL` column: "required" is enforced at the application/UX layer
+  // (the client blocks entry until all five are filled in), not the
+  // database layer, for the same reason `passwordHash` never got a real
+  // migration path when password auth existed (see that field's own
+  // history) — a `NOT NULL` migration fails outright against any row that
+  // predates the column (including whoever signed up before this change,
+  // e.g. this session's own test accounts), and there is no honest
+  // placeholder value Prisma could backfill with instead. `state` (added
+  // alongside the other four originally, in a later pass once "required"
+  // was clarified to mean five fields, not four) is free text like `city`/
+  // `country` — a US state/region name, no fixed dropdown/enum, same
+  // reasoning as those two: this app has no canonical list of valid
+  // values to validate against, and forcing one now would just be a
+  // guess at a set of options nobody has asked for yet.
   displayName String?
   firstName   String?
   lastName    String?
   city        String?
+  state       String?
   country     String?
   createdAt   DateTime @default(now())
 

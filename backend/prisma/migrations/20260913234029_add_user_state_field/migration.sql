@@ -1,0 +1,14 @@
+-- AlterTable
+-- Written by hand rather than via `prisma migrate dev` — this sandbox has
+-- no interactive TTY, and `migrate dev` refuses to run non-interactively
+-- (it also wanted to flag/drop the long-orphaned `passwordHash` column
+-- here, which is unrelated to this change; see
+-- `20260913030000_add_password_hash`'s and
+-- `20260913203549_add_user_profile_fields`'s own doc comments for why that
+-- column is deliberately left alone). This is the fifth "genuinely
+-- required, but not DB-enforced" profile field, added the same nullable
+-- way as `firstName`/`lastName`/`city`/`country` in
+-- `20260913203549_add_user_profile_fields` — see this file's own doc
+-- comment on the `User` model in `schema.prisma` for the full reasoning on
+-- why a hard `NOT NULL` constraint would break on any pre-existing row.
+ALTER TABLE "User" ADD COLUMN     "state" TEXT;

@@ -1,7 +1,13 @@
 import SwiftUI
 
 /// Phone-number sign-in, as a three-step sheet: phone entry -> SMS code
-/// entry -> (only if the account is brand new) pick a display name.
+/// entry -> (only if the account's profile isn't already complete) fill in
+/// first/last name, city, state, and country — see `ProfileCompletionStepView`
+/// for that step's actual fields; every account needs all five before it can
+/// be used at all (see `RootView`'s own completion gate, which is what
+/// actually enforces that for a signed-in-but-incomplete account reopening
+/// the app later — this view's own `.name` step just gets the common case,
+/// filling it in once right after verifying, out of the way immediately).
 /// Presented from wherever signing in is actually needed — `SettingsView`'s
 /// "Sign In" row when someone opts in proactively, or `RecipeDetailView`'s
 /// Share action when they tap Share while signed out (see that view's own
@@ -25,13 +31,18 @@ struct AccountSignInView: View {
     /// optional: the mandatory gate shown in place of the whole app before
     /// `accountSession.isSignedIn`. There, this view is embedded directly
     /// (not presented as a sheet) with nothing behind it to "cancel" back
-    /// to — so the phone/code steps hide the Cancel button entirely. The
-    /// name step keeps "Skip" either way once sign-in has actually
-    /// succeeded (`verify()` already called `completeSignIn`), since
-    /// skipping a display name doesn't undo being signed in — `dismiss()`
-    /// is a harmless no-op here with no sheet to dismiss; `RootView`'s own
-    /// `if !accountSession.isSignedIn` check is what actually swaps this
-    /// view out once sign-in completes.
+    /// to — so the phone/code steps hide the Cancel button entirely.
+    ///
+    /// The name/profile step has no Skip/Cancel action at all, regardless
+    /// of `allowsCancel` — unlike the old two-field name step, these five
+    /// fields are genuinely mandatory now (see `RootView`'s completion
+    /// gate), so a Skip button here would either do nothing useful (in the
+    /// `allowsCancel: false` mandatory-gate context, `RootView`'s own
+    /// completion gate would just show this exact same form again the
+    /// instant it dismissed — see that view's doc comment) or leave a
+    /// signed-in account walking around with an incomplete profile (in the
+    /// dismissible-sheet context) for no reason. Neither is worth a button
+    /// that exists only to bounce right back.
     var allowsCancel: Bool = true
 
     private enum Step {
@@ -50,8 +61,6 @@ struct AccountSignInView: View {
     /// fallback.
     @State private var phoneInput = ""
     @State private var codeInput = ""
-    @State private var firstNameInput = ""
-    @State private var lastNameInput = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
     /// The phone number actually sent to the backend, normalized to E.164 —
@@ -78,10 +87,6 @@ struct AccountSignInView: View {
     private var canVerify: Bool {
         codeInput.trimmingCharacters(in: .whitespaces).count >= 4
     }
-    private var canSaveName: Bool {
-        !firstNameInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !lastNameInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     var body: some View {
         NavigationStack {
@@ -89,7 +94,7 @@ struct AccountSignInView: View {
                 switch step {
                 case .phone: phoneStep
                 case .code: codeStep
-                case .name: nameStep
+                case .name: ProfileCompletionStepView(onSaved: { dismiss() })
                 }
                 if let errorMessage {
                     Section {
@@ -100,18 +105,13 @@ struct AccountSignInView: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // The name step is the one point where dismissing isn't
-                // really "cancel" — sign-in already succeeded by then (see
-                // `verify()`), so leaving without a name is just skipping an
-                // optional step, not backing out of signing in at all —
-                // "Skip" stays available here even when `allowsCancel` is
-                // false. The phone/code steps are the actual "back out of
-                // signing in" point, so those honor `allowsCancel`.
-                if step == .name {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Skip") { dismiss() }
-                    }
-                } else if allowsCancel {
+                // No toolbar action at all on the name/profile step — see
+                // `allowsCancel`'s own doc comment for why a Skip button
+                // has no useful job here anymore now that all five fields
+                // are mandatory. The phone/code steps are the actual "back
+                // out of signing in" point, so those still honor
+                // `allowsCancel` exactly as before.
+                if step != .name, allowsCancel {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
                     }
@@ -124,7 +124,7 @@ struct AccountSignInView: View {
         switch step {
         case .phone: return "Sign In"
         case .code: return "Enter Code"
-        case .name: return "Your Name"
+        case .name: return "Complete Your Profile"
         }
     }
 
@@ -255,44 +255,6 @@ struct AccountSignInView: View {
         }
     }
 
-    private var nameStep: some View {
-        Group {
-            Section {
-                TextField("First name", text: $firstNameInput)
-                    .textContentType(.givenName)
-                TextField("Last name", text: $lastNameInput)
-                    .textContentType(.familyName)
-            } footer: {
-                Text("Shown to friends and group members when you share recipes or invite them. You can add your city and country later from Settings.")
-            }
-            .disabled(isLoading)
-
-            Section {
-                if isLoading {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                } else {
-                    Button {
-                        Task { await saveName() }
-                    } label: {
-                        Text("Save")
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.brandForest)
-                    .controlSize(.large)
-                    .disabled(!canSaveName)
-                }
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-    }
-
     private func sendCode() async {
         guard let e164 = enteredE164 else { return }
         isLoading = true
@@ -318,38 +280,24 @@ struct AccountSignInView: View {
                 code: codeInput.trimmingCharacters(in: .whitespaces)
             )
             accountSession.completeSignIn(token: token, user: user)
-            if user.fullName != nil {
+            // `profileComplete` (the backend's own derived check — see
+            // routes/me.js's `computeProfileComplete`) is what decides
+            // whether this account still needs the profile step, not just
+            // "does it have a name": a returning account that already has a
+            // first/last name but signed up before city/state/country
+            // became mandatory would have passed the old `fullName != nil`
+            // check here and skipped straight past collecting the other
+            // three — exactly the gap this task closes. (In practice, for
+            // the mandatory `RootView`-embedded sign-in — `allowsCancel:
+            // false` — `RootView`'s own completion gate would catch that
+            // gap a moment later anyway; checking `profileComplete` here
+            // too just means this view's own flow gets it right immediately
+            // instead of relying on that second layer.)
+            if user.profileComplete {
                 dismiss()
             } else {
-                // Brand new (or never-named) account — ask once before
-                // dismissing, since a name is how this person will show up
-                // to friends/groups once they start sharing.
                 step = .name
             }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    private func saveName() async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-        let firstName = firstNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lastName = lastNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            // `displayName` is set alongside `firstName`/`lastName` here
-            // (rather than being asked for as its own separate field) so
-            // every existing "shown to friends" reader
-            // (`displayNameOrPhoneNumber`) keeps working unchanged — see
-            // `AccountUser.fullName`'s doc comment.
-            let updated = try await AccountsAPIClient.updateProfile(
-                displayName: "\(firstName) \(lastName)",
-                firstName: firstName,
-                lastName: lastName
-            )
-            accountSession.updateCurrentUser(updated)
-            dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }

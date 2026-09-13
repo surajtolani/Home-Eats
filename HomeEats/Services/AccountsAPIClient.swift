@@ -265,8 +265,11 @@ extension AccountsAPIClient {
     /// `UpdateMeSchema`) rather than always sending every field (which would
     /// silently overwrite anything not passed with whatever stale value the
     /// caller happened to have). Used by `AccountSignInView`'s post-sign-up
-    /// name step (`displayName`+`firstName`+`lastName` together) and by
-    /// `EditProfileView` (any subset of all five).
+    /// profile-completion step (which now saves `displayName`+`firstName`+
+    /// `lastName`+`city`+`state`+`country` together, since all five
+    /// non-`displayName` fields are collected on that one screen — see that
+    /// view's own doc comment) and by `EditProfileView` (any subset of all
+    /// six).
     ///
     /// Callable with zero arguments would build an empty `PATCH` body the
     /// backend's own `.refine()` rejects with a 400 — callers are expected
@@ -276,6 +279,7 @@ extension AccountsAPIClient {
         firstName: String? = nil,
         lastName: String? = nil,
         city: String? = nil,
+        state: String? = nil,
         country: String? = nil
     ) async throws -> AccountUser {
         struct Response: Decodable { let user: AccountUser }
@@ -284,6 +288,7 @@ extension AccountsAPIClient {
         if let firstName { body["firstName"] = firstName }
         if let lastName { body["lastName"] = lastName }
         if let city { body["city"] = city }
+        if let state { body["state"] = state }
         if let country { body["country"] = country }
         let response: Response = try await send("PATCH", path: "me", body: body)
         return response.user

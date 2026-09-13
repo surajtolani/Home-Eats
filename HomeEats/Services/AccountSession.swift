@@ -24,6 +24,20 @@ import Foundation
 final class AccountSession: ObservableObject {
     @Published private(set) var isSignedIn: Bool
     @Published private(set) var currentUser: AccountUser?
+    /// Whether this app has learned the signed-in caller's real profile at
+    /// least once (successfully or not) since sign-in — either through
+    /// `completeSignIn` (immediate, no network wait: `POST /auth/verify-code`
+    /// already handed back the full profile) or through `refreshCurrentUser`
+    /// resolving at launch. `RootView`'s completion gate reads this the same
+    /// way it already reads `ActiveGroupSession.hasLoadedOnce` for the group
+    /// check just below it in that same gating chain: without it, the split
+    /// second between "a stored token means isSignedIn optimistically starts
+    /// true" (see `init` below) and `refreshCurrentUser()` actually
+    /// resolving would show the mandatory profile-completion screen to a
+    /// perfectly complete, already-signed-in account for one frame, purely
+    /// because `currentUser` hadn't loaded yet — exactly the kind of flash
+    /// that doc comment on `ActiveGroupSession.hasLoadedOnce` calls out.
+    @Published private(set) var hasLoadedProfileOnce = false
 
     init() {
         // A stored token means "signed in" optimistically, before this app
@@ -62,6 +76,16 @@ final class AccountSession: ObservableObject {
     /// has its own loading/error handling for that.
     func refreshCurrentUser() async {
         guard isSignedIn else { return }
+        // `defer` (not set only on success): a failed fetch still counts as
+        // "we tried" for `hasLoadedProfileOnce`'s purpose — same reasoning
+        // as `ActiveGroupSession.refreshGroups()`'s own `defer { hasLoadedOnce
+        // = true }`. Getting this wrong (only setting it on success) would
+        // leave a signed-in account stuck on `RootView`'s "Loading your
+        // profile…" spinner forever the moment this one call fails offline,
+        // instead of falling through to whatever `currentUser` already was
+        // (`nil` here, which that gate treats as "can't confirm incomplete,
+        // don't block" — see `RootView`'s own doc comment).
+        defer { hasLoadedProfileOnce = true }
         currentUser = try? await AccountsAPIClient.getMe()
     }
 
@@ -73,6 +97,11 @@ final class AccountSession: ObservableObject {
         KeychainTokenStore.saveToken(token)
         currentUser = user
         isSignedIn = true
+        // Already known for certain — `user` here IS this account's current
+        // profile, straight from `POST /auth/verify-code`'s response, not a
+        // guess pending a separate `GET /me` — so there's no "still loading"
+        // moment for `RootView`'s completion gate to wait out here.
+        hasLoadedProfileOnce = true
     }
 
     /// Reflects a display name change from `PATCH /me` (the post-sign-in
@@ -92,5 +121,13 @@ final class AccountSession: ObservableObject {
         KeychainTokenStore.deleteToken()
         currentUser = nil
         isSignedIn = false
+        // Reset so a later sign-in (as the same or a different account)
+        // goes through the normal "not loaded yet" spinner in `RootView`
+        // again, rather than this flag still reading `true` from the
+        // previous account and momentarily showing THAT account's stale
+        // completeness state before the new `GET /me`/verify-code response
+        // comes back — same "don't leak state across accounts" reasoning as
+        // `ActiveGroupSession.reset()` resetting its own `hasLoadedOnce`.
+        hasLoadedProfileOnce = false
     }
 }

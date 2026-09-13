@@ -48,19 +48,50 @@ struct RootView: View {
             // friend, group, and shared list depends on knowing who's
             // actually using the app, so that has to be settled before
             // anything else. `AccountSignInView(allowsCancel: false)` is
-            // the exact same phone -> code -> name flow used everywhere
+            // the exact same phone -> code -> profile flow used everywhere
             // else in the app (Settings' "Sign In" row, sharing a recipe
             // while signed out) — just embedded directly with nothing to
             // cancel back to, instead of presented as a dismissible
             // `.sheet`.
+            //
+            // Next: is this account's profile actually complete — first
+            // name, last name, city, state, AND country, all five (see
+            // `AccountUser.profileComplete` and routes/me.js's
+            // `computeProfileComplete`)? This sits ABOVE the group-
+            // membership check below it, not below, because it's the more
+            // fundamental of the two: a group invite, a friend's display
+            // name, a shared grocery list's "added by" line — all of it
+            // assumes every participant actually has a name/location on
+            // file, so nothing group-shaped should even be reachable until
+            // that's settled. This is also what catches every account that
+            // signed up BEFORE these fields became mandatory (including
+            // this session's own earlier test accounts, and the one
+            // person who verified-then-skipped the old, skippable name
+            // step) the very next time they open the app — not just brand
+            // new signups, which `AccountSignInView`'s own post-verify
+            // check (see its `verify()`) already routes straight into the
+            // identical form before `isSignedIn` even has a chance to make
+            // this branch relevant. `ProfileCompletionStepView` is the same
+            // shared five-field form either way (see that type's own doc
+            // comment on why it's factored out instead of living only in
+            // `AccountSignInView`) — wrapped here in this gate's own
+            // `NavigationStack`/`Form` since, unlike `AccountSignInView`,
+            // there's no surrounding sheet chrome to borrow, and no
+            // Cancel/Skip toolbar action at all: this step is not
+            // optional. `!accountSession.hasLoadedProfileOnce` (checked
+            // first) is the exact same "avoid a one-frame flash while a
+            // still-loading answer would have said something else" guard
+            // as `!activeGroupSession.hasLoadedOnce` just below it — see
+            // `AccountSession.hasLoadedProfileOnce`'s own doc comment.
             //
             // Below that, the gate used to be "do you have a `FamilyMember`
             // yet" (`OnboardingView`). This pivot replaces that with "do you
             // belong to a group yet" — a group, not a locally-named
             // household member, is now the thing the main Plan/Grocery tabs
             // are organized around (see `ActiveGroupSession`'s doc comment
-            // for the full reasoning), so getting into one is the new
-            // "only truly required setup step." The middle branch
+            // for the full reasoning), so getting into one is the next
+            // "only truly required setup step," right after (never before)
+            // the profile itself is settled. The middle branch
             // (`!activeGroupSession.hasLoadedOnce`) exists only to avoid a
             // one-frame flash of "you have no groups" while the first
             // `GET /groups` call from the `.task` below is still in
@@ -68,6 +99,16 @@ struct RootView: View {
             // comment.
             if !accountSession.isSignedIn {
                 AccountSignInView(allowsCancel: false)
+            } else if !accountSession.hasLoadedProfileOnce {
+                ProgressView("Loading your profile…")
+            } else if accountSession.currentUser?.profileComplete == false {
+                NavigationStack {
+                    Form {
+                        ProfileCompletionStepView()
+                    }
+                    .navigationTitle("Complete Your Profile")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
             } else if !activeGroupSession.hasLoadedOnce {
                 ProgressView("Loading your groups…")
             } else if activeGroupSession.groups.isEmpty {

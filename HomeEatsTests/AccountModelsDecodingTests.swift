@@ -31,18 +31,19 @@ final class AccountModelsDecodingTests: XCTestCase {
         // before profile fields existed), but now returns the same full
         // `selfProfile` shape GET/PATCH /me do (see auth.js's doc comment on
         // why: every endpoint that hands back a "self" user object should
-        // agree on one shape). `firstName`/`lastName`/`city`/`country` are
-        // all `null` here — the common case right after a brand-new
-        // account's very first sign-in, before the post-sign-up name step
-        // has run at all.
+        // agree on one shape). `firstName`/`lastName`/`city`/`state`/
+        // `country` are all `null` here — the common case right after a
+        // brand-new account's very first sign-in, before the post-sign-up
+        // profile step has run at all — and `profileComplete` is `false` to
+        // match (see routes/me.js's `computeProfileComplete`).
         struct VerifyResponseFixture: Decodable { let token: String; let user: AccountUser }
         let json = """
         {
           "token": "eyJhbGciOiJIUzI1NiJ9.fake.token",
           "user": {
             "id": "u1", "phoneNumber": "+14155551234", "displayName": null,
-            "firstName": null, "lastName": null, "city": null, "country": null,
-            "createdAt": "2024-01-15T10:30:00.123Z"
+            "firstName": null, "lastName": null, "city": null, "state": null, "country": null,
+            "createdAt": "2024-01-15T10:30:00.123Z", "profileComplete": false
           }
         }
         """
@@ -52,7 +53,9 @@ final class AccountModelsDecodingTests: XCTestCase {
         XCTAssertEqual(response.user.phoneNumber, "+14155551234")
         XCTAssertNil(response.user.displayName)
         XCTAssertNil(response.user.firstName)
+        XCTAssertNil(response.user.state)
         XCTAssertNil(response.user.fullName)
+        XCTAssertFalse(response.user.profileComplete)
         XCTAssertEqual(response.user.displayNameOrPhoneNumber, "+14155551234")
     }
 
@@ -62,8 +65,8 @@ final class AccountModelsDecodingTests: XCTestCase {
         // shape `AccountsAPIClient.decoder`'s custom date strategy exists
         // to handle (see its own doc comment on why plain `.iso8601`
         // wouldn't parse this). Also covers the full profile-fields case —
-        // an account that's completed the post-sign-up name step and set a
-        // city/country via `EditProfileView`.
+        // an account that's completed the mandatory profile step, all five
+        // fields set, so `profileComplete` comes back `true`.
         struct MeResponseFixture: Decodable { let user: AccountUser }
         let json = """
         {
@@ -74,8 +77,10 @@ final class AccountModelsDecodingTests: XCTestCase {
             "firstName": "Suraj",
             "lastName": "Tolani",
             "city": "Greenwich",
+            "state": "Connecticut",
             "country": "United States",
-            "createdAt": "2024-01-15T10:30:00.123Z"
+            "createdAt": "2024-01-15T10:30:00.123Z",
+            "profileComplete": true
           }
         }
         """
@@ -84,9 +89,59 @@ final class AccountModelsDecodingTests: XCTestCase {
         XCTAssertEqual(response.user.displayNameOrPhoneNumber, "Suraj Tolani")
         XCTAssertEqual(response.user.fullName, "Suraj Tolani")
         XCTAssertEqual(response.user.city, "Greenwich")
+        XCTAssertEqual(response.user.state, "Connecticut")
         XCTAssertEqual(response.user.country, "United States")
+        XCTAssertTrue(response.user.profileComplete)
         let createdAt = response.user.createdAt
         XCTAssertEqual(Calendar(identifier: .gregorian).component(.year, from: createdAt), 2024)
+    }
+
+    /// Regression guard for the specific design choice `AccountUser.profileComplete`
+    /// makes (see that property's own doc comment): it's decoded straight off
+    /// the wire, never recomputed client-side from the other five fields. A
+    /// account with `state` still unset but a (deliberately unrealistic,
+    /// backend-would-never-actually-send-this) `profileComplete: true` must
+    /// still decode to `true` here — if this type instead derived the value
+    /// itself from the five fields, this exact fixture would silently give
+    /// the opposite answer and this test would catch that divergence.
+    func testProfileCompleteIsDecodedFromTheWireNotRecomputedLocally() throws {
+        struct MeResponseFixture: Decodable { let user: AccountUser }
+        let json = """
+        {
+          "user": {
+            "id": "u1", "phoneNumber": "+14155551234", "displayName": "Test User",
+            "firstName": "Test", "lastName": "User", "city": "Boise", "state": null, "country": "USA",
+            "createdAt": "2024-01-15T10:30:00.123Z", "profileComplete": true
+          }
+        }
+        """
+        let response = try decoder.decode(MeResponseFixture.self, from: data(json))
+        XCTAssertNil(response.user.state)
+        XCTAssertTrue(response.user.profileComplete)
+    }
+
+    /// The exact scenario `PATCH /me`'s field-at-a-time semantics make
+    /// routine — `computeProfileComplete` flips `false` -> `true` only once
+    /// EVERY ONE of the five fields is set, not as soon as some of them are
+    /// (see routes/me.js's own doc comment). This fixture is the "four of
+    /// five" moment — everything but `state` — where a bug that required
+    /// only firstName/lastName (the old, pre-this-change bar) would
+    /// incorrectly read as complete.
+    func testProfileCompleteIsFalseWhenOnlyStateIsMissing() throws {
+        struct MeResponseFixture: Decodable { let user: AccountUser }
+        let json = """
+        {
+          "user": {
+            "id": "u1", "phoneNumber": "+14155551234", "displayName": "Bob Resumed",
+            "firstName": "Bob", "lastName": "Resumed", "city": "Boise", "state": null, "country": "USA",
+            "createdAt": "2024-01-15T10:30:00.123Z", "profileComplete": false
+          }
+        }
+        """
+        let response = try decoder.decode(MeResponseFixture.self, from: data(json))
+        XCTAssertEqual(response.user.firstName, "Bob")
+        XCTAssertNil(response.user.state)
+        XCTAssertFalse(response.user.profileComplete)
     }
 
     // MARK: - Friends (routes/friends.js)
