@@ -8,6 +8,13 @@ struct GroupsListView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showCreateGroup = false
+    /// Set the moment `CreateGroupView` actually creates a group, and read
+    /// by `.navigationDestination(item:)` below to push straight into it —
+    /// landing back on this plain list after creating a group, with the
+    /// group you just made now one tap further away than "Invite" needs to
+    /// be, was confusing enough on its own to be worth fixing regardless of
+    /// anything else.
+    @State private var newlyCreatedGroup: GroupDetail?
 
     var body: some View {
         List {
@@ -44,7 +51,10 @@ struct GroupsListView: View {
         .task { await load() }
         .refreshable { await load() }
         .sheet(isPresented: $showCreateGroup, onDismiss: { Task { await load() } }) {
-            CreateGroupView()
+            CreateGroupView(onCreated: { newlyCreatedGroup = $0 })
+        }
+        .navigationDestination(item: $newlyCreatedGroup) { group in
+            GroupDetailView(groupID: group.id, groupName: group.name)
         }
     }
 
@@ -67,6 +77,10 @@ struct GroupsListView: View {
 /// rather than an inline list.
 private struct CreateGroupView: View {
     @Environment(\.dismiss) private var dismiss
+    /// Called with the group `create()` just made, right before dismissing
+    /// — lets `GroupsListView` push straight into it instead of landing
+    /// back on the plain group list.
+    let onCreated: (GroupDetail) -> Void
 
     @State private var name = ""
     @State private var friends: [PublicUser] = []
@@ -89,7 +103,13 @@ private struct CreateGroupView: View {
                     if isLoadingFriends {
                         ProgressView()
                     } else if friends.isEmpty {
-                        Text("Add some friends first to invite them to a group.")
+                        // Not a dead end — just create the group now (no
+                        // members needed to do that) and invite by phone
+                        // number from the group's own page next, which
+                        // works for anyone, friend or not. Explaining that
+                        // right here (rather than just "add friends first")
+                        // is what was actually missing before.
+                        Text("You don't have any accepted friends yet to pick from here — that's fine, create the group now and invite anyone by phone number from its page next.")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(friends) { friend in
@@ -155,10 +175,11 @@ private struct CreateGroupView: View {
         errorMessage = nil
         defer { isCreating = false }
         do {
-            _ = try await AccountsAPIClient.createGroup(
+            let created = try await AccountsAPIClient.createGroup(
                 name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                 memberUserIDs: Array(selectedFriendIDs)
             )
+            onCreated(created)
             dismiss()
         } catch {
             errorMessage = error.localizedDescription

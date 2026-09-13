@@ -78,16 +78,6 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    NavigationLink {
-                        FriendsListView()
-                    } label: {
-                        Label("Friends", systemImage: "person.2")
-                    }
-                    NavigationLink {
-                        GroupsListView()
-                    } label: {
-                        Label("Groups", systemImage: "person.3")
-                    }
                     Button("Sign Out", role: .destructive) {
                         // Signing out purges every locally-cached group-sync
                         // row unconditionally, pending or not — see
@@ -116,6 +106,24 @@ struct SettingsView: View {
                 Text("Account")
             } footer: {
                 Text("Your account is what your friends and groups see you as. Everything you do still works fully offline — this just needs a working connection the first time, and whenever you sync with a shared group.")
+            }
+
+            // Its own section, not nested under "Account" — friends and
+            // groups are what most people are actually here to use day to
+            // day, not account-management chores like signing out.
+            if accountSession.isSignedIn {
+                Section("Friends & Groups") {
+                    NavigationLink {
+                        FriendsListView()
+                    } label: {
+                        Label("Friends", systemImage: "person.2")
+                    }
+                    NavigationLink {
+                        GroupsListView()
+                    } label: {
+                        Label("Groups", systemImage: "person.3")
+                    }
+                }
             }
 
             Section("Household") {
