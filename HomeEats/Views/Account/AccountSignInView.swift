@@ -39,6 +39,15 @@ struct AccountSignInView: View {
     }
 
     @State private var step: Step = .phone
+    @State private var selectedCountry: CountryCode = .default
+    @State private var showCountryPicker = false
+    /// Just the local digits someone types — the country's dial code
+    /// (`selectedCountry.dialCode`) is prepended separately when actually
+    /// sending, not typed inline. Keeps the text field itself simple (a
+    /// plain number pad, nothing to parse a leading "+" or country code out
+    /// of) now that the picker is what decides the country instead of
+    /// `PhoneNumberFormatting.e164`'s old "guess US if it's 10 digits"
+    /// fallback.
     @State private var phoneInput = ""
     @State private var codeInput = ""
     @State private var nameInput = ""
@@ -51,8 +60,15 @@ struct AccountSignInView: View {
     /// meantime.
     @State private var confirmedPhoneNumber: String?
 
+    /// Combines the picked country's dial code with whatever digits are
+    /// typed — routed through `PhoneNumberFormatting.e164` regardless (it
+    /// takes a leading-"+" string as-is, just re-validating its shape)
+    /// rather than duplicating that regex here.
+    private var enteredE164: String? {
+        PhoneNumberFormatting.e164(from: selectedCountry.dialCode + phoneInput.filter(\.isNumber))
+    }
     private var canSendCode: Bool {
-        PhoneNumberFormatting.e164(from: phoneInput) != nil
+        enteredE164 != nil
     }
     /// Twilio Verify codes run 4-10 digits depending on channel/config (see
     /// the same loose lower bound backend/routes/auth.js's `VerifySchema`
@@ -136,9 +152,29 @@ struct AccountSignInView: View {
             .listRowSeparator(.hidden)
 
             Section {
-                TextField("Phone number", text: $phoneInput)
-                    .keyboardType(.phonePad)
-                    .textContentType(.telephoneNumber)
+                HStack(spacing: 0) {
+                    Button {
+                        showCountryPicker = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(selectedCountry.flag)
+                            Text(selectedCountry.dialCode)
+                                .foregroundStyle(.primary)
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 10)
+
+                    Divider().frame(height: 20)
+
+                    TextField("Phone number", text: $phoneInput)
+                        .keyboardType(.numberPad)
+                        .textContentType(.telephoneNumber)
+                        .padding(.leading, 10)
+                }
             } footer: {
                 Text("We'll text you a one-time code — no password to remember.")
             }
@@ -146,12 +182,30 @@ struct AccountSignInView: View {
 
             Section {
                 if isLoading {
-                    ProgressView()
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
                 } else {
-                    Button("Send Code") { Task { await sendCode() } }
-                        .disabled(!canSendCode)
+                    Button {
+                        Task { await sendCode() }
+                    } label: {
+                        Text("Send Code")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.brandForest)
+                    .controlSize(.large)
+                    .disabled(!canSendCode)
                 }
             }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+        .sheet(isPresented: $showCountryPicker) {
+            CountryPickerSheet(selected: $selectedCountry)
         }
     }
 
@@ -168,17 +222,34 @@ struct AccountSignInView: View {
 
             Section {
                 if isLoading {
-                    ProgressView()
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
                 } else {
-                    Button("Verify") { Task { await verify() } }
-                        .disabled(!canVerify)
+                    Button {
+                        Task { await verify() }
+                    } label: {
+                        Text("Verify")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.brandForest)
+                    .controlSize(.large)
+                    .disabled(!canVerify)
+
                     Button("Use a Different Number") {
                         step = .phone
                         codeInput = ""
                         errorMessage = nil
                     }
+                    .frame(maxWidth: .infinity)
                 }
             }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
     }
 
@@ -194,17 +265,32 @@ struct AccountSignInView: View {
 
             Section {
                 if isLoading {
-                    ProgressView()
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
                 } else {
-                    Button("Save") { Task { await saveName() } }
-                        .disabled(!canSaveName)
+                    Button {
+                        Task { await saveName() }
+                    } label: {
+                        Text("Save")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.brandForest)
+                    .controlSize(.large)
+                    .disabled(!canSaveName)
                 }
             }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
     }
 
     private func sendCode() async {
-        guard let e164 = PhoneNumberFormatting.e164(from: phoneInput) else { return }
+        guard let e164 = enteredE164 else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -253,6 +339,54 @@ struct AccountSignInView: View {
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// A searchable list of `CountryCode.all`, presented as a sheet from the
+/// phone step's dial-code button. Kept as its own small file-private view
+/// rather than inlined — it needs its own search text state and `dismiss`
+/// environment value, same reasoning as every other dedicated picker sheet
+/// in this app (`RecipePickerSheet`, `RestaurantPickerSheet`, ...).
+private struct CountryPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selected: CountryCode
+    @State private var searchText = ""
+
+    private var filtered: [CountryCode] {
+        guard !searchText.isEmpty else { return CountryCode.all }
+        return CountryCode.all.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText)
+                || $0.dialCode.contains(searchText)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(filtered) { country in
+                Button {
+                    selected = country
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(country.flag)
+                        Text(country.name).foregroundStyle(.primary)
+                        Spacer()
+                        Text(country.dialCode).foregroundStyle(.secondary)
+                        if country.id == selected.id {
+                            Image(systemName: "checkmark").foregroundStyle(Color.brandForest)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Country")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search countries")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
         }
     }
 }
