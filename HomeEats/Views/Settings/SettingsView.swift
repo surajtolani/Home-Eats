@@ -61,7 +61,7 @@ struct SettingsView: View {
             // groups live, not a separate opt-in on top of an otherwise
             // account-free app the way it used to be — see AccountSession's
             // doc comment for the history.
-            Section("Account") {
+            Section {
                 if accountSession.isSignedIn, let user = accountSession.currentUser {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(user.displayNameOrPhoneNumber)
@@ -112,6 +112,8 @@ struct SettingsView: View {
                 } else {
                     Button("Sign In") { showSignIn = true }
                 }
+            } header: {
+                Text("Account")
             } footer: {
                 Text("Your account is what your friends and groups see you as. Everything you do still works fully offline — this just needs a working connection the first time, and whenever you sync with a shared group.")
             }
