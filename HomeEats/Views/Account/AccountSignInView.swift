@@ -112,6 +112,29 @@ struct AccountSignInView: View {
 
     private var phoneStep: some View {
         Group {
+            // Only on the phone step, not code/name — this is specifically
+            // the "front door" moment (especially for `RootView`'s
+            // mandatory, allowsCancel: false gate, where this is the very
+            // first thing anyone sees before the rest of the app exists to
+            // them at all); repeating it on every step would just be noise
+            // once someone's already mid-flow. Same `BrandWordmark` artwork
+            // `BrandHeaderBanner` uses everywhere else, just larger — this
+            // is the one screen in the app that's allowed to actually be a
+            // "landing page" rather than a nav bar title.
+            Section {
+                HStack {
+                    Spacer()
+                    Image("BrandWordmark")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 72)
+                    Spacer()
+                }
+                .padding(.vertical, 20)
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+
             Section {
                 TextField("Phone number", text: $phoneInput)
                     .keyboardType(.phonePad)
