@@ -141,6 +141,28 @@ final class ContactsSearchService: ObservableObject {
             CNContactGivenNameKey,
             CNContactFamilyNameKey,
             CNContactPhoneNumbersKey,
+            // Required alongside the three keys above whenever fetched
+            // contacts are formatted with `CNContactFormatter` (see
+            // `CNContactFormatter.string(from:style:)` below) — the real,
+            // confirmed cause of a crash reported against this exact method:
+            // `.fullName` style internally needs to read additional
+            // properties (middle name, name prefix/suffix, phonetic names —
+            // exactly which ones depends on the contact's data and the
+            // current locale's name ordering) to build a correctly-ordered
+            // name, and reading ANY `CNContact` property that wasn't
+            // included in `keysToFetch` throws an Objective-C
+            // `NSException` — not a Swift `Error`, so the `try?` around
+            // `enumerateContacts` below can never catch it; it's an
+            // unconditional crash the moment the formatter touches an
+            // unfetched property, which is exactly what the real device
+            // crash log showed (`-[CNContact middleName]` raising, deep
+            // inside `CNContactFormatter`, inside this method). This
+            // descriptor is Apple's own documented fix: it expands to
+            // whatever full set of keys `CNContactFormatter` might actually
+            // need for `.fullName` style, so nothing it reads is ever
+            // missing from the fetch again, regardless of a given contact's
+            // data or the device's locale/name-order settings.
+            CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
         ] as [CNKeyDescriptor]
         let request = CNContactFetchRequest(keysToFetch: keys)
 
