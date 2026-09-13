@@ -53,13 +53,14 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            // Account sign-in is entirely opt-in — see AccountSession's doc
-            // comment and backend/README.md's "Accounts, friends, and
-            // groups" section. Nothing else in this app has ever required
-            // signing in, and nothing outside recipe-sharing does now
-            // either; this section is just the front door for the people
-            // who *do* want to add friends, build groups, or share a
-            // recipe with someone.
+            // Sign-in is mandatory — `RootView` gates the whole app behind
+            // it, so anyone looking at this screen is already signed in
+            // (the `else` branches below only ever show transiently, right
+            // after launch, while `GET /me` is still resolving). This
+            // section is where that account's identity, friends, and
+            // groups live, not a separate opt-in on top of an otherwise
+            // account-free app the way it used to be — see AccountSession's
+            // doc comment for the history.
             Section("Account") {
                 if accountSession.isSignedIn, let user = accountSession.currentUser {
                     VStack(alignment: .leading, spacing: 2) {
@@ -112,7 +113,7 @@ struct SettingsView: View {
                     Button("Sign In") { showSignIn = true }
                 }
             } footer: {
-                Text("Sign in with your phone number to add friends, build groups, and share recipes with them. Everything else in Home Eats works fully offline without an account.")
+                Text("Your account is what your friends and groups see you as. Everything you do still works fully offline — this just needs a working connection the first time, and whenever you sync with a shared group.")
             }
 
             Section("Household") {

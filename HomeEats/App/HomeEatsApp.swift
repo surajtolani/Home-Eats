@@ -6,8 +6,9 @@ struct HomeEatsApp: App {
     let modelContainer: ModelContainer
     @StateObject private var reminderRouter = PlanningReminderRouter()
     @StateObject private var activeUserSession = ActiveUserSession()
-    /// The opt-in accounts/friends/groups/sharing session — see its own doc
-    /// comment for why this is deliberately separate from
+    /// The accounts/friends/groups/sharing session (mandatory — `RootView`
+    /// gates the whole app behind it) — see its own doc comment for why
+    /// this is deliberately a separate object from
     /// `activeUserSession` above. Injected into the environment the same
     /// way, so any view under `RootView` (including sheets presented from
     /// deep inside it, like `AccountSignInView` or `RecipeSharePickerSheet`)

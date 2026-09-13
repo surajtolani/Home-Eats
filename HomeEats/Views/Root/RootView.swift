@@ -23,7 +23,20 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if familyMembers.isEmpty {
+            // Accounts became mandatory: nobody gets past this screen
+            // without signing in first (a real gate, not the earlier
+            // opt-in "Sign In" row buried in Settings) — every account,
+            // friend, group, and shared list depends on knowing who's
+            // actually using the app, so that has to be settled before
+            // anything else, including the app's own local onboarding
+            // below. `AccountSignInView(allowsCancel: false)` is the exact
+            // same phone -> code -> name flow used everywhere else in the
+            // app (Settings' "Sign In" row, sharing a recipe while signed
+            // out) — just embedded directly with nothing to cancel back to,
+            // instead of presented as a dismissible `.sheet`.
+            if !accountSession.isSignedIn {
+                AccountSignInView(allowsCancel: false)
+            } else if familyMembers.isEmpty {
                 OnboardingView()
             } else {
                 TabView(selection: $selectedTab) {

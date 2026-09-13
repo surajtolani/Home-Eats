@@ -16,6 +16,24 @@ struct AccountSignInView: View {
     @EnvironmentObject private var accountSession: AccountSession
     @Environment(\.dismiss) private var dismiss
 
+    /// `true` everywhere this has always been used — presented as a
+    /// dismissible `.sheet` from `SettingsView`'s "Sign In" row or
+    /// `RecipeDetailView`'s Share action, where backing out just means "not
+    /// signing in right now," not losing access to anything already open.
+    ///
+    /// `RootView` sets this `false` for the one place sign-in is *not*
+    /// optional: the mandatory gate shown in place of the whole app before
+    /// `accountSession.isSignedIn`. There, this view is embedded directly
+    /// (not presented as a sheet) with nothing behind it to "cancel" back
+    /// to — so the phone/code steps hide the Cancel button entirely. The
+    /// name step keeps "Skip" either way once sign-in has actually
+    /// succeeded (`verify()` already called `completeSignIn`), since
+    /// skipping a display name doesn't undo being signed in — `dismiss()`
+    /// is a harmless no-op here with no sheet to dismiss; `RootView`'s own
+    /// `if !accountSession.isSignedIn` check is what actually swaps this
+    /// view out once sign-in completes.
+    var allowsCancel: Bool = true
+
     private enum Step {
         case phone, code, name
     }
@@ -64,13 +82,21 @@ struct AccountSignInView: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    // The name step is the one point where dismissing isn't
-                    // really "cancel" — sign-in already succeeded by then
-                    // (see `verify()`), so leaving without a name is just
-                    // skipping an optional step, not backing out of signing
-                    // in at all.
-                    Button(step == .name ? "Skip" : "Cancel") { dismiss() }
+                // The name step is the one point where dismissing isn't
+                // really "cancel" — sign-in already succeeded by then (see
+                // `verify()`), so leaving without a name is just skipping an
+                // optional step, not backing out of signing in at all —
+                // "Skip" stays available here even when `allowsCancel` is
+                // false. The phone/code steps are the actual "back out of
+                // signing in" point, so those honor `allowsCancel`.
+                if step == .name {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Skip") { dismiss() }
+                    }
+                } else if allowsCancel {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
                 }
             }
         }

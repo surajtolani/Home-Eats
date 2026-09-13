@@ -5,11 +5,14 @@ import Foundation
 /// friends, and groups" and "Recipe sharing" sections). Deliberately a
 /// separate object from `ActiveUserSession` (which tracks "who's using the
 /// app right now" among local, unauthenticated `FamilyMember`s on a shared
-/// household device, stored in SwiftData): per this feature's design,
-/// accounts are opt-in on top of an app that has always worked fully
-/// offline with no sign-in at all, so nothing about `ActiveUserSession`'s
-/// existing job changes, and this object's `isSignedIn` starts `false` for
-/// everyone until they explicitly choose to sign in.
+/// household device, stored in SwiftData) — that job is unchanged by this
+/// one. Signing in itself is no longer optional: `RootView` gates the
+/// entire app behind `isSignedIn`, since every account/friend/group/shared
+/// list feature needs to know who's actually using the app before anything
+/// else can work. `isSignedIn` still starts `false` at launch (until the
+/// stored-token check in `init` below resolves it), which is exactly what
+/// makes that gate work — this object doesn't know or care that it's
+/// mandatory now, `RootView` is what enforces that.
 ///
 /// `ObservableObject`/`@Published` (rather than the `@Observable` macro) to
 /// match `ActiveUserSession`'s own pattern — see its doc comment — so the
