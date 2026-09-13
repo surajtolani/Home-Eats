@@ -554,16 +554,43 @@ model MealSuggestion {
   @@index([recipeId])
 }
 
+// UP (thumbs up) or DOWN (thumbs down) — a real enum rather than assuming
+// every `MealSuggestionVote` row is an upvote (that WAS the assumption before
+// this type existed: the original design only supported voting *for* a
+// suggestion at all, with a vote's mere existence meaning "yes"). Modeled the
+// same "real Swift/Prisma enum, not a raw string/bool" way `GroupRole` is,
+// for the same reason: `routes/groupMealPlan.js`'s vote endpoint and
+// `serializeSuggestion(...)` genuinely branch on which direction a vote is,
+// not just whether one exists.
+enum VoteDirection {
+  UP
+  DOWN
+}
+
 // One user's vote for one MealSuggestion — see that model's doc comment
 // above for why this is a real join table rather than a counter/array
 // column. `@@unique([suggestionId, userId])` is what makes "toggle my own
 // vote" a clean upsert-or-delete in routes/groupMealPlan.js, and also
-// guarantees one member can never double-count their own vote.
+// guarantees one member can never double-count their own vote (now: never
+// hold both an UP and a DOWN row for the same suggestion at once — the same
+// unique constraint enforces that just as well as it enforced "at most one
+// vote" back when every vote meant the same thing).
+//
+// `direction` (added alongside thumbs-down support): every row created
+// before this field existed was, by construction, an upvote — the only kind
+// of vote the API accepted at the time — so the migration that added this
+// column backfills every pre-existing row to `UP` rather than leaving it
+// null (see that migration's own comment). New rows always specify a
+// direction explicitly (`POST .../vote` requires `{ direction }` in the
+// body); the column default below exists only as that same backfill
+// mechanism, not because the application ever relies on it for a fresh
+// insert.
 model MealSuggestionVote {
-  id           String   @id @default(uuid())
+  id           String         @id @default(uuid())
   suggestionId String
   userId       String
-  createdAt    DateTime @default(now())
+  direction    VoteDirection  @default(UP)
+  createdAt    DateTime       @default(now())
 
   suggestion MealSuggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
   user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)

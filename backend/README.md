@@ -414,11 +414,11 @@ response has the shape `{ "error": "..." }`.
 | DELETE | `/recipe-library/:recipeId` | required | — | Owner only (`403` otherwise). Cascades to its ingredients and shares. |
 | POST | `/recipe-library/:recipeId/share` | required | `{ userId }` **or** `{ groupId }` | Owner only — sharing further isn't delegated to someone it's already shared with. `userId` must be an accepted friend of the owner; `groupId` must be a group the owner belongs to (`400` otherwise, same anti-stranger rule as `/groups`). Flips visibility `PRIVATE` → `SHARED` if needed. `409` if already shared with that exact user/group. |
 | DELETE | `/recipe-library/:recipeId/share/:shareId` | required | — | Un-share, owner only (`403` otherwise). Does **not** revert visibility back to `PRIVATE` even if it was the last share — see "Recipe sharing" below. |
-| GET | `/groups/:groupId/meal-plan` | required (member) | — | `{ plannedMeals: [...], suggestions: [...] }` — every decided meal and every pending suggestion for the group, no date filtering server-side (client filters locally). Each suggestion includes `voteCount` and `votedByMe` (whether the caller has voted for it). `403` if the caller isn't a member. |
+| GET | `/groups/:groupId/meal-plan` | required (member) | — | `{ plannedMeals: [...], suggestions: [...] }` — every decided meal and every pending suggestion for the group, no date filtering server-side (client filters locally). Each suggestion includes `upvoteCount`, `downvoteCount`, and `myVote` (`"UP"`/`"DOWN"`/`null` — the caller's own vote, if any). `403` if the caller isn't a member. |
 | POST | `/groups/:groupId/meal-plan` | **MANAGER only** | `{ date, slot, recipeId }` **or** `{ date, slot, restaurantName, isOrderIn? }` | Directly decides a meal (created already-decided, not a suggestion). `slot` is one of `BREAKFAST`/`LUNCH`/`DINNER`/`OTHER`. Exactly one of `recipeId`/`restaurantName` (`400` otherwise); `recipeId` must reference a recipe that already exists in `/recipe-library` **and** is visible to the caller — owner, a direct share, or a shared group (`400` otherwise). `403` for a `PARTICIPANT`. |
 | DELETE | `/groups/:groupId/meal-plan/:id` | **MANAGER only** | — | `403` for a `PARTICIPANT`, `404` if the planned meal doesn't belong to this group. |
 | POST | `/groups/:groupId/meal-plan/suggestions` | required (any member) | Same body shape as `POST /groups/:groupId/meal-plan` | The Participant-facing "suggest a recipe/restaurant/order-in for a vote" action. The proposer is automatically counted as having voted for their own suggestion. |
-| POST | `/groups/:groupId/meal-plan/suggestions/:id/vote` | required (any member) | — | Toggles the caller's own vote on/off (an existing vote is removed; no vote is added). Returns the updated `{ suggestion }` with `voteCount`/`votedByMe`. |
+| POST | `/groups/:groupId/meal-plan/suggestions/:id/vote` | required (any member) | `{ direction: "UP" \| "DOWN" }` | Thumbs up/down on the suggestion. Voting the same direction again retracts the vote; voting the opposite direction switches it. Returns the updated `{ suggestion }` with `upvoteCount`/`downvoteCount`/`myVote`. |
 | POST | `/groups/:groupId/meal-plan/suggestions/:id/adopt` | **MANAGER only** | — | Converts the suggestion into a decided `PlannedMeal` (same date/slot/recipe-or-restaurant) and deletes the suggestion, in one transaction. `403` for a `PARTICIPANT`. |
 | DELETE | `/groups/:groupId/meal-plan/suggestions/:id` | **MANAGER, or the suggestion's own proposer** | — | Lets you withdraw your own suggestion even without being a manager (mirrors the local app's own suggestion-withdrawal pattern); anyone else gets `403`. |
 | GET | `/groups/:groupId/grocery` | required (member) | — | `{ items: [...] }` — every item on the group's shared list; client groups/filters by category/section locally. |
@@ -551,10 +551,16 @@ recipeId into a group's shared plan.
 
 **Voting** is a real join table (`MealSuggestionVote`), not a counter or an
 array column, specifically so the API can answer "did I already vote for
-this" per suggestion (`votedByMe`) as well as a raw count (`voteCount`) —
-the iOS `MealSuggestion` model needs exactly that distinction for its own
-UI. `POST .../vote` toggles: voting again removes the vote rather than
-double-counting it.
+this, and which way" per suggestion (`myVote`) as well as raw counts
+(`upvoteCount`/`downvoteCount`) — the iOS `MealSuggestion` model needs
+exactly that distinction for its own UI. A vote has a **direction**
+(`UP`/`DOWN` — thumbs up or thumbs down, not upvote-only): `POST .../vote`
+takes `{ direction: "UP" | "DOWN" }` and behaves like any thumbs-up/down
+control — voting the same direction again retracts the vote, voting the
+opposite direction switches it. See `serializeSuggestion(...)`'s own doc
+comment in `routes/groupMealPlan.js` for why the response keeps
+`upvoteCount`/`downvoteCount` separate rather than collapsing them into one
+net score.
 
 `slot`'s values (`BREAKFAST`/`LUNCH`/`DINNER`/`OTHER`) mirror the iOS
 `MealSlot` enum's case names exactly (see

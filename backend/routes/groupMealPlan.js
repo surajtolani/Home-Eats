@@ -95,7 +95,24 @@ function serializePlannedMeal(meal) {
   };
 }
 
+// `upvoteCount`/`downvoteCount`, not a single collapsed `score`: a
+// suggestion two people are enthusiastic about and nobody dislikes
+// (2 up, 0 down) and one three people are actively against but one likes
+// (1 up, 3 down net to -2, vs. the first's +2) look completely different to
+// an actual group of people deciding what to eat, but a bare net score
+// alone can't even tell "nobody's voted" (0 up, 0 down) apart from "deeply
+// split" (5 up, 5 down) — both score 0. Both counts are cheap to compute
+// from the same `votes` array this already loads (no extra query), so there's
+// no real cost to keeping the fuller shape; a client that only wants a single
+// "+3"-style net number can trivially derive `upvoteCount - downvoteCount`
+// itself, but the reverse (recovering the split from a lone net score) is
+// impossible. `myVote: "UP" | "DOWN" | null` replaces the old boolean
+// `votedByMe` for the same reason: "did I vote" is no longer a yes/no
+// question once a vote has a direction, and a UI showing two distinct
+// thumbs-up/thumbs-down controls needs to know which one (if either) to
+// highlight for the caller, not just whether some vote of theirs exists.
 function serializeSuggestion(suggestion, viewerUserId) {
+  const myVote = suggestion.votes.find((vote) => vote.userId === viewerUserId);
   return {
     id: suggestion.id,
     groupId: suggestion.groupId,
@@ -106,8 +123,9 @@ function serializeSuggestion(suggestion, viewerUserId) {
     isOrderIn: suggestion.isOrderIn,
     proposedByUserId: suggestion.proposedByUserId,
     createdAt: suggestion.createdAt,
-    voteCount: suggestion.votes.length,
-    votedByMe: suggestion.votes.some((vote) => vote.userId === viewerUserId),
+    upvoteCount: suggestion.votes.filter((vote) => vote.direction === "UP").length,
+    downvoteCount: suggestion.votes.filter((vote) => vote.direction === "DOWN").length,
+    myVote: myVote ? myVote.direction : null,
   };
 }
 
@@ -238,7 +256,11 @@ router.post("/suggestions", asyncHandler(async (req, res) => {
       restaurantName: data.restaurantName ?? null,
       isOrderIn: data.recipeId ? false : data.isOrderIn,
       proposedByUserId: req.userId,
-      votes: { create: [{ userId: req.userId }] },
+      // The proposer's own default vote is an upvote — explicit here rather
+      // than leaning on `MealSuggestionVote.direction`'s column default
+      // (see that field's own doc comment on why application code always
+      // specifies a direction explicitly instead of relying on it).
+      votes: { create: [{ userId: req.userId, direction: "UP" }] },
     },
     include: { votes: true },
   });
@@ -246,29 +268,56 @@ router.post("/suggestions", asyncHandler(async (req, res) => {
   res.status(201).json({ suggestion: serializeSuggestion(suggestion, req.userId) });
 }));
 
-// POST /groups/:groupId/meal-plan/suggestions/:id/vote — any member,
-// toggles the caller's own vote on/off. `@@unique([suggestionId, userId])`
-// on MealSuggestionVote is what makes this a clean insert-or-delete rather
-// than needing to read-then-decide inside a transaction.
+const VoteSchema = z.object({ direction: z.enum(["UP", "DOWN"]) }).strict();
+
+// POST /groups/:groupId/meal-plan/suggestions/:id/vote — any member. Body:
+// `{ direction: "UP" | "DOWN" }`. A real thumbs-up/thumbs-down control, not
+// just an on/off toggle: voting the SAME direction again removes the vote
+// (toggle off, same as the old upvote-only behavior), voting the OPPOSITE
+// direction switches it (one call, not "remove then re-add" from the
+// client) — the same "tap the highlighted thumb again to retract it, tap
+// the other one to switch sides" behavior every thumbs-up/down control
+// people already know elsewhere. `@@unique([suggestionId, userId])` on
+// MealSuggestionVote still means there's at most one vote row per caller
+// per suggestion, so this is a single read-then-decide, same insert-or-
+// delete-or-update shape the old toggle used, wrapped in one transaction so
+// a request never leaves the vote row half-changed if something fails
+// partway (matches the existing "keep this atomic" standard other
+// multi-step routes in this file already hold to, e.g. `.../adopt`).
 router.post("/suggestions/:id/vote", asyncHandler(async (req, res) => {
   if (!(await requireMembership(req, res))) return;
+
+  const parsed = VoteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+  }
+  const { direction } = parsed.data;
 
   const suggestion = await prisma.mealSuggestion.findUnique({ where: { id: req.params.id } });
   if (!suggestion || suggestion.groupId !== req.params.groupId) {
     return res.status(404).json({ error: "Suggestion not found." });
   }
 
-  const existingVote = await prisma.mealSuggestionVote.findUnique({
-    where: { suggestionId_userId: { suggestionId: suggestion.id, userId: req.userId } },
-  });
-
-  if (existingVote) {
-    await prisma.mealSuggestionVote.delete({ where: { id: existingVote.id } });
-  } else {
-    await prisma.mealSuggestionVote.create({
-      data: { suggestionId: suggestion.id, userId: req.userId },
+  await prisma.$transaction(async (tx) => {
+    const existingVote = await tx.mealSuggestionVote.findUnique({
+      where: { suggestionId_userId: { suggestionId: suggestion.id, userId: req.userId } },
     });
-  }
+
+    if (!existingVote) {
+      await tx.mealSuggestionVote.create({
+        data: { suggestionId: suggestion.id, userId: req.userId, direction },
+      });
+    } else if (existingVote.direction === direction) {
+      // Same direction again -> retract the vote entirely.
+      await tx.mealSuggestionVote.delete({ where: { id: existingVote.id } });
+    } else {
+      // Opposite direction -> switch it, rather than deleting and
+      // recreating (one row update, same unique constraint, no
+      // delete-then-insert race window against a concurrent vote by the
+      // same user on the same suggestion).
+      await tx.mealSuggestionVote.update({ where: { id: existingVote.id }, data: { direction } });
+    }
+  });
 
   const updated = await prisma.mealSuggestion.findUnique({
     where: { id: suggestion.id },
