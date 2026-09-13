@@ -568,7 +568,20 @@ extension AccountsAPIClient {
         quantityText: String? = nil,
         section: GroupGrocerySection? = nil,
         isChecked: Bool? = nil,
-        orderIndex: Double? = nil
+        orderIndex: Double? = nil,
+        // "My Layout" placement (Phase 4) — a real tri-state, not a plain
+        // `String?`: `.unchanged` (the default) omits the key entirely,
+        // `.set(nil)` sends an explicit JSON `null` ("place this in
+        // Unsorted"), `.set(id)` sends a real aisle id. A plain optional
+        // can't express "explicitly clear to null" (see `FieldUpdate`'s own
+        // doc comment below) — and the distinction matters a lot more here
+        // than it looks: sending the `aisleId` key AT ALL, including
+        // explicit `null`, always sets `aisleManuallySet: true` server-side
+        // (see routes/groupGrocery.js's own doc comment on this route), so
+        // an accidental `.set(nil)` where `.unchanged` was meant would
+        // silently and permanently opt an item out of its category's
+        // default-aisle fallback.
+        aisleID: FieldUpdate<String> = .unchanged
     ) async throws -> RemoteGroupGroceryItem {
         struct Response: Decodable { let item: RemoteGroupGroceryItem }
         var body: [String: Any] = [:]
@@ -578,6 +591,7 @@ extension AccountsAPIClient {
         if let section { body["section"] = section.rawValue }
         if let isChecked { body["isChecked"] = isChecked }
         if let orderIndex { body["orderIndex"] = orderIndex }
+        body.setFieldUpdate(aisleID, forKey: "aisleId")
         let response: Response = try await send("PATCH", path: "groups/\(groupID)/grocery/\(id)", body: body)
         return response.item
     }
@@ -588,6 +602,129 @@ extension AccountsAPIClient {
     /// a delete/reject swipe action in the first place.
     static func deleteGroupGroceryItem(groupID: String, id: String) async throws {
         try await sendNoContent("DELETE", path: "groups/\(groupID)/grocery/\(id)")
+    }
+}
+
+// MARK: - Group grocery "My Layout" aisles (Phase 4 iOS wiring — GET/POST/PATCH/DELETE /groups/:groupId/grocery/aisles/*)
+//
+// Mounted at /groups/:groupId/grocery/aisles, BEFORE the more general
+// /groups/:groupId/grocery mount — confirmed against
+// routes/groupGroceryAisles.js directly. Every route there is open to ANY
+// member, not MANAGER-only (see that file's own doc comment for the
+// reasoning) — none of these methods take an `isManager` parameter to gate
+// on for that reason, unlike some of the Group grocery list section above.
+
+extension AccountsAPIClient {
+    /// Also what lazily seeds a group's ten starter aisles the FIRST time
+    /// it's ever called for a group with none — see
+    /// `ensureDefaultAislesSeeded` in routes/groupGroceryAisles.js and that
+    /// file's own doc comment on `GroupStoreAisle` in prisma/schema.prisma.
+    /// `GroupSyncService.pull` calls this on every sync cycle (not only when
+    /// "My Layout" happens to be on screen), which is what makes the
+    /// starter aisles already seeded and synced locally by the time someone
+    /// first switches to "My Layout" — flagged explicitly because that
+    /// backend doc comment calls this "the one piece of this feature that a
+    /// later iOS-wiring task needs to actually call (not just read the
+    /// response of)".
+    static func getGroupGroceryAisles(groupID: String) async throws -> GroupStoreAislesResponse {
+        try await send("GET", path: "groups/\(groupID)/grocery/aisles")
+    }
+
+    /// Lands at the end of the group's current walking order server-side —
+    /// no `sortIndex` to send (see `POST .../grocery/aisles` in
+    /// routes/groupGroceryAisles.js).
+    static func createGroupGroceryAisle(groupID: String, name: String) async throws -> RemoteGroupStoreAisle {
+        struct Response: Decodable { let aisle: RemoteGroupStoreAisle }
+        let response: Response = try await send(
+            "POST", path: "groups/\(groupID)/grocery/aisles", body: ["name": name]
+        )
+        return response.aisle
+    }
+
+    /// Rename and/or reposition — every parameter optional and, when `nil`,
+    /// simply omitted from the body, same field-granular convention as
+    /// `updateGroupGroceryItem` above.
+    static func updateGroupGroceryAisle(
+        groupID: String, id: String, name: String? = nil, sortIndex: Double? = nil
+    ) async throws -> RemoteGroupStoreAisle {
+        struct Response: Decodable { let aisle: RemoteGroupStoreAisle }
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let sortIndex { body["sortIndex"] = sortIndex }
+        let response: Response = try await send("PATCH", path: "groups/\(groupID)/grocery/aisles/\(id)", body: body)
+        return response.aisle
+    }
+
+    /// Deleting an aisle any item was manually placed in resets those items
+    /// back to falling through to their category's default aisle — handled
+    /// entirely server-side in one transaction (see that route's own doc
+    /// comment); this app's next pull picks up the reset `aisleId`/
+    /// `aisleManuallySet` on any affected item the normal way, no special
+    /// handling needed here.
+    static func deleteGroupGroceryAisle(groupID: String, id: String) async throws {
+        try await sendNoContent("DELETE", path: "groups/\(groupID)/grocery/aisles/\(id)")
+    }
+}
+
+// MARK: - Group staples (Phase 4 iOS wiring — GET/POST/PATCH/DELETE /groups/:groupId/grocery/staples/*)
+//
+// Mounted at /groups/:groupId/grocery/staples — confirmed against
+// routes/groupGroceryStaples.js. Also any-member throughout, same reasoning
+// as the aisles section above (see that file's own doc comment).
+
+extension AccountsAPIClient {
+    static func getGroupGroceryStaples(groupID: String) async throws -> GroupStaplesResponse {
+        try await send("GET", path: "groups/\(groupID)/grocery/staples")
+    }
+
+    static func createGroupGroceryStaple(
+        groupID: String, name: String, category: GroceryCategory, defaultQuantityText: String? = nil
+    ) async throws -> RemoteGroupStapleItem {
+        struct Response: Decodable { let staple: RemoteGroupStapleItem }
+        var body: [String: Any] = [
+            "name": name,
+            "category": RemoteGroceryCategory(localCategory: category).rawValue
+        ]
+        if let defaultQuantityText, !defaultQuantityText.isEmpty { body["defaultQuantityText"] = defaultQuantityText }
+        let response: Response = try await send("POST", path: "groups/\(groupID)/grocery/staples", body: body)
+        return response.staple
+    }
+
+    /// This app only ever calls this with `isActive` in practice — toggling
+    /// a staple on/off is the one edit `StaplesManagerView`'s own reference
+    /// UI supports (it has no rename/recategorize flow at all, even
+    /// locally: see that view's doc comment — only add, toggle, and
+    /// delete), which `GroupStaplesManagerView` mirrors exactly. The backend
+    /// itself allows any subset of name/category/defaultQuantityText/
+    /// isActive from any member (see routes/groupGroceryStaples.js's own doc
+    /// comment) — `name`/`category` parameters exist here for API
+    /// completeness/symmetry with `updateGroupGroceryItem`, not because any
+    /// current call site uses them.
+    static func updateGroupGroceryStaple(
+        groupID: String, id: String,
+        name: String? = nil, category: GroceryCategory? = nil, isActive: Bool? = nil
+    ) async throws -> RemoteGroupStapleItem {
+        struct Response: Decodable { let staple: RemoteGroupStapleItem }
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let category { body["category"] = RemoteGroceryCategory(localCategory: category).rawValue }
+        if let isActive { body["isActive"] = isActive }
+        let response: Response = try await send("PATCH", path: "groups/\(groupID)/grocery/staples/\(id)", body: body)
+        return response.staple
+    }
+
+    static func deleteGroupGroceryStaple(groupID: String, id: String) async throws {
+        try await sendNoContent("DELETE", path: "groups/\(groupID)/grocery/staples/\(id)")
+    }
+}
+
+// MARK: - Group grocery history (Phase 4 iOS wiring — GET /groups/:groupId/grocery/history)
+
+extension AccountsAPIClient {
+    /// Read-only — see `RemoteGroupGroceryHistoryEntry`'s own doc comment
+    /// for why there's no corresponding create/update/delete method.
+    static func getGroupGroceryHistory(groupID: String) async throws -> GroupGroceryHistoryResponse {
+        try await send("GET", path: "groups/\(groupID)/grocery/history")
     }
 }
 

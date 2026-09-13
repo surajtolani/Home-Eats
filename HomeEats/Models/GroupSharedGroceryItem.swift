@@ -35,6 +35,17 @@ final class GroupSharedGroceryItem {
     /// is a Prisma `Float` server-side for exactly this reason too (see
     /// that model's doc comment in prisma/schema.prisma).
     var orderIndex: Double
+    /// "My Layout" placement (Phase 4) — mirrors `GroupGroceryItem.aisleId`/
+    /// `.aisleManuallySet` on the backend exactly, including `aisleManuallySet
+    /// == false` meaning `aisleID` is not meaningful yet and a client should
+    /// fall back to whichever `GroupStoreAisle` has `linkedCategory ==
+    /// category` (see that field's own doc comment in prisma/schema.prisma,
+    /// and `GroupSharedGroceryListView.resolvedAisleID`, which applies that
+    /// fallback the same way the local `GroceryListView.resolvedAisleID`
+    /// does). Originally this model had no "My Layout" counterpart at all —
+    /// see this type's own top doc comment, which predates Phase 4.
+    var aisleID: String?
+    var aisleManuallySet: Bool
     var addedByUserID: String
     var createdAt: Date
     /// This row's sync-tracking state — see `GroupSyncState`'s own doc
@@ -64,6 +75,8 @@ final class GroupSharedGroceryItem {
         quantityText: String = "",
         isChecked: Bool = false,
         orderIndex: Double = 0,
+        aisleID: String? = nil,
+        aisleManuallySet: Bool = false,
         addedByUserID: String,
         createdAt: Date = .now,
         syncState: GroupSyncState = .synced,
@@ -77,6 +90,8 @@ final class GroupSharedGroceryItem {
         self.quantityText = quantityText
         self.isChecked = isChecked
         self.orderIndex = orderIndex
+        self.aisleID = aisleID
+        self.aisleManuallySet = aisleManuallySet
         self.addedByUserID = addedByUserID
         self.createdAt = createdAt
         self.syncState = syncState

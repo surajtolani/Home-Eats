@@ -542,6 +542,16 @@ struct RemoteGroupGroceryItem: Codable, Identifiable {
     let quantityText: String
     let isChecked: Bool
     let orderIndex: Double
+    /// "My Layout" placement (Phase 4) — mirrors `aisleId`/`aisleManuallySet`
+    /// on the backend's `GroupGroceryItem` exactly (see that field's doc
+    /// comment in prisma/schema.prisma): while `aisleManuallySet` is
+    /// `false`, `aisleID` is not meaningful and a client should fall back to
+    /// whichever `RemoteGroupStoreAisle` has `linkedCategory == category` —
+    /// this app's `GroupSharedGroceryListView.resolvedAisleID` mirrors that
+    /// fallback client-side, the same idea as the personal
+    /// `GroceryListView.resolvedAisleID`.
+    let aisleID: String?
+    let aisleManuallySet: Bool
     let addedByUserID: String
     let createdAt: Date
     let updatedAt: Date
@@ -549,11 +559,119 @@ struct RemoteGroupGroceryItem: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id, name, category, section, quantityText, isChecked, orderIndex, createdAt, updatedAt
         case groupID = "groupId"
+        case aisleID = "aisleId"
+        case aisleManuallySet
         case addedByUserID = "addedByUserId"
+    }
+
+    /// Memberwise init with `aisleID`/`aisleManuallySet` defaulted to "not
+    /// placed yet" — lets every call site written before Phase 4's "My
+    /// Layout" wiring (tests included — see `GroupGroceryItemCreateRaceTests`)
+    /// keep compiling unchanged. `Codable`'s synthesized `init(from:)` is a
+    /// separate mechanism from this custom init and is unaffected by it —
+    /// decoding a real response still requires the backend to send both
+    /// fields explicitly, which `serializeItem(...)` always does.
+    init(
+        id: String, groupID: String, name: String, category: RemoteGroceryCategory, section: GroupGrocerySection,
+        quantityText: String, isChecked: Bool, orderIndex: Double,
+        aisleID: String? = nil, aisleManuallySet: Bool = false,
+        addedByUserID: String, createdAt: Date, updatedAt: Date
+    ) {
+        self.id = id
+        self.groupID = groupID
+        self.name = name
+        self.category = category
+        self.section = section
+        self.quantityText = quantityText
+        self.isChecked = isChecked
+        self.orderIndex = orderIndex
+        self.aisleID = aisleID
+        self.aisleManuallySet = aisleManuallySet
+        self.addedByUserID = addedByUserID
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 
 /// `GET /groups/:groupId/grocery`'s full response shape.
 struct GroupGroceryListResponse: Codable {
     let items: [RemoteGroupGroceryItem]
+}
+
+// MARK: - Group grocery "My Layout" aisles (Phase 4 iOS wiring — routes/groupGroceryAisles.js)
+//
+// Wire shapes only, same relationship to the local, offline-capable
+// SwiftData layer as the meal-plan/grocery-list types above — see
+// `HomeEats/Models/GroupGroceryLayout.swift` for the local mirrors
+// (`GroupStoreAisle`, `GroupStapleItem`, `GroupGroceryHistoryEntry`) and
+// `GroupSyncService` for what turns one of these into the other and back.
+
+/// One row of `GET .../grocery/aisles`, and every aisle-mutating route's
+/// response — exactly `serializeAisle(...)` in routes/groupGroceryAisles.js.
+struct RemoteGroupStoreAisle: Codable, Identifiable {
+    let id: String
+    let groupID: String
+    let name: String
+    let sortIndex: Double
+    /// Set only for the ten starter aisles the backend seeds once per group
+    /// (see `ensureDefaultAislesSeeded` in routes/groupGroceryAisles.js) —
+    /// same role as the local `StoreAisle.linkedCategory`.
+    let linkedCategory: RemoteGroceryCategory?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, sortIndex, linkedCategory, createdAt
+        case groupID = "groupId"
+    }
+}
+
+struct GroupStoreAislesResponse: Codable {
+    let aisles: [RemoteGroupStoreAisle]
+}
+
+// MARK: - Group staples (Phase 4 iOS wiring — routes/groupGroceryStaples.js)
+
+/// One row of `GET .../grocery/staples`, and every staple-mutating route's
+/// response — exactly `serializeStaple(...)` in routes/groupGroceryStaples.js.
+struct RemoteGroupStapleItem: Codable, Identifiable {
+    let id: String
+    let groupID: String
+    let name: String
+    let category: RemoteGroceryCategory
+    let defaultQuantityText: String?
+    let isActive: Bool
+    let addedByUserID: String
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, category, defaultQuantityText, isActive, createdAt
+        case groupID = "groupId"
+        case addedByUserID = "addedByUserId"
+    }
+}
+
+struct GroupStaplesResponse: Codable {
+    let staples: [RemoteGroupStapleItem]
+}
+
+// MARK: - Group grocery history (Phase 4 iOS wiring — GET .../grocery/history in routes/groupGrocery.js)
+
+/// One row of `GET /groups/:groupId/grocery/history` — deliberately smaller
+/// than the backend's full `GroupGroceryHistoryEntry` row (no `id`/`groupId`/
+/// `normalizedName`): this route is read-only, and nothing on this app's
+/// side ever needs to address one row by id — every entry is written
+/// automatically, server-side, as a side effect of `PATCH .../grocery/:id`'s
+/// `isChecked` transition (see that route's own doc comment), never
+/// created/edited/deleted directly by a client — so the response, and this
+/// app's local mirror (`GroupGroceryHistoryEntry` in
+/// `HomeEats/Models/GroupGroceryLayout.swift`), only carry what's actually
+/// rendered.
+struct RemoteGroupGroceryHistoryEntry: Codable {
+    let name: String
+    let category: RemoteGroceryCategory
+    let addedAt: Date
+}
+
+struct GroupGroceryHistoryResponse: Codable {
+    let items: [RemoteGroupGroceryHistoryEntry]
 }
