@@ -23,6 +23,7 @@ const authRouter = require("./routes/auth");
 const meRouter = require("./routes/me");
 const friendsRouter = require("./routes/friends");
 const groupsRouter = require("./routes/groups");
+const recipeLibraryRouter = require("./routes/recipeLibrary");
 
 const app = express();
 // A downsized recipe photo (see ImageResizing.swift in the iOS app - it
@@ -96,6 +97,17 @@ app.use("/auth", authRouter);
 app.use("/me", requireAuth, meRouter);
 app.use("/friends", requireAuth, friendsRouter);
 app.use("/groups", requireAuth, groupsRouter);
+
+// --- Recipe sharing (Phase 2a) ----------------------------------------
+// Recipes moving from purely on-device storage to something that can be
+// shared between people, built on the friends/groups layer above. Mounted
+// at `/recipe-library` — a distinct prefix from the unauthenticated,
+// Claude-powered `/recipes/extract` and `/recipes/recommend` routes further
+// down this file, so there's no risk of the two ever colliding or being
+// confused with each other even though nothing here would actually clash
+// method+path with those. See routes/recipeLibrary.js and
+// backend/README.md's "Recipe sharing" section.
+app.use("/recipe-library", requireAuth, recipeLibraryRouter);
 
 // Shared mapping from a Places API (New) place object to the shape both
 // /restaurants/search and /restaurants/search-natural return — kept in one

@@ -47,6 +47,12 @@ model User {
 
   sentInvites Invite[] @relation("InviteSender")
 
+  // Recipe sharing (Phase 2a) — see the Recipe/RecipeShare doc comments
+  // below for the full model.
+  ownedRecipes         Recipe[]      @relation("RecipeOwner")
+  recipeSharesReceived RecipeShare[] @relation("RecipeShareUserTarget")
+  recipeSharesSent     RecipeShare[] @relation("RecipeShareSharer")
+
   @@index([phoneNumber])
 }
 
@@ -89,9 +95,10 @@ model Group {
   createdByUserId String
   createdAt       DateTime @default(now())
 
-  createdBy   User              @relation("GroupCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
-  memberships GroupMembership[]
-  invites     Invite[]
+  createdBy    User              @relation("GroupCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  memberships  GroupMembership[]
+  invites      Invite[]
+  recipeShares RecipeShare[]
 }
 
 // The many-to-many join between User and Group — this is what makes
@@ -140,4 +147,105 @@ model Invite {
 
   @@index([invitedPhoneNumber, status])
   @@index([invitingUserId])
+}
+
+// --- Recipe sharing (Phase 2a) ------------------------------------------
+// Recipes move from purely on-device (SwiftData, one phone) to something
+// that can live on the backend and be shared between people — see
+// backend/README.md's "Recipe sharing" section for the full picture and
+// routes/recipeLibrary.js for the API. Field names below deliberately
+// mirror the iOS `Recipe`/`RecipeIngredientEntry` SwiftData models
+// (HomeEats/Models/Recipe.swift, HomeEats/Models/RecipeIngredientEntry.swift)
+// so wiring the app up to this API later is a straightforward mapping, not
+// a redesign. A few iOS-only fields have no counterpart here on purpose:
+// `source`/`sourceURL`/`imageName`/`photoData`/`tags`/`isFavorite`/
+// `isSavedToCollection`/`createdByMemberID` are either purely device-local
+// concerns (a photo blob, a local family-member id) or not yet needed for
+// sharing itself — that's for the later iOS-wiring task to reconcile, not
+// this one.
+enum RecipeVisibility {
+  PRIVATE
+  SHARED
+  // Deliberately no PUBLIC value yet — this phase is "private + shared with
+  // specific friends/groups only" (see backend/README.md); there's no
+  // public/community recipe library, and therefore nothing that would ever
+  // set a PUBLIC visibility. Adding one later is just adding a third value
+  // to this enum plus a route that can set it — not a rework of this model.
+}
+
+// A recipe someone owns. `instructions` is a native Postgres text array
+// (Prisma's `String[]` on the postgresql provider), matching the iOS
+// model's `[String]` of ordered step strings exactly — no extra JSON
+// encoding/decoding needed on either side.
+model Recipe {
+  id           String           @id @default(uuid())
+  ownerId      String
+  title        String
+  summary      String?
+  instructions String[]
+  servings     Int?
+  prepMinutes  Int?
+  cookMinutes  Int?
+  visibility   RecipeVisibility @default(PRIVATE)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  owner       User               @relation("RecipeOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  ingredients RecipeIngredient[]
+  shares      RecipeShare[]
+
+  @@index([ownerId])
+}
+
+// One ingredient line on a Recipe — mirrors `RecipeIngredientEntry`'s
+// name/quantity/unit shape. `quantity` is nullable because plenty of real
+// ingredient lines have no numeric amount at all (e.g. "salt to taste").
+// `sortIndex` preserves the order ingredients were entered in, since a SQL
+// table (unlike the iOS model's plain `[RecipeIngredientEntry]` array) has
+// no inherent row order. Deliberately does NOT carry the iOS model's
+// `category` (a GroceryCategory, purely a shopping-list concern) or
+// `rawText`/formatting fields — those are derived/display concerns the
+// iOS-wiring task can keep computing client-side from name/quantity/unit.
+model RecipeIngredient {
+  id        String  @id @default(uuid())
+  recipeId  String
+  name      String
+  quantity  Float?
+  unit      String?
+  sortIndex Int
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId])
+}
+
+// A single "this recipe is shared with X" grant — either a specific person
+// (sharedWithUserId) or a whole group (sharedWithGroupId), never both/
+// neither. Prisma/Postgres have no clean way to express "exactly one of
+// these two nullable columns is set" as a schema-level constraint, so that
+// rule is enforced in routes/recipeLibrary.js instead (400 if violated).
+// The two @@unique constraints below still give a real DB-level guarantee
+// for the case each covers: Postgres treats NULL as distinct from any other
+// NULL in a unique index, so `@@unique([recipeId, sharedWithUserId])` only
+// ever collides for two rows that are both non-null *and* equal — i.e. it
+// stops a duplicate direct-user share without also (wrongly) treating two
+// unrelated group shares on the same recipe as a collision, and the same
+// reasoning applies symmetrically to the groupId constraint.
+model RecipeShare {
+  id                String   @id @default(uuid())
+  recipeId          String
+  sharedWithUserId  String?
+  sharedWithGroupId String?
+  sharedByUserId    String
+  createdAt         DateTime @default(now())
+
+  recipe          Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  sharedWithUser  User?  @relation("RecipeShareUserTarget", fields: [sharedWithUserId], references: [id], onDelete: Cascade)
+  sharedWithGroup Group? @relation(fields: [sharedWithGroupId], references: [id], onDelete: Cascade)
+  sharedByUser    User   @relation("RecipeShareSharer", fields: [sharedByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([recipeId, sharedWithUserId])
+  @@unique([recipeId, sharedWithGroupId])
+  @@index([sharedWithUserId])
+  @@index([sharedWithGroupId])
 }
