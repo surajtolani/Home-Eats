@@ -34,7 +34,15 @@ struct HomeEatsApp: App {
             StoreAisle.self,
             ItemAisleAssignment.self,
             HistoricalGroceryItem.self,
-            GroceryReminder.self
+            GroceryReminder.self,
+            // Phase 4 — local, offline-capable mirrors of a group's shared
+            // meal plan/grocery list (see `GroupSyncService`'s doc comment
+            // for the full sync design). Separate types from the personal
+            // planning models above them in this list, not additional
+            // fields on those — see each model's own doc comment for why.
+            GroupPlannedMeal.self,
+            GroupMealSuggestion.self,
+            GroupSharedGroceryItem.self
         ])
         // Local-first storage per spec: everything lives on-device by
         // default. `cloudKitDatabase: .none` keeps that explicit; flipping

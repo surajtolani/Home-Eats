@@ -115,6 +115,11 @@ final class AccountModelsDecodingTests: XCTestCase {
 
     func testGroupDetailDecodesCreatedByUserIdKeyIntoSwiftCasing() throws {
         struct GroupResponseFixture: Decodable { let group: GroupDetail }
+        // `members` now includes each membership's `role` (Phase 3 — see
+        // `publicMember(...)` in routes/groups.js and backend/README.md's
+        // "Group roles" section) — this fixture carries both roles so the
+        // decode itself, and `myRole(currentUserID:)` below, are both
+        // exercised against a realistic multi-member response.
         let json = """
         {
           "group": {
@@ -123,14 +128,24 @@ final class AccountModelsDecodingTests: XCTestCase {
             "createdByUserId": "u1",
             "createdAt": "2024-02-01T00:00:00.000Z",
             "members": [
-              { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001" }
+              { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001", "role": "MANAGER" },
+              { "id": "u2", "displayName": "Alex", "phoneNumber": "+14155550002", "role": "PARTICIPANT" }
             ]
           }
         }
         """
         let response = try decoder.decode(GroupResponseFixture.self, from: data(json))
         XCTAssertEqual(response.group.createdByUserID, "u1")
-        XCTAssertEqual(response.group.members.count, 1)
+        XCTAssertEqual(response.group.members.count, 2)
+        XCTAssertEqual(response.group.members[0].role, .manager)
+        XCTAssertEqual(response.group.members[1].role, .participant)
+        XCTAssertEqual(response.group.myRole(currentUserID: "u1"), .manager)
+        XCTAssertEqual(response.group.myRole(currentUserID: "u2"), .participant)
+        // A caller id that isn't in `members` at all (shouldn't happen in
+        // practice — see `myRole`'s own doc comment) resolves to `nil`
+        // rather than crashing.
+        XCTAssertNil(response.group.myRole(currentUserID: "u3"))
+        XCTAssertNil(response.group.myRole(currentUserID: nil))
     }
 
     /// `Group.createdByUserId` is nullable on the backend (`onDelete:
@@ -148,7 +163,7 @@ final class AccountModelsDecodingTests: XCTestCase {
             "createdByUserId": null,
             "createdAt": "2024-02-01T00:00:00.000Z",
             "members": [
-              { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001" }
+              { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001", "role": "PARTICIPANT" }
             ]
           }
         }

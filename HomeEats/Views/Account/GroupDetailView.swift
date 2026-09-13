@@ -26,6 +26,27 @@ struct GroupDetailView: View {
                 Text(errorMessage).foregroundStyle(.red)
                 Button("Retry") { Task { await load() } }
             } else if let group {
+                // Phase 4 — the group's shared, backend-hosted meal plan and
+                // grocery list (contrast with everything below, which is
+                // just this group's *membership* info): reached from here,
+                // not folded into the personal Plan/Grocery tabs, per this
+                // feature's own scope (see `GroupSharedMealPlanView`'s doc
+                // comment). Shown for every member regardless of role — a
+                // `PARTICIPANT` can still suggest/vote/check things off on
+                // both, they just don't get every action once inside (see
+                // each screen's own role gating).
+                Section("Shared With This Group") {
+                    NavigationLink {
+                        GroupSharedMealPlanView(groupID: groupID, groupName: group.name)
+                    } label: {
+                        Label("Shared Meal Plan", systemImage: "calendar")
+                    }
+                    NavigationLink {
+                        GroupSharedGroceryListView(groupID: groupID, groupName: group.name)
+                    } label: {
+                        Label("Shared Grocery List", systemImage: "cart")
+                    }
+                }
                 Section("Members") {
                     ForEach(group.members) { member in
                         memberRow(member)
@@ -54,20 +75,41 @@ struct GroupDetailView: View {
         }
     }
 
-    private func memberRow(_ member: PublicUser) -> some View {
+    private func memberRow(_ member: GroupMember) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(member.displayNameOrPhoneNumber)
+                HStack(spacing: 6) {
+                    Text(member.displayNameOrPhoneNumber)
+                    // Phase 3's role, surfaced here so it's visible without
+                    // a separate screen — matches `GET /groups/:groupId`
+                    // now including `role` per member (see
+                    // backend/README.md's "Group roles" section).
+                    if member.role == .manager {
+                        Text("Manager")
+                            .font(.brandCaption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.brandForest.opacity(0.15)))
+                            .foregroundStyle(Color.brandForest)
+                    }
+                }
                 if member.displayName?.isEmpty == false {
                     Text(member.phoneNumber).font(.brandCaption).foregroundStyle(.secondary)
                 }
             }
             Spacer()
             // Same route (`DELETE /groups/:groupId/members/:userId`) either
-            // way — v1 has no admin role, so "Leave" (removing yourself) and
-            // "Remove" (removing someone else) are the same call with a
-            // different label purely for how it reads (see
-            // backend/README.md's note on that route).
+            // way — "Leave" (removing yourself) and "Remove" (removing
+            // someone else) are the same call with a different label purely
+            // for how it reads. Removing someone else is `MANAGER`-only as
+            // of Phase 3 (see backend/README.md's "Group roles" section);
+            // this button is shown to everyone regardless (pre-existing
+            // Phase 2/3 behavior, unchanged by this Phase 4 task, which is
+            // scoped to the new shared meal-plan/grocery-list screens
+            // above, not to gating group-membership management itself) —
+            // a `PARTICIPANT` tapping it on someone else simply gets the
+            // backend's `403` back as an inline error, same as any other
+            // server-declined request elsewhere in this app.
             Button(member.id == accountSession.currentUser?.id ? "Leave" : "Remove", role: .destructive) {
                 Task { await remove(member.id) }
             }

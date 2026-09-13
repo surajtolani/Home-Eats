@@ -361,6 +361,216 @@ extension AccountsAPIClient {
     }
 }
 
+// MARK: - Group meal planning (Phase 4 — GET/POST/DELETE /groups/:groupId/meal-plan/*)
+//
+// Mounted at `/groups/:groupId/meal-plan` — confirmed against
+// backend/routes/groupMealPlan.js and backend/README.md's endpoint table.
+// Every method here is a thin, typed wrapper the same shape as the Groups
+// section above; the actual offline-capable, locally-persisted layer this
+// app's new shared-plan screen reads from is `GroupSyncService` +
+// `GroupPlannedMeal`/`GroupMealSuggestion` (SwiftData), which call these.
+
+extension AccountsAPIClient {
+    /// ISO-8601 (no fractional seconds needed — the backend's
+    /// `z.coerce.date()`, used on every `date` field these routes accept,
+    /// just calls `new Date(...)`, which parses this fine) for the `date`
+    /// field every meal-plan write below sends. One shared helper rather
+    /// than formatting inline at each call site, so every write encodes a
+    /// date identically.
+    static func isoDateString(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    static func getGroupMealPlan(groupID: String) async throws -> GroupMealPlanResponse {
+        try await send("GET", path: "groups/\(groupID)/meal-plan")
+    }
+
+    /// Directly decides a recipe-based meal onto the group's plan —
+    /// `MANAGER`-only server-side (see routes/groupMealPlan.js); a
+    /// `PARTICIPANT` calling this gets a `403` surfaced the normal way as
+    /// `AccountsAPIError.server(...)`. Two overloads (this one, and the
+    /// restaurant one just below) rather than one method taking an enum or
+    /// two optional parameters — mirrors the backend's own
+    /// `MealShapeSchema` "exactly one of recipeId/restaurantName" body shape
+    /// (same reasoning as `inviteToGroup`'s two overloads above).
+    static func decideGroupMeal(groupID: String, date: Date, slot: MealSlot, recipeID: String) async throws -> RemotePlannedMeal {
+        struct Response: Decodable { let plannedMeal: RemotePlannedMeal }
+        let response: Response = try await send(
+            "POST", path: "groups/\(groupID)/meal-plan",
+            body: ["date": isoDateString(date), "slot": RemoteMealSlot(localSlot: slot).rawValue, "recipeId": recipeID]
+        )
+        return response.plannedMeal
+    }
+
+    static func decideGroupMeal(
+        groupID: String, date: Date, slot: MealSlot, restaurantName: String, isOrderIn: Bool
+    ) async throws -> RemotePlannedMeal {
+        struct Response: Decodable { let plannedMeal: RemotePlannedMeal }
+        let response: Response = try await send(
+            "POST", path: "groups/\(groupID)/meal-plan",
+            body: [
+                "date": isoDateString(date), "slot": RemoteMealSlot(localSlot: slot).rawValue,
+                "restaurantName": restaurantName, "isOrderIn": isOrderIn
+            ]
+        )
+        return response.plannedMeal
+    }
+
+    /// `MANAGER`-only server-side.
+    static func deleteGroupPlannedMeal(groupID: String, id: String) async throws {
+        try await sendNoContent("DELETE", path: "groups/\(groupID)/meal-plan/\(id)")
+    }
+
+    /// The Participant-facing "propose this for a vote" action — any member,
+    /// same recipe-or-restaurant body shape as `decideGroupMeal` above.
+    static func suggestGroupMeal(groupID: String, date: Date, slot: MealSlot, recipeID: String) async throws -> RemoteMealSuggestion {
+        struct Response: Decodable { let suggestion: RemoteMealSuggestion }
+        let response: Response = try await send(
+            "POST", path: "groups/\(groupID)/meal-plan/suggestions",
+            body: ["date": isoDateString(date), "slot": RemoteMealSlot(localSlot: slot).rawValue, "recipeId": recipeID]
+        )
+        return response.suggestion
+    }
+
+    static func suggestGroupMeal(
+        groupID: String, date: Date, slot: MealSlot, restaurantName: String, isOrderIn: Bool
+    ) async throws -> RemoteMealSuggestion {
+        struct Response: Decodable { let suggestion: RemoteMealSuggestion }
+        let response: Response = try await send(
+            "POST", path: "groups/\(groupID)/meal-plan/suggestions",
+            body: [
+                "date": isoDateString(date), "slot": RemoteMealSlot(localSlot: slot).rawValue,
+                "restaurantName": restaurantName, "isOrderIn": isOrderIn
+            ]
+        )
+        return response.suggestion
+    }
+
+    /// Toggles the caller's own vote on/off — any member. Returns the
+    /// updated suggestion (fresh `voteCount`/`votedByMe`), same as the
+    /// backend route itself.
+    static func toggleGroupMealSuggestionVote(groupID: String, suggestionID: String) async throws -> RemoteMealSuggestion {
+        struct Response: Decodable { let suggestion: RemoteMealSuggestion }
+        let response: Response = try await send("POST", path: "groups/\(groupID)/meal-plan/suggestions/\(suggestionID)/vote")
+        return response.suggestion
+    }
+
+    /// `MANAGER`-only. Converts a suggestion into a decided `PlannedMeal`
+    /// server-side, in one transaction (see routes/groupMealPlan.js) — this
+    /// app deliberately treats it as an immediate, online-only action rather
+    /// than something `GroupSyncService` can queue for offline push (see
+    /// that service's own doc comment on why).
+    static func adoptGroupMealSuggestion(groupID: String, suggestionID: String) async throws -> RemotePlannedMeal {
+        struct Response: Decodable { let plannedMeal: RemotePlannedMeal }
+        let response: Response = try await send("POST", path: "groups/\(groupID)/meal-plan/suggestions/\(suggestionID)/adopt")
+        return response.plannedMeal
+    }
+
+    /// `MANAGER`, or the suggestion's own proposer — withdrawing your own
+    /// suggestion is allowed even without being a manager (see
+    /// routes/groupMealPlan.js's own doc comment on this route).
+    static func deleteGroupMealSuggestion(groupID: String, suggestionID: String) async throws {
+        try await sendNoContent("DELETE", path: "groups/\(groupID)/meal-plan/suggestions/\(suggestionID)")
+    }
+}
+
+// MARK: - Group grocery list (Phase 4 — GET/POST/PATCH/DELETE /groups/:groupId/grocery/*)
+//
+// Mounted at `/groups/:groupId/grocery` — confirmed against
+// backend/routes/groupGrocery.js. Same "thin typed wrapper, real local-first
+// layer lives in GroupSyncService + GroupSharedGroceryItem" relationship as
+// the meal-plan section above.
+
+extension AccountsAPIClient {
+    static func getGroupGroceryList(groupID: String) async throws -> GroupGroceryListResponse {
+        try await send("GET", path: "groups/\(groupID)/grocery")
+    }
+
+    /// Any member may call this, but the backend gates `section`
+    /// role-by-role (see routes/groupGrocery.js's own doc comment on
+    /// `POST /groups/:groupId/grocery`): a `PARTICIPANT` passing anything
+    /// but `.suggested` gets a `403` — this app's role-gated UI is what
+    /// keeps a `PARTICIPANT` from ever building that request in the first
+    /// place (see `GroupSharedGroceryListView`), same "the UI never offers
+    /// an action that would just 403" standard the rest of this feature
+    /// holds to.
+    static func createGroupGroceryItem(
+        groupID: String,
+        name: String,
+        category: GroceryCategory,
+        section: GroupGrocerySection,
+        quantityText: String = "",
+        orderIndex: Double = 0
+    ) async throws -> RemoteGroupGroceryItem {
+        struct Response: Decodable { let item: RemoteGroupGroceryItem }
+        let response: Response = try await send(
+            "POST", path: "groups/\(groupID)/grocery",
+            body: [
+                "name": name,
+                "category": RemoteGroceryCategory(localCategory: category).rawValue,
+                "section": section.rawValue,
+                "quantityText": quantityText,
+                "orderIndex": orderIndex
+            ]
+        )
+        return response.item
+    }
+
+    /// `MANAGER`-only. Moves a `SUGGESTED` item to `THIS_WEEK` — the
+    /// accept half of the suggest/accept flow. Treated as an immediate,
+    /// online-only action by `GroupSyncService`, same reasoning as
+    /// `adoptGroupMealSuggestion` above.
+    static func acceptGroupGroceryItem(groupID: String, id: String) async throws -> RemoteGroupGroceryItem {
+        struct Response: Decodable { let item: RemoteGroupGroceryItem }
+        let response: Response = try await send("PATCH", path: "groups/\(groupID)/grocery/\(id)/accept")
+        return response.item
+    }
+
+    /// General field update. Every parameter is optional and, when `nil`,
+    /// simply omitted from the request body (never sent as JSON `null` —
+    /// unlike `RecipeLibraryUpdatePayload`, nothing here has a
+    /// "leave unchanged" vs. "explicitly clear to null" distinction to make:
+    /// every field `UpdateItemSchema` accepts server-side is a plain
+    /// optional overwrite, so a plain Swift optional is unambiguous on its
+    /// own). Deliberately field-granular at the call site, not just at the
+    /// backend: `GroupSyncService`'s offline-queued path only ever calls
+    /// this with `isChecked`/`orderIndex` (the two fields any member may
+    /// set — see routes/groupGrocery.js's field-by-field role split), never
+    /// with the manager-only fields alongside them, precisely so it can
+    /// never accidentally trip the backend's "touching even one
+    /// manager-only field rejects the whole request" rule for a
+    /// `PARTICIPANT`'s queued checkbox/reorder update.
+    static func updateGroupGroceryItem(
+        groupID: String,
+        id: String,
+        name: String? = nil,
+        category: GroceryCategory? = nil,
+        quantityText: String? = nil,
+        section: GroupGrocerySection? = nil,
+        isChecked: Bool? = nil,
+        orderIndex: Double? = nil
+    ) async throws -> RemoteGroupGroceryItem {
+        struct Response: Decodable { let item: RemoteGroupGroceryItem }
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let category { body["category"] = RemoteGroceryCategory(localCategory: category).rawValue }
+        if let quantityText { body["quantityText"] = quantityText }
+        if let section { body["section"] = section.rawValue }
+        if let isChecked { body["isChecked"] = isChecked }
+        if let orderIndex { body["orderIndex"] = orderIndex }
+        let response: Response = try await send("PATCH", path: "groups/\(groupID)/grocery/\(id)", body: body)
+        return response.item
+    }
+
+    /// Allowed-caller rule depends on the item's CURRENT `section` — see
+    /// routes/groupGrocery.js's own doc comment on this route; this app's
+    /// role-gated UI mirrors that rule when deciding whether to even offer
+    /// a delete/reject swipe action in the first place.
+    static func deleteGroupGroceryItem(groupID: String, id: String) async throws {
+        try await sendNoContent("DELETE", path: "groups/\(groupID)/grocery/\(id)")
+    }
+}
+
 // MARK: - Recipe library (POST/GET/PATCH/DELETE /recipe-library/*)
 //
 // Mounted at `/recipe-library` — confirmed directly against

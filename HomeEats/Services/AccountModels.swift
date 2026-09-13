@@ -122,8 +122,48 @@ struct GroupSummary: Codable, Identifiable {
     }
 }
 
+/// `GroupMembership.role` (Phase 3 — see the `GroupRole` doc comment in
+/// prisma/schema.prisma): `MANAGER` can decide/add directly onto a group's
+/// shared meal plan and grocery list; `PARTICIPANT` can only propose/suggest
+/// and do routine list upkeep (checking an item off, reordering) — see
+/// `routes/groupMealPlan.js`/`routes/groupGrocery.js` for the exact,
+/// sometimes field-grained, rules each new screen's role gating mirrors.
+/// Modeled as a real Swift enum (not a raw `String`, unlike
+/// `RemoteRecipe.visibility` — see that property's own doc comment on why a
+/// raw string was right there): unlike `visibility`, this app's new group
+/// screens genuinely branch UI on every value this can take, so a `String`
+/// that could silently fail to match anything would just move a decoding
+/// failure into a harder-to-spot logic bug instead.
+enum GroupRole: String, Codable {
+    case manager = "MANAGER"
+    case participant = "PARTICIPANT"
+}
+
+/// One entry of `GroupDetail.members` — everything `PublicUser` has, plus
+/// this membership's `role` (see `publicMember(...)` in routes/groups.js,
+/// added in Phase 3). Kept as its own type rather than folding `role` onto
+/// `PublicUser` itself: `PublicUser` is still exactly right, role-less, for
+/// every context that has no membership to speak of (the friends list,
+/// recipe-share pickers, ...) — adding an unused `role` there would mean
+/// either a bogus placeholder value or making it optional everywhere for
+/// this one case's benefit.
+struct GroupMember: Codable, Identifiable, Equatable, Hashable {
+    let id: String
+    let displayName: String?
+    let phoneNumber: String
+    let role: GroupRole
+
+    /// Same fallback idea as `PublicUser.displayNameOrPhoneNumber` — kept as
+    /// its own copy rather than a shared protocol, same reasoning as that
+    /// property's own doc comment.
+    var displayNameOrPhoneNumber: String {
+        if let displayName, !displayName.isEmpty { return displayName }
+        return phoneNumber
+    }
+}
+
 /// `GET /groups/:groupId`'s (and `POST /groups`'s) full group, including
-/// every member's public info — safe here specifically because, per
+/// every member's public info and role — safe here specifically because, per
 /// backend/README.md, "everyone returned is a fellow member of this same
 /// group."
 struct GroupDetail: Codable, Identifiable {
@@ -133,11 +173,23 @@ struct GroupDetail: Codable, Identifiable {
     /// reasoning applies here.
     let createdByUserID: String?
     let createdAt: Date
-    let members: [PublicUser]
+    let members: [GroupMember]
 
     enum CodingKeys: String, CodingKey {
         case id, name, createdAt, members
         case createdByUserID = "createdByUserId"
+    }
+
+    /// This group as the *signed-in caller* sees it — `nil` only if the
+    /// caller's own membership is somehow missing from `members` (shouldn't
+    /// happen: every route that returns a `GroupDetail` already required the
+    /// caller to be a member first), used throughout the new shared
+    /// meal-plan/grocery-list screens to decide which actions to even offer
+    /// (see `GroupSharedMealPlanView`/`GroupSharedGroceryListView`'s role
+    /// gating).
+    func myRole(currentUserID: String?) -> GroupRole? {
+        guard let currentUserID else { return nil }
+        return members.first(where: { $0.id == currentUserID })?.role
     }
 }
 
@@ -251,4 +303,225 @@ struct SharedRecipeEntry: Codable, Identifiable {
         case title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, createdAt, updatedAt, ingredients, share
         case ownerID = "ownerId"
     }
+}
+
+// MARK: - Group meal planning (Phase 4 — routes/groupMealPlan.js)
+//
+// These types are the *wire* shapes only — decode targets for
+// `AccountsAPIClient`'s new group meal-plan/grocery methods. The local,
+// offline-capable store the new shared-plan/shared-list screens actually
+// read from lives in SwiftData instead (`GroupPlannedMeal`,
+// `GroupMealSuggestion`, `GroupSharedGroceryItem` — see
+// `HomeEats/Models/GroupSharedMealPlan.swift` and
+// `HomeEats/Models/GroupSharedGroceryItem.swift`); `GroupSyncService` is
+// what turns one of these into the other and back.
+
+/// Mirrors the backend's `MealSlot` enum (`BREAKFAST`/`LUNCH`/`DINNER`/
+/// `OTHER` — see prisma/schema.prisma) as its own, wire-format-only Swift
+/// enum, immediately convertible to/from this app's one *canonical*
+/// `MealSlot` type (`HomeEats/Models/MealSlot.swift`) via `localSlot`/
+/// `init(localSlot:)` below. A second enum, rather than teaching the local
+/// `MealSlot` itself to decode this JSON, on purpose: the local enum's raw
+/// values (`"breakfast"`, ...) are its own, unrelated, already-established
+/// on-device convention (used nowhere near JSON, only as a SwiftData/
+/// `Codable` implementation detail) — decoding `"BREAKFAST"` straight into
+/// it would fail outright, and giving it a *second*, custom `Decodable`
+/// conformance just for this one caller would mean editing a model this
+/// feature's scope deliberately leaves untouched (see `MealSlot.swift`, one
+/// of the existing personal-planning models this task's scope notes call
+/// out). Every local model in this feature (`GroupPlannedMeal`,
+/// `GroupMealSuggestion`) stores the *local* `MealSlot` directly, never this
+/// type — it exists purely as a decode/encode step at the network boundary.
+enum RemoteMealSlot: String, Codable {
+    case breakfast = "BREAKFAST"
+    case lunch = "LUNCH"
+    case dinner = "DINNER"
+    case other = "OTHER"
+
+    var localSlot: MealSlot {
+        switch self {
+        case .breakfast: return .breakfast
+        case .lunch: return .lunch
+        case .dinner: return .dinner
+        case .other: return .other
+        }
+    }
+
+    init(localSlot: MealSlot) {
+        switch localSlot {
+        case .breakfast: self = .breakfast
+        case .lunch: self = .lunch
+        case .dinner: self = .dinner
+        case .other: self = .other
+        }
+    }
+}
+
+/// `GET /groups/:groupId/meal-plan`'s `plannedMeals` rows and
+/// `POST .../meal-plan`'s/`.../suggestions/:id/adopt`'s response — exactly
+/// `serializePlannedMeal(...)` in routes/groupMealPlan.js. `recipeID` and
+/// `restaurantName` are both optional and, per that route's own doc
+/// comment, can legitimately both be `nil` at once (the recipe behind a
+/// past decision was later deleted by its owner, `onDelete: SetNull`) — see
+/// `GroupPlannedMeal.displayTitle` for how that's shown.
+struct RemotePlannedMeal: Codable, Identifiable {
+    let id: String
+    let groupID: String
+    let date: Date
+    let slot: RemoteMealSlot
+    let recipeID: String?
+    let restaurantName: String?
+    let isOrderIn: Bool
+    let decidedByUserID: String
+    let decidedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, date, slot, restaurantName, isOrderIn, decidedAt
+        case groupID = "groupId"
+        case recipeID = "recipeId"
+        case decidedByUserID = "decidedByUserId"
+    }
+}
+
+/// `GET /groups/:groupId/meal-plan`'s `suggestions` rows, and every
+/// suggestion-mutating route's response — exactly `serializeSuggestion(...)`
+/// in routes/groupMealPlan.js, including the caller-relative `voteCount`/
+/// `votedByMe` pair that route's own doc comment explains (a real vote join
+/// table under the hood, not a plain counter, specifically so the API can
+/// answer "did *I* already vote for this" per suggestion).
+struct RemoteMealSuggestion: Codable, Identifiable {
+    let id: String
+    let groupID: String
+    let date: Date
+    let slot: RemoteMealSlot
+    let recipeID: String?
+    let restaurantName: String?
+    let isOrderIn: Bool
+    let proposedByUserID: String
+    let createdAt: Date
+    let voteCount: Int
+    let votedByMe: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, date, slot, restaurantName, isOrderIn, createdAt, voteCount, votedByMe
+        case groupID = "groupId"
+        case recipeID = "recipeId"
+        case proposedByUserID = "proposedByUserId"
+    }
+}
+
+/// `GET /groups/:groupId/meal-plan`'s full response shape — every decided
+/// meal and every pending suggestion for the group, no date filtering
+/// server-side (the client filters locally — see `GroupSyncService`, which
+/// pulls this in full every sync rather than paging/filtering by date, same
+/// "household-sized data" reasoning the backend route's own doc comment
+/// gives for not filtering server-side either).
+struct GroupMealPlanResponse: Codable {
+    let plannedMeals: [RemotePlannedMeal]
+    let suggestions: [RemoteMealSuggestion]
+}
+
+// MARK: - Group grocery list (Phase 4 — routes/groupGrocery.js)
+
+/// Mirrors the backend's `GroceryCategory` enum exactly (`PRODUCE`,
+/// `DAIRY_AND_EGGS`, ... — see prisma/schema.prisma), converting to/from
+/// this app's own local `GroceryCategory` enum (`HomeEats/Models/GroceryCategory.swift`)
+/// via `localCategory`/`init(localCategory:)` — same "separate wire-format
+/// enum, converted immediately, existing local model left untouched" reasoning
+/// as `RemoteMealSlot` above.
+enum RemoteGroceryCategory: String, Codable {
+    case produce = "PRODUCE"
+    case dairyAndEggs = "DAIRY_AND_EGGS"
+    case meatAndSeafood = "MEAT_AND_SEAFOOD"
+    case bakery = "BAKERY"
+    case pantry = "PANTRY"
+    case frozen = "FROZEN"
+    case beverages = "BEVERAGES"
+    case snacks = "SNACKS"
+    case household = "HOUSEHOLD"
+    case other = "OTHER"
+
+    var localCategory: GroceryCategory {
+        switch self {
+        case .produce: return .produce
+        case .dairyAndEggs: return .dairyAndEggs
+        case .meatAndSeafood: return .meatAndSeafood
+        case .bakery: return .bakery
+        case .pantry: return .pantry
+        case .frozen: return .frozen
+        case .beverages: return .beverages
+        case .snacks: return .snacks
+        case .household: return .household
+        case .other: return .other
+        }
+    }
+
+    init(localCategory: GroceryCategory) {
+        switch localCategory {
+        case .produce: self = .produce
+        case .dairyAndEggs: self = .dairyAndEggs
+        case .meatAndSeafood: self = .meatAndSeafood
+        case .bakery: self = .bakery
+        case .pantry: self = .pantry
+        case .frozen: self = .frozen
+        case .beverages: self = .beverages
+        case .snacks: self = .snacks
+        case .household: self = .household
+        case .other: self = .other
+        }
+    }
+}
+
+/// Mirrors the backend's `GroupGrocerySection` enum (`SUGGESTED`/
+/// `THIS_WEEK`/`STAPLES` — see prisma/schema.prisma) directly, as both the
+/// wire decode target AND the type the local `GroupSharedGroceryItem` model
+/// stores — unlike `MealSlot`/`GroceryCategory`, there's no existing local
+/// enum this parallels (the personal-use `GroceryListSection` has a vestigial
+/// extra `.rejected` case the backend's own doc comment explicitly says NOT
+/// to reintroduce here — see that section's doc comment in
+/// prisma/schema.prisma), so one plain, wire-spelled enum is simplest rather
+/// than inventing a second local-only one just to mirror an established
+/// pattern that doesn't actually apply here.
+enum GroupGrocerySection: String, Codable, CaseIterable, Identifiable {
+    case suggested = "SUGGESTED"
+    case thisWeek = "THIS_WEEK"
+    case staples = "STAPLES"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .suggested: return "Suggested"
+        case .thisWeek: return "This Week"
+        case .staples: return "Staples"
+        }
+    }
+}
+
+/// One row of `GET /groups/:groupId/grocery`'s `items`, and every
+/// item-mutating route's response — exactly `serializeItem(...)` in
+/// routes/groupGrocery.js.
+struct RemoteGroupGroceryItem: Codable, Identifiable {
+    let id: String
+    let groupID: String
+    let name: String
+    let category: RemoteGroceryCategory
+    let section: GroupGrocerySection
+    let quantityText: String
+    let isChecked: Bool
+    let orderIndex: Double
+    let addedByUserID: String
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, category, section, quantityText, isChecked, orderIndex, createdAt, updatedAt
+        case groupID = "groupId"
+        case addedByUserID = "addedByUserId"
+    }
+}
+
+/// `GET /groups/:groupId/grocery`'s full response shape.
+struct GroupGroceryListResponse: Codable {
+    let items: [RemoteGroupGroceryItem]
 }
