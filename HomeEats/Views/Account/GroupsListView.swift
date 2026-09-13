@@ -7,6 +7,15 @@ struct GroupsListView: View {
     @State private var groups: [GroupSummary] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    /// A failed pull-to-refresh once a list is already on screen — shown as
+    /// a non-blocking `.alert` instead of through `errorMessage`, which
+    /// replaces this whole list with just an error + Retry button (see the
+    /// `if/else if` chain in `body`). Same "first load blanks the screen, a
+    /// later refresh doesn't" split as `FriendsListView`/`GroupDetailView`
+    /// (see either's `actionFailure` doc comment) — there's no other
+    /// post-load action in this particular screen to route through it, but
+    /// a failed refresh deserves the same treatment.
+    @State private var refreshFailure: String?
     @State private var showCreateGroup = false
     /// Set the moment `CreateGroupView` actually creates a group, and read
     /// by `.navigationDestination(item:)` below to push straight into it —
@@ -56,16 +65,33 @@ struct GroupsListView: View {
         .navigationDestination(item: $newlyCreatedGroup) { group in
             GroupDetailView(groupID: group.id, groupName: group.name)
         }
+        .alert(
+            "Something Went Wrong",
+            isPresented: Binding(
+                get: { refreshFailure != nil },
+                set: { isPresented in if !isPresented { refreshFailure = nil } }
+            ),
+            presenting: refreshFailure
+        ) { _ in
+            Button("OK") {}
+        } message: { message in
+            Text(message)
+        }
     }
 
     private func load() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+        let isFirstLoad = groups.isEmpty
         do {
             groups = try await AccountsAPIClient.getGroups()
         } catch {
-            errorMessage = error.localizedDescription
+            if isFirstLoad {
+                errorMessage = error.localizedDescription
+            } else {
+                refreshFailure = error.localizedDescription
+            }
         }
     }
 }

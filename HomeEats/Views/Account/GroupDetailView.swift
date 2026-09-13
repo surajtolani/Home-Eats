@@ -17,6 +17,16 @@ struct GroupDetailView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showInvite = false
+    /// A failed Leave/Remove tap, shown as a non-blocking `.alert` — not
+    /// through `errorMessage`, which replaces this entire screen's content
+    /// (member list, Meal Plan/Grocery List links, everything) the moment
+    /// it's set (see the `if/else if` chain in `body`). That's the right
+    /// behavior for "the very first load failed, there's nothing to show
+    /// yet," but blanking an already-loaded group screen just because one
+    /// member-removal tap happened to fail (same bug class fixed in
+    /// `FriendsListView`'s `actionFailure` — see its doc comment) would hide
+    /// the very screen someone needs to try again from.
+    @State private var actionFailure: String?
 
     /// The signed-in caller's own role in *this* group — same
     /// `group?.myRole(currentUserID:)` convention `GroupSharedMealPlanView`/
@@ -96,6 +106,18 @@ struct GroupDetailView: View {
                 existingMemberIDs: Set(group?.members.map(\.id) ?? [])
             )
         }
+        .alert(
+            "Something Went Wrong",
+            isPresented: Binding(
+                get: { actionFailure != nil },
+                set: { isPresented in if !isPresented { actionFailure = nil } }
+            ),
+            presenting: actionFailure
+        ) { _ in
+            Button("OK") {}
+        } message: { message in
+            Text(message)
+        }
     }
 
     private func memberRow(_ member: GroupMember) -> some View {
@@ -149,10 +171,19 @@ struct GroupDetailView: View {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
+        // Same "first load blanks the screen, a later refresh doesn't"
+        // split as `FriendsListView.load()` — this is also called from
+        // `.refreshable` and from the invite sheet's `onDismiss`, either of
+        // which can run after `group` is already on screen.
+        let isFirstLoad = group == nil
         do {
             group = try await AccountsAPIClient.getGroup(id: groupID)
         } catch {
-            errorMessage = error.localizedDescription
+            if isFirstLoad {
+                errorMessage = error.localizedDescription
+            } else {
+                actionFailure = error.localizedDescription
+            }
         }
     }
 
@@ -161,7 +192,7 @@ struct GroupDetailView: View {
             try await AccountsAPIClient.removeGroupMember(groupID: groupID, userID: userID)
             await load()
         } catch {
-            errorMessage = error.localizedDescription
+            actionFailure = error.localizedDescription
         }
     }
 }
