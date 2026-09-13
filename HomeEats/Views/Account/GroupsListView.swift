@@ -138,7 +138,7 @@ private struct CreateGroupView: View {
                 Text(friend.displayNameOrPhoneNumber).foregroundStyle(.primary)
                 Spacer()
                 if selectedFriendIDs.contains(friend.id) {
-                    Image(systemName: "checkmark").foregroundStyle(.accentColor)
+                    Image(systemName: "checkmark").foregroundStyle(Color.brandForest)
                 }
             }
         }

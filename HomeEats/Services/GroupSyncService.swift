@@ -491,7 +491,16 @@ enum GroupSyncService {
 
             let title: String?
             if let recipeID = remoteMeal.recipeID {
-                title = existing?.cachedRecipeTitle ?? (await resolveRecipeTitle(recipeID: recipeID, modelContext: modelContext))
+                // Not `existing?.cachedRecipeTitle ?? (await resolveRecipeTitle(...))` —
+                // `??`'s right-hand side is an `@autoclosure`, which doesn't
+                // support `await` inside it (a real compiler error, not a
+                // style choice); spelling this out as an if/else sidesteps
+                // the autoclosure entirely.
+                if let cached = existing?.cachedRecipeTitle {
+                    title = cached
+                } else {
+                    title = await resolveRecipeTitle(recipeID: recipeID, modelContext: modelContext)
+                }
             } else {
                 title = nil
             }
@@ -536,7 +545,13 @@ enum GroupSyncService {
 
             let title: String?
             if let recipeID = remoteSuggestion.recipeID {
-                title = existing?.cachedRecipeTitle ?? (await resolveRecipeTitle(recipeID: recipeID, modelContext: modelContext))
+                // See the identical pattern in reconcilePlannedMeals above —
+                // `??`'s autoclosure doesn't support `await`.
+                if let cached = existing?.cachedRecipeTitle {
+                    title = cached
+                } else {
+                    title = await resolveRecipeTitle(recipeID: recipeID, modelContext: modelContext)
+                }
             } else {
                 title = nil
             }
