@@ -207,7 +207,20 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
     const token = signToken(user.id);
     res.json({
       token,
-      user: { id: user.id, phoneNumber: user.phoneNumber, displayName: user.displayName },
+      // Same full "self" shape GET/PATCH /me return (routes/me.js's
+      // selfProfile) — every caller that gets a `user` object back about
+      // *themselves* should see the identical set of fields, not a partial
+      // one that only fills in after a separate GET /me.
+      user: {
+        id: user.id,
+        phoneNumber: user.phoneNumber,
+        displayName: user.displayName,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        city: user.city,
+        country: user.country,
+        createdAt: user.createdAt,
+      },
     });
   } catch (error) {
     console.error("Signup/verify transaction failed", error);

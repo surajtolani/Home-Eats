@@ -34,7 +34,17 @@ datasource db {
 model User {
   id          String   @id @default(uuid())
   phoneNumber String   @unique
+  // `displayName` is the freeform name shown to friends/groups (what
+  // `AccountSignInView`'s post-signup name step already sets) — left
+  // exactly as-is. These four are additional, separately-optional profile
+  // fields (nullable, same "not set until someone fills them in" story as
+  // displayName always had) — a fuller profile someone can fill in later
+  // from a dedicated Edit Profile screen, not required at signup.
   displayName String?
+  firstName   String?
+  lastName    String?
+  city        String?
+  country     String?
   createdAt   DateTime @default(now())
 
   // Friend requests this user sent / received. A Friendship is queryable
