@@ -147,6 +147,24 @@ struct GroupSharedMealPlanView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // `.animation(nil, value:)` here, specifically — voting is
+            // local-first (see `GroupMealSuggestion.voteLocally`'s doc
+            // comment) and briefly sets `syncState = .pendingUpdate` for the
+            // voted-on row the instant you tap, the same way any other
+            // local write does, until the next sync cycle (usually a couple
+            // seconds later, see the periodic loop in `.task` below) pushes
+            // it and flips it back. That's correct and intentional — but
+            // `hasPendingChanges` reads across every suggestion/meal, so
+            // this banner was popping in and back out on nearly every single
+            // vote, which read as the whole screen "moving up and down" (a
+            // real report — SwiftUI implicitly animates a `VStack`'s
+            // conditional content appearing/disappearing, and everything
+            // below this banner shifts down then back up with it). The
+            // banner's own correctness is unchanged — it still reflects real
+            // pending/offline state exactly as before — this only removes
+            // the animated slide on that specific transition, so a fleeting
+            // pending state (the normal case for a vote) shows and clears
+            // without visibly pushing the rest of the screen around.
             if hasPendingChanges || isKnownOffline {
                 Label(statusMessage, systemImage: "wifi.slash")
                     .font(.brandCaption)
@@ -179,6 +197,18 @@ struct GroupSharedMealPlanView: View {
                 Button("This Week") { goToThisWeek() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    // `.pickerStyle(.segmented)`'s rendered label size comes
+                    // from `UISegmentedControl`'s own default title font (a
+                    // fixed 13pt regular — `.footnote` is SwiftUI's exact
+                    // equivalent size), not from any `Font` set on the
+                    // `Text` inside each segment — so a SwiftUI `Text`
+                    // modifier there wouldn't actually change what's
+                    // rendered, which is why this button (using
+                    // `.controlSize(.small)`'s own smaller default text
+                    // size) read visibly smaller than "Calendar"/"Weekly"
+                    // right next to it. Matching that fixed 13pt here
+                    // explicitly is what actually fixes it.
+                    .font(.footnote)
                     .disabled(isAtDefaultPosition)
             }
             .padding(.horizontal)
@@ -191,6 +221,7 @@ struct GroupSharedMealPlanView: View {
                 thisWeekAgenda
             }
         }
+        .animation(nil, value: hasPendingChanges)
         .navigationTitle(group?.name ?? groupName)
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -965,16 +996,20 @@ private struct GroupSuggestionRow: View {
             // matching the backend's own `upvoteCount`/`downvoteCount` split
             // (see `serializeSuggestion(...)`'s doc comment in
             // routes/groupMealPlan.js for why that split, not a net number,
-            // is what the API returns in the first place). `.small` control
-            // size keeps the pair no wider than the single vote button this
-            // replaces, in a row that's already dense.
+            // is what the API returns in the first place). `.mini` control
+            // size (down from `.small`, per direct user request — "make the
+            // thumbs up, thumbs down and use it icons smaller so the recipe
+            // or restaurant length extends further to the right") keeps
+            // this whole trailing cluster as compact as it can be while
+            // still tappable, leaving `suggestion.displayTitle` above the
+            // most room it can get in an already-dense row.
             Button {
                 onVote(.up)
             } label: {
                 Label("\(suggestion.upvoteCount)", systemImage: suggestion.myVote == .up ? "hand.thumbsup.fill" : "hand.thumbsup")
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
+            .controlSize(.mini)
             .tint(suggestion.myVote == .up ? .brandForest : nil)
 
             Button {
@@ -983,7 +1018,7 @@ private struct GroupSuggestionRow: View {
                 Label("\(suggestion.downvoteCount)", systemImage: suggestion.myVote == .down ? "hand.thumbsdown.fill" : "hand.thumbsdown")
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
+            .controlSize(.mini)
             .tint(suggestion.myVote == .down ? .brandTerracotta : nil)
             // MANAGER only — mirrors `POST .../suggestions/:id/adopt`
             // exactly. Disabled while offline or still a not-yet-synced
@@ -991,7 +1026,7 @@ private struct GroupSuggestionRow: View {
             if isManager {
                 Button("Use This", action: onAdopt)
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .controlSize(.mini)
                     .disabled(isKnownOffline || suggestion.isLocalPlaceholderID)
             }
         }

@@ -33,6 +33,26 @@ import SwiftUI
 /// sites.
 struct GroupTopBar: ToolbarContent {
     var body: some ToolbarContent {
+        // The app's own logo, centered — not the active group's name. Each
+        // screen still sets its own `.navigationTitle(group.name)` (needed
+        // for the back button when pushed into from elsewhere, e.g.
+        // `GroupDetailView`'s "Meal Plan"/"Grocery List" links, which reach
+        // these same two views *without* `GroupTopBar` and so still show
+        // that group's actual name as their title/principal content — this
+        // `.principal` item only overrides what's visually shown on the two
+        // main tabs specifically), but on the main Plan/Grocery tabs the
+        // group you're looking at is already obvious from the circular
+        // switcher icon right next to this — repeating it again as the big
+        // centered title was redundant, and switching groups made that
+        // title change felt like a different screen rather than the same
+        // one now showing different data. Same `BrandHeaderBanner` every
+        // other tab's root screen already uses in this exact slot (see its
+        // own doc comment) — Plan/Grocery just hadn't been given it yet,
+        // since they used to rely on `.navigationTitle` alone before this
+        // bar's `.principal` item existed to override it.
+        ToolbarItem(placement: .principal) {
+            BrandHeaderBanner()
+        }
         ToolbarItem(placement: .topBarLeading) {
             GroupSwitcherMenu()
         }

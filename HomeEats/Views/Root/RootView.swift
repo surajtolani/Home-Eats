@@ -125,12 +125,27 @@ struct RootView: View {
             } else if activeGroupSession.groups.isEmpty {
                 CreateOrJoinFirstGroupView()
             } else {
+                // Tab order: Plan, Grocery, Recipes, Eating Out, More — per
+                // direct user request to move Grocery into the 2nd position
+                // (it used to be 4th, after Recipes and Eating Out). `Tab`'s
+                // own case order below is unchanged on purpose: `selectedTab`
+                // is compared by value everywhere it's read (`.tag`/
+                // `.onChange` in `PlanningReminderRouter`'s handling further
+                // down), never by position, so reordering the `TabView`'s
+                // children here doesn't require touching the enum or
+                // anything that switches on it.
                 TabView(selection: $selectedTab) {
                     NavigationStack {
                         GroupScopedPlanTab()
                     }
                     .tabItem { Label("Plan", systemImage: "calendar") }
                     .tag(Tab.plan)
+
+                    NavigationStack {
+                        GroupScopedGroceryTab()
+                    }
+                    .tabItem { Label("Grocery", systemImage: "cart") }
+                    .tag(Tab.grocery)
 
                     NavigationStack {
                         RecipesHomeView()
@@ -143,12 +158,6 @@ struct RootView: View {
                     }
                     .tabItem { Label("Eating Out", systemImage: "fork.knife") }
                     .tag(Tab.restaurants)
-
-                    NavigationStack {
-                        GroupScopedGroceryTab()
-                    }
-                    .tabItem { Label("Grocery", systemImage: "cart") }
-                    .tag(Tab.grocery)
 
                     NavigationStack {
                         MoreView()
