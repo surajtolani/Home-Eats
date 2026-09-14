@@ -397,19 +397,19 @@ extension AccountsAPIClient {
 // MARK: - Groups (POST/GET/DELETE /groups/*)
 
 extension AccountsAPIClient {
-    /// **Note this is NOT touched by Phase 5's invite-consent change.**
-    /// `memberUserIds` here still creates real `GroupMembership` rows
-    /// instantly, in the same transaction as the group itself — verified
-    /// directly against routes/groups.js's `POST /` handler (a plain
-    /// `prisma.group.create` with a nested `memberships: { create: [...] }`)
-    /// and against a real running backend, not just assumed from Phase 5's
-    /// own framing. Only `POST /:groupId/invite` (used by `inviteToGroup`
-    /// below, for a group that already exists) requires the recipient's
-    /// consent now — a friend picked here, at creation time, is a genuinely
-    /// different action from being invited to a group after the fact, and
-    /// the backend treats them differently on purpose. `CreateGroupView`'s
-    /// own copy reflects this distinction explicitly rather than describing
-    /// both paths as equivalent.
+    /// `memberUserIds` here now goes through the same consent mechanism
+    /// `POST /:groupId/invite` (used by `inviteToGroup` below) does — this
+    /// route used to create real `GroupMembership` rows for them instantly,
+    /// in the same transaction as the group itself, which was a real gap in
+    /// Phase 5's own "no path may ever instantly create a GroupMembership
+    /// again" guarantee: this route predated, and duplicated, the invite
+    /// route's member-adding logic instead of calling it, so it never
+    /// picked up that route's rework. Fixed directly in `POST /groups` (see
+    /// that route's own doc comment in routes/groups.js): every
+    /// `memberUserIds` entry now queues a PENDING `Invite` the same way a
+    /// `POST /:groupId/invite` call with that `userId` would, and joins only
+    /// once they accept. `CreateGroupView`'s copy no longer distinguishes
+    /// the two paths, since they now behave identically.
     static func createGroup(name: String, memberUserIDs: [String] = []) async throws -> GroupDetail {
         struct Response: Decodable { let group: GroupDetail }
         let response: Response = try await send(

@@ -121,14 +121,23 @@ const CreateGroupSchema = z.object({
 });
 
 // POST /groups
-// Body: { name, memberUserIds?: string[] } — creates a group, makes the
-// caller a member, and adds any given memberUserIds. Every id in
-// memberUserIds must be one of the caller's existing accepted friends —
-// this is what stops someone from adding an arbitrary stranger's userId
-// straight into a group they share nothing with. The caller's own
-// membership is created MANAGER; every memberUserIds entry starts
-// PARTICIPANT — same as an invite added after the fact (see
-// POST /:groupId/invite below).
+// Body: { name, memberUserIds?: string[] } — creates a group (the caller as
+// its sole initial MANAGER) and, for every id in memberUserIds, queues a
+// PENDING Invite tied to the new group — the exact same consent mechanism
+// POST /:groupId/invite's `userId` path uses (see that route's own doc
+// comment), applied here too as of Phase 5: picking someone from your
+// friends list at creation time used to add them to the group immediately,
+// with no acceptance step at all, which was a real gap in Phase 5's "no
+// path may ever instantly create a GroupMembership again" guarantee — this
+// was the one place that guarantee didn't actually reach, since Phase 5
+// only reworked POST /:groupId/invite and this route predates (and
+// duplicates) that route's own member-adding logic instead of calling it.
+// Every id in memberUserIds must still be one of the caller's existing
+// accepted friends — same reasoning as before Phase 5: it's what stops
+// someone from queuing an invite at an arbitrary stranger's userId for a
+// group they share nothing with (POST /:groupId/invite's `phoneNumber`
+// path is the one that may target a non-friend; this route only ever takes
+// a userId, so it keeps that check).
 router.post("/", asyncHandler(async (req, res) => {
   const parsed = CreateGroupSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -137,6 +146,7 @@ router.post("/", asyncHandler(async (req, res) => {
   const { name, memberUserIds } = parsed.data;
   const otherMemberIds = [...new Set(memberUserIds)].filter((id) => id !== req.userId);
 
+  const otherMembers = [];
   for (const memberId of otherMemberIds) {
     // Sequential on purpose — these are validation checks that should fail
     // fast on the first bad id, and the list is small (a group invite list,
@@ -146,20 +156,44 @@ router.post("/", asyncHandler(async (req, res) => {
     if (!friends) {
       return res.status(400).json({ error: `${memberId} is not one of your accepted friends.` });
     }
+    // eslint-disable-next-line no-await-in-loop
+    const user = await prisma.user.findUnique({ where: { id: memberId } });
+    // Can't actually happen — isAcceptedFriend above only returns true for
+    // a real Friendship row, which FKs to a real User — but stay defensive
+    // rather than let a null phoneNumber reach the Invite creation below.
+    if (!user) {
+      return res.status(404).json({ error: `${memberId} not found.` });
+    }
+    otherMembers.push(user);
   }
 
-  const group = await prisma.group.create({
-    data: {
-      name,
-      createdByUserId: req.userId,
-      memberships: {
-        create: [
-          { userId: req.userId, role: "MANAGER" },
-          ...otherMemberIds.map((userId) => ({ userId, role: "PARTICIPANT" })),
-        ],
+  const group = await prisma.$transaction(async (tx) => {
+    const created = await tx.group.create({
+      data: {
+        name,
+        createdByUserId: req.userId,
+        memberships: { create: [{ userId: req.userId, role: "MANAGER" }] },
       },
-    },
-    include: { memberships: { include: { user: true } } },
+      include: { memberships: { include: { user: true } } },
+    });
+    // No existing-Friendship check/creation here, unlike
+    // POST /:groupId/invite's own transaction — every otherMembers entry is
+    // already a validated accepted friend by this point (see the loop
+    // above), so a Friendship between the caller and each of them is
+    // already guaranteed ACCEPTED; that route's version of this step only
+    // matters for its phoneNumber path, which can target someone who isn't
+    // a friend yet at all.
+    for (const user of otherMembers) {
+      // Sequential on purpose, same reasoning as the validation loop above
+      // — this list is the same small memberUserIds array, not a bulk
+      // import, and a brand-new group can't yet have a PENDING invite race
+      // to guard against the way POST /:groupId/invite's 409 check does.
+      // eslint-disable-next-line no-await-in-loop
+      await tx.invite.create({
+        data: { invitingUserId: req.userId, invitedPhoneNumber: user.phoneNumber, groupId: created.id },
+      });
+    }
+    return created;
   });
 
   res.status(201).json({

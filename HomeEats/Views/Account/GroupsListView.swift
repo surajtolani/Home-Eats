@@ -183,23 +183,21 @@ struct CreateGroupView: View {
                 } header: {
                     Text("Members")
                 } footer: {
-                    // Deliberately distinguishes the two paths here — unlike
-                    // `POST /groups/:groupId/invite` (used everywhere else
-                    // an existing group grows), `POST /groups`'s own
-                    // `memberUserIds` isn't part of Phase 5's invite-consent
-                    // change: a friend checked off above still becomes a
-                    // real member the instant this group is created, with
-                    // no accept step of their own — verified directly
-                    // against routes/groups.js's `POST /` handler (see
-                    // `AccountsAPIClient.createGroup`'s own doc comment) and
-                    // against a real running backend, not assumed from how
-                    // the rest of this task's invite changes read. Only the
-                    // phone-number path below goes through a real Invite
-                    // (`inviteToGroup(groupID:phoneNumber:)`, fired after
-                    // creation in `create()` below) — hence "gets an invite
-                    // instead" here, matching `pendingPhoneInvites`' own
-                    // "Will invite" label just above this footer.
-                    Text("You're always included. Friends you pick above join the group immediately. Anyone else, added by contact or phone number, gets an invite instead — a friend request too, if they're not already a friend — and joins once they accept.")
+                    // This used to read "Friends you pick above join the
+                    // group immediately" — true when it was written
+                    // (verified at the time against a real running
+                    // backend), but a real gap in Phase 5's own "no path may
+                    // ever instantly create a GroupMembership again"
+                    // guarantee: `POST /groups`'s `memberUserIds` predates,
+                    // and duplicated, `POST /groups/:groupId/invite`'s own
+                    // member-adding logic instead of going through it, so it
+                    // never picked up that route's consent rework. Fixed
+                    // directly in `POST /groups` (see that route's own doc
+                    // comment in routes/groups.js) to queue the exact same
+                    // kind of PENDING `Invite` the phone-number path below
+                    // already did — both paths now behave identically, so
+                    // this footer no longer needs to distinguish them.
+                    Text("You're always included. Everyone else you add — whether picked from your friends above or added by contact or phone number — gets an invite and joins once they accept. Adding someone who isn't already a friend sends a friend request too.")
                 }
                 .disabled(didFinishCreating)
                 if let errorMessage {
@@ -268,8 +266,9 @@ struct CreateGroupView: View {
         friends = (try? await AccountsAPIClient.getFriends())?.friends ?? []
     }
 
-    /// Creates the group with its accepted-friend members (`memberUserIDs`,
-    /// a single atomic `POST /groups`), then — since a group has to exist
+    /// Creates the group (a single atomic `POST /groups`, queuing an invite
+    /// for each selected `memberUserIDs` friend — see that route's own doc
+    /// comment in routes/groups.js), then — since a group has to exist
     /// before anyone can be invited *to* it — fires off one
     /// `inviteToGroup(groupID:phoneNumber:)` call per queued
     /// `pendingPhoneInvites` entry, in a loop, one request at a time.
