@@ -24,6 +24,15 @@ struct GroceryListView: View {
     @State private var showAislesManager = false
     @State private var showHistoryImport = false
     @State private var productPickerItem: GroceryItem?
+    /// Same idea as `productPickerItem`, but for a Household Groceries
+    /// catalog entry rather than a live list item — separate state since
+    /// `.sheet(item:)` needs its own distinct driving value per sheet.
+    @State private var productPickerHistoryItem: HistoricalGroceryItem?
+    /// What's typed into Household Groceries' own quick-add field — direct
+    /// user request ("there should be a search bar to add stuff to your
+    /// past groceries") so an item can be added to the catalog directly,
+    /// not only automatically via checking something off the live list.
+    @State private var householdQuickAddText = ""
     // The only two collapsible sections on this screen — everything else
     // (the grocery list itself, its per-category groupings) stays always
     // visible. Default expanded so nothing looks hidden the first time you
@@ -183,6 +192,11 @@ struct GroceryListView: View {
         .sheet(item: $productPickerItem) { item in
             ProductOptionPickerView(genericItemName: item.name) { chosen in
                 item.selectedProductOptionID = chosen?.id
+            }
+        }
+        .sheet(item: $productPickerHistoryItem) { historyItem in
+            ProductOptionPickerView(genericItemName: historyItem.name) { chosen in
+                historyItem.preferredProductOptionID = chosen?.id
             }
         }
     }
@@ -589,6 +603,28 @@ struct GroceryListView: View {
     private var pastGroceriesSection: some View {
         Section {
             DisclosureGroup(isExpanded: $pastGroceriesExpanded) {
+                // Type-to-add — direct user request ("there should be a
+                // search bar to add stuff to your past groceries"): this
+                // catalog used to only ever grow automatically (checking an
+                // item off below) or via a bulk paste; this is the third,
+                // one-at-a-time way to put something on it directly, the
+                // same "type a name, hit the arrow" pattern the group
+                // grocery screen's own quick-add field already uses.
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Add to Household Groceries", text: $householdQuickAddText)
+                        .submitLabel(.done)
+                        .onSubmit(submitHouseholdQuickAdd)
+                    if !householdQuickAddText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button(action: submitHouseholdQuickAdd) {
+                            Image(systemName: "arrow.up.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.brandForest)
+                    }
+                }
+                .padding(.vertical, 2)
+
                 if historicalItems.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Nothing here yet.")
@@ -605,22 +641,42 @@ struct GroceryListView: View {
                         .font(.brandCallout.bold())
                         .foregroundStyle(Color.brandForest)
                     ForEach(historicalItemsSorted) { historyItem in
-                        GrocerySuggestionRow(
-                            name: historyItem.name,
-                            quantityText: nil,
+                        HouseholdGroceryRow(
+                            historyItem: historyItem,
+                            productOption: productOption(for: historyItem),
                             isSecondary: alreadyInList(historyItem),
                             addIsDisabled: alreadyInList(historyItem),
                             onAdd: { quickAdd(historyItem) },
-                            onReject: nil
+                            onTapProduct: { productPickerHistoryItem = historyItem }
                         )
                     }
                 }
             } label: {
-                majorHeader("From Your Past Groceries")
+                majorHeader("Household Groceries")
             }
         } footer: {
-            Text("This fills in automatically as you check items off below — or tap + (or Add All) to bring items from here straight onto your list.")
+            // No longer "Past Groceries" — direct user framing: "That
+            // household groceries should be individualized to you," kept
+            // separate from any group's own shared history (see
+            // `HistoricalGroceryItem`'s own doc comment).
+            Text("Your own catalog — fills in automatically as you check items off below, or add to it directly above. Tap the photo on an item to note the specific brand/product you usually get; that carries over automatically the next time you check it off, and over to a group's grocery list too when you bring it there.")
         }
+    }
+
+    /// Adds a brand-new Household Groceries entry from `householdQuickAddText`
+    /// — guards the same canonical-name dedupe every other add path here
+    /// already uses, so typing a name that's already in the catalog is a
+    /// harmless no-op rather than a visible duplicate row.
+    private func submitHouseholdQuickAdd() {
+        let trimmedName = householdQuickAddText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        let key = GroceryListBuilder.canonicalKey(for: trimmedName)
+        guard !historicalItems.contains(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }) else {
+            householdQuickAddText = ""
+            return
+        }
+        modelContext.insert(HistoricalGroceryItem(name: trimmedName))
+        householdQuickAddText = ""
     }
 
     /// Doesn't just call `quickAdd(_:)` in a loop: `@Query`-backed
@@ -647,6 +703,12 @@ struct GroceryListView: View {
                 orderIndex: nextOrderIndex,
                 layoutOrderIndex: runningLayoutOrderIndex
             )
+            // Carries the noted brand/product straight over — no prompt
+            // needed here (unlike a fresh manual/recipe-generated add): the
+            // user is explicitly bringing THIS catalog entry, preference and
+            // all, onto the list, not typing an unrelated new name that
+            // happens to match one.
+            item.selectedProductOptionID = historyItem.preferredProductOptionID
             modelContext.insert(item)
         }
     }
@@ -668,6 +730,9 @@ struct GroceryListView: View {
             orderIndex: categoryMax + 1,
             layoutOrderIndex: layoutMax + 1
         )
+        // See `addAllHistorical`'s identical line for why this carries over
+        // unprompted.
+        item.selectedProductOptionID = historyItem.preferredProductOptionID
         modelContext.insert(item)
     }
 
@@ -696,8 +761,13 @@ struct GroceryListView: View {
         return allProductOptions.first { $0.id == id }
     }
 
+    private func productOption(for historyItem: HistoricalGroceryItem) -> ProductOption? {
+        guard let id = historyItem.preferredProductOptionID else { return nil }
+        return allProductOptions.first { $0.id == id }
+    }
+
     /// A pronounced top-level heading — "Grocery List", "Suggestions From
-    /// Your Meal Plan", "From Your Past Groceries" — standing well out from
+    /// Your Meal Plan", "Household Groceries" — standing well out from
     /// the smaller, plain per-category headers (like "Produce") nested
     /// underneath them. `.textCase(nil)` stops List's default
     /// small-caps-gray section-header styling from overriding this.
@@ -766,6 +836,49 @@ private struct GrocerySuggestionRow: View {
                 .foregroundStyle(.secondary)
                 .padding(.trailing, 4)
             }
+            Button(action: onAdd) {
+                Image(systemName: addIsDisabled ? "checkmark.circle.fill" : "plus.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.brandForest)
+            .disabled(addIsDisabled)
+        }
+    }
+}
+
+/// The Household Groceries catalog's own row — `GrocerySuggestionRow`'s
+/// layout plus a tappable product thumbnail, the same one `GroceryItemRow`'s
+/// own row already has for a live list item. Kept as its own type rather
+/// than adding this to `GrocerySuggestionRow` itself: that row is also used
+/// for meal-plan suggestions, which have no `HistoricalGroceryItem`/product
+/// concept to hang a thumbnail off of at all.
+private struct HouseholdGroceryRow: View {
+    let historyItem: HistoricalGroceryItem
+    let productOption: ProductOption?
+    let isSecondary: Bool
+    let addIsDisabled: Bool
+    let onAdd: () -> Void
+    let onTapProduct: () -> Void
+
+    var body: some View {
+        HStack {
+            Text(historyItem.name.titleCasedForDisplay)
+                .foregroundStyle(isSecondary ? .secondary : .primary)
+            Spacer()
+            // Tap to note (or change) the specific brand/product you
+            // usually get for this item — direct user request ("if you
+            // always generally buy a specific brand, you can include that
+            // to the master grocery list"). Same affordance, same
+            // `ProductOptionPickerView` sheet, as the live list's own row.
+            Button(action: onTapProduct) {
+                if let productOption {
+                    ProductThumbnail(option: productOption, size: 32)
+                } else {
+                    Image(systemName: "photo.badge.plus")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
             Button(action: onAdd) {
                 Image(systemName: addIsDisabled ? "checkmark.circle.fill" : "plus.circle.fill")
             }
@@ -859,14 +972,27 @@ private struct GroceryItemRow: View {
     }
 
     /// Learns from what you actually buy: checking an item off adds it to
-    /// the "past groceries" catalog if it isn't already there, so that
+    /// the Household Groceries catalog if it isn't already there, so that
     /// catalog builds itself from real shopping trips instead of only ever
-    /// growing when someone pastes an old list by hand.
+    /// growing when someone pastes an old list by hand. Also carries the
+    /// specific product/brand you had picked (if any) onto the catalog
+    /// entry — direct user request ("if you always generally buy a specific
+    /// brand, you can include that to the master grocery list") — but never
+    /// overwrites a `preferredProductOptionID` someone already set directly
+    /// on the Household Groceries entry itself: checking off a one-off item
+    /// (maybe you grabbed a different brand this one time) shouldn't
+    /// silently replace a deliberate catalog-level choice.
     private func recordAsHistorical() {
         let key = GroceryListBuilder.canonicalKey(for: item.name)
-        let alreadyKnown = historicalItems.contains { GroceryListBuilder.canonicalKey(for: $0.name) == key }
-        guard !alreadyKnown else { return }
-        modelContext.insert(HistoricalGroceryItem(name: item.name, category: item.category))
+        if let existing = historicalItems.first(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }) {
+            if existing.preferredProductOptionID == nil, let selected = item.selectedProductOptionID {
+                existing.preferredProductOptionID = selected
+            }
+            return
+        }
+        modelContext.insert(HistoricalGroceryItem(
+            name: item.name, category: item.category, preferredProductOptionID: item.selectedProductOptionID
+        ))
     }
 }
 

@@ -89,6 +89,33 @@ enum GroceryListBuilder {
         // 2. Fetch every existing item so we can preserve user state — the
         // whole persistent list, not scoped to any particular week.
         let existingItems = (try? context.fetch(FetchDescriptor<GroceryItem>())) ?? []
+        // Household Groceries entries with a noted brand/product, keyed by
+        // canonical name — used below to carry that preference straight
+        // onto any brand-new suggested line this generates. Direct user
+        // request: "is there a way to have it where if you add something...
+        // from a grocery list generated from the recipes, it prompts you to
+        // ask if you want to add the additional details from your household
+        // grocery list?" — a prompt PER generated ingredient would mean one
+        // alert after another for what's often a dozen-plus lines at once,
+        // so this applies the preference silently instead: the person still
+        // sees and can change it (the product thumbnail on the resulting
+        // row), it just doesn't gate every single generated line behind its
+        // own confirmation.
+        let preferredProductByKey: [String: UUID] = (try? context.fetch(FetchDescriptor<HistoricalGroceryItem>()))
+            .map { historicalItems in
+                // `uniquingKeysWith:` (keep the first), not
+                // `uniqueKeysWithValues:` — two Household Groceries rows can
+                // canonicalize to the same key in practice (bulk paste-import
+                // only dedupes within its own batch, never against what's
+                // already in the catalog — see `GroceryHistoryImportSheet
+                // .importItems`), which would otherwise crash this lookup.
+                Dictionary(
+                    historicalItems.compactMap { historyItem in
+                        historyItem.preferredProductOptionID.map { (canonicalKey(for: historyItem.name), $0) }
+                    },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            } ?? [:]
         let existingSuggested = dedupedByCanonicalKey(
             existingItems.filter { $0.section == .suggested },
             in: context
@@ -136,6 +163,7 @@ enum GroceryListBuilder {
                     sourceRecipeIDs: Array(aggregate.recipeIDs),
                     orderIndex: nextOrderIndex
                 )
+                item.selectedProductOptionID = preferredProductByKey[key]
                 nextOrderIndex += 1
                 context.insert(item)
             }

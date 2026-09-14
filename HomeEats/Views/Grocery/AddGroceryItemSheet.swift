@@ -7,6 +7,8 @@ struct AddGroceryItemSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query private var allGroceryItems: [GroceryItem]
+    @Query private var historicalItems: [HistoricalGroceryItem]
+    @Query private var allProductOptions: [ProductOption]
 
     @State private var name = ""
     @State private var quantityText = ""
@@ -16,6 +18,14 @@ struct AddGroceryItemSheet: View {
     /// they keep typing the name (e.g. fixing a typo would otherwise snap a
     /// manually-chosen category back to the auto-guess).
     @State private var categoryWasChosenManually = false
+    /// Set right after `save()` inserts a new item, only when its name
+    /// matches a Household Groceries entry that has a noted product — drives
+    /// the "use your usual product?" confirmation below. Direct user
+    /// request: "if you add something manually... it prompts you to ask if
+    /// you want to add the additional details from your household grocery
+    /// list." `nil` the rest of the time (the common case: no match, or no
+    /// product noted on the match — nothing to ask about).
+    @State private var productConfirm: ProductConfirmPrompt?
 
     var body: some View {
         NavigationStack {
@@ -51,6 +61,29 @@ struct AddGroceryItemSheet: View {
                 guard !categoryWasChosenManually else { return }
                 category = GroceryCategory.guess(fromIngredientName: newValue)
             }
+            // Direct user request: "if you add something manually... it
+            // prompts you to ask if you want to add the additional details
+            // from your household grocery list." Only ever shows when
+            // `save()` actually found a match with a noted product — see
+            // `productConfirm`'s own doc comment.
+            .alert(
+                "Use Your Usual Product?",
+                isPresented: Binding(get: { productConfirm != nil }, set: { if !$0 { productConfirm = nil } })
+            ) {
+                Button("Use \(productConfirm?.option.brandName ?? "It")") {
+                    productConfirm?.item.selectedProductOptionID = productConfirm?.option.id
+                    productConfirm = nil
+                    dismiss()
+                }
+                Button("Not This Time", role: .cancel) {
+                    productConfirm = nil
+                    dismiss()
+                }
+            } message: {
+                if let productConfirm {
+                    Text("You usually get \(productConfirm.option.brandName) for \"\(productConfirm.item.name.titleCasedForDisplay)\". Use that again?")
+                }
+            }
         }
     }
 
@@ -64,8 +97,9 @@ struct AddGroceryItemSheet: View {
         let purchasable = allGroceryItems.filter { $0.section == .thisWeek || $0.section == .staples }
         let categoryMax = purchasable.filter { $0.category == category }.map(\.orderIndex).max() ?? 0
         let layoutMax = purchasable.map(\.layoutOrderIndex).max() ?? 0
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let item = GroceryItem(
-            name: name.trimmingCharacters(in: .whitespaces),
+            name: trimmedName,
             category: category,
             section: section,
             quantityText: quantityText,
@@ -74,6 +108,29 @@ struct AddGroceryItemSheet: View {
             layoutOrderIndex: layoutMax + 1
         )
         modelContext.insert(item)
-        dismiss()
+        // If this exact item is already known in Household Groceries with a
+        // noted brand, ask before applying it — unlike quick-adding straight
+        // FROM a Household Groceries entry (which carries its product over
+        // unprompted, since tapping that specific entry already implies
+        // "yes, this one"), typing a name here is a much weaker signal that
+        // just happens to match, so this confirms first rather than
+        // silently attaching a product the user didn't ask for.
+        if let matchedOption = matchingProductOption(for: trimmedName) {
+            productConfirm = ProductConfirmPrompt(item: item, option: matchedOption)
+        } else {
+            dismiss()
+        }
     }
+
+    private func matchingProductOption(for itemName: String) -> ProductOption? {
+        let key = GroceryListBuilder.canonicalKey(for: itemName)
+        guard let historyItem = historicalItems.first(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }),
+              let productID = historyItem.preferredProductOptionID else { return nil }
+        return allProductOptions.first { $0.id == productID }
+    }
+}
+
+private struct ProductConfirmPrompt {
+    let item: GroceryItem
+    let option: ProductOption
 }

@@ -86,6 +86,15 @@ struct GroupSharedGroceryListView: View {
     @Query private var items: [GroupSharedGroceryItem]
     @Query(sort: \GroupStoreAisle.sortIndex) private var allAisles: [GroupStoreAisle]
     @Query(sort: \GroupGroceryHistoryEntry.name) private var historicalItems: [GroupGroceryHistoryEntry]
+    /// The signed-in user's own, personal Household Groceries catalog — not
+    /// scoped to `groupID` at all (unlike every other `@Query` here), since
+    /// it's the same local, individualized table `GroceryListView` reads
+    /// (`HistoricalGroceryItem` — see that model's own doc comment on why
+    /// it's deliberately never synced/shared). Backs `householdGroceriesSection`
+    /// below — direct user request to be able to bring one of your own
+    /// personal go-tos onto a shared group list without that catalog entry
+    /// itself ever becoming shared.
+    @Query(sort: \HistoricalGroceryItem.name) private var myHouseholdItems: [HistoricalGroceryItem]
     /// Read-only here — feeds `generateSuggestions()`'s day-strip picker;
     /// see that property's own doc comment. This screen never writes a
     /// `GroupPlannedMeal` itself (that's `GroupSharedMealPlanView`'s job).
@@ -110,6 +119,7 @@ struct GroupSharedGroceryListView: View {
     // `pastGroceriesExpanded`.
     @State private var suggestionsExpanded = true
     @State private var pastGroceriesExpanded = true
+    @State private var householdGroceriesExpanded = true
     /// The days `generateSuggestions()` pulls planned meals from — same
     /// "today through six days out" default, and same `Set<Date>` (not a
     /// contiguous from/to range) shape as the personal `GroceryListView
@@ -275,6 +285,8 @@ struct GroupSharedGroceryListView: View {
             }
 
             suggestionsSection
+
+            householdGroceriesSection
 
             pastGroceriesSection
         }
@@ -711,6 +723,84 @@ struct GroupSharedGroceryListView: View {
     /// that enum's doc comment in prisma/schema.prisma).
     private func reject(_ item: GroupSharedGroceryItem) {
         delete(item)
+    }
+
+    // MARK: - Quick add from your own Household Groceries
+
+    /// Direct user request: "once you add it to the grocery tab for that
+    /// group, the 'item' gets duped to the group grocery list for that
+    /// group. That way if you always generally buy a specific brand, you
+    /// can include that to the master grocery list." Separate from, and
+    /// shown above, `pastGroceriesSection` below (that one is this GROUP's
+    /// own shared history, built from what any member has checked off here
+    /// before — this one is the signed-in viewer's personal catalog,
+    /// individualized to them, from `GroceryListView`'s own "Household
+    /// Groceries" section). Always shown, even empty, same "don't make it
+    /// disappear until something populates it" reasoning as every other
+    /// collapsible section on this screen.
+    ///
+    /// Only the name/category duplicate onto the new `GroupSharedGroceryItem`
+    /// — never the noted product/brand itself (`HistoricalGroceryItem
+    /// .preferredProductOptionID`): `GroupSharedGroceryItem` has no product
+    /// concept at all (see that model's own doc comment on why it's
+    /// deliberately a smaller shape than the personal `GroceryItem`), and a
+    /// `ProductOption` is itself a local-only row with no backend/group
+    /// counterpart to carry over to begin with.
+    @ViewBuilder
+    private var householdGroceriesSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $householdGroceriesExpanded) {
+                if myHouseholdItems.isEmpty {
+                    Text("Nothing in your Household Groceries yet — add some from the Grocery tab.")
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                } else {
+                    Button("Add All", action: addAllFromHousehold)
+                        .font(.brandCallout.bold())
+                        .foregroundStyle(Color.brandForest)
+                    ForEach(myHouseholdItems) { historyItem in
+                        GroupGrocerySuggestionRow(
+                            name: historyItem.name,
+                            quantityText: nil,
+                            isSecondary: alreadyInList(historyItem),
+                            addIsDisabled: alreadyInList(historyItem),
+                            onAdd: { quickAddFromHousehold(historyItem) },
+                            onReject: nil
+                        )
+                    }
+                }
+            } label: {
+                majorHeader("From Your Household Groceries")
+            }
+        } footer: {
+            Text("Your own personal catalog, not shared with the group — tap + (or Add All) to bring one of your usual items onto this list.")
+        }
+    }
+
+    private func alreadyInList(_ historyItem: HistoricalGroceryItem) -> Bool {
+        let key = GroceryListBuilder.canonicalKey(for: historyItem.name)
+        return items.contains { GroceryListBuilder.canonicalKey(for: $0.name) == key }
+    }
+
+    /// Same role-split reasoning as `quickAdd(_ historyItem: GroupGroceryHistoryEntry)`
+    /// below — any member may call this, landing as `.thisWeek` for a
+    /// MANAGER or `.suggested` for a PARTICIPANT.
+    private func quickAddFromHousehold(_ historyItem: HistoricalGroceryItem) {
+        guard !alreadyInList(historyItem), let currentUserID = accountSession.currentUser?.id else { return }
+        let item = GroupSharedGroceryItem(
+            id: GroupSharedGroceryItem.newLocalPlaceholderID(), groupID: groupID, name: historyItem.name,
+            category: historyItem.category, section: isManager ? .thisWeek : .suggested,
+            addedByUserID: currentUserID, syncState: .pendingCreate
+        )
+        modelContext.insert(item)
+        try? modelContext.save()
+        Task { await runSync() }
+    }
+
+    private func addAllFromHousehold() {
+        for historyItem in myHouseholdItems where !alreadyInList(historyItem) {
+            quickAddFromHousehold(historyItem)
+        }
     }
 
     // MARK: - Quick add from past groceries
