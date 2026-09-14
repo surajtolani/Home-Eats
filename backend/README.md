@@ -273,6 +273,18 @@ already an accepted friend — directly, via the new endpoints in
   `DECLINED` (a new, distinct `InviteStatus` value — see below) and grants
   nothing.
 
+**The other side of the same Invite: `GET /groups/:groupId/invites`.**
+Everything above is the *recipient's* view. A group's own `MANAGER`s need
+the opposite view — who has WE invited, and who's said no — which is what
+this route (in `routes/groups.js`, not `routes/invites.js`) is for. It is
+**not part of Phase 5 itself**; it was added afterwards, by the iOS-wiring
+task that consumes these endpoints, once it was clear `GET /groups/:groupId`
+carries no invite data at all and a `MANAGER` otherwise had no way to see a
+group's own outstanding invites (needed for that task's "Pending Invites"
+UI). See the endpoint table below for its exact shape; it mirrors this
+phase's own conventions (`MANAGER`-only, PENDING/DECLINED only, resend via
+the same `POST /:groupId/invite` route) rather than inventing new ones.
+
 **`DECLINED` vs. `CANCELLED`.** `InviteStatus` gained a `DECLINED` value in
 Phase 5, kept deliberately distinct from the pre-existing `CANCELLED`:
 `CANCELLED` means this Invite's story ended because something *else*
@@ -400,6 +412,7 @@ response has the shape `{ "error": "..." }`.
 | GET | `/groups/:groupId` | required | — | `{ group }` with the full member list (each entry includes `role`), phone numbers included (safe here — everyone returned is a fellow member of this same group). `403` if the caller isn't a member. |
 | POST | `/groups/:groupId/invite` | **MANAGER only** | `{ userId }` **or** `{ phoneNumber }` | A member who isn't a `MANAGER` gets `403` (see "Group roles" above); a non-member also gets `403`. **Phase 5: never creates a `GroupMembership` directly** — `userId` (must be one of the caller's accepted friends, `400` otherwise) or `phoneNumber` (any number at all, friend or stranger — see "Phone-number privacy" below) always queues/reuses a PENDING `Invite` with this `groupId` instead, reporting back identically either way (`201`, `{ "status": "invited" }`). If the phone number is already a user with no prior relationship to the caller, also sends them an ordinary friend request. `409` if already a member, or if that phone number already has a `PENDING` invite to this group (calling this again after a `DECLINED`/`CANCELLED` one succeeds — see "Resend after a decline" above). See "Invites and consent" above for the full flow and how the queued `Invite` is actually accepted/declined. |
 | GET | `/invites` | required | — | `{ invites: [{ id, group: { id, name }, invitedBy: { id, displayName, phoneNumber }, createdAt }] }` — the caller's own pending **group** Invites (matched by their own phone number), newest first. A bare "become my friend" Invite (no `groupId`) never appears here — see "Invites and consent" above. |
+| GET | `/groups/:groupId/invites` | **MANAGER only** | — | **Not part of Phase 5 — added by the iOS-wiring task that consumes it**, since `GET /groups/:groupId` carries no invite data at all and a MANAGER otherwise has no way to see who's already been invited to their own group. `403` for a non-`MANAGER` or non-member. `{ invites: [{ id, invitedPhoneNumber, invitedUser: { id, displayName, phoneNumber } \| null, invitedBy: { id, displayName, phoneNumber }, status, createdAt }] }` — every `PENDING` or `DECLINED` Invite standing against this group, newest first (`RESOLVED` ones are just ordinary members already visible in the member list; `CANCELLED` ones ended via something else happening — see "`DECLINED` vs. `CANCELLED`" above — so neither is worth surfacing here). `invitedUser` is `null` unless `invitedPhoneNumber` already belongs to a Home Eats user. A resend is `POST /groups/:groupId/invite` again with the same target — see "Resend after a decline" above; there's no dedicated resend route here either. |
 | POST | `/invites/:inviteId/accept` | required (recipient only) | — | `403` if the caller's phone number doesn't match the Invite's `invitedPhoneNumber`; `400` if the Invite has no `groupId` (use `POST /friends/:friendshipId/accept` instead); `409` if not `PENDING`; `404` if it doesn't exist. Creates the `GroupMembership` (`PARTICIPANT`) and marks the Invite `RESOLVED`, in one transaction. Returns `{ invite }`. |
 | POST | `/invites/:inviteId/decline` | required (recipient only) | — | Same checks as accept. Marks the Invite `DECLINED` (distinct from `CANCELLED` — see "Invites and consent" above) and grants nothing. Returns `{ invite }`. |
 | POST | `/groups/:groupId/members/:userId/promote` | **MANAGER only** | — | `403` for a `PARTICIPANT` or non-member; `404` if the target isn't a member. Sets the target's role to `MANAGER`; a no-op (`200`) if already `MANAGER`. Returns `{ member }` (same shape as `GET /groups/:groupId`'s member list). |

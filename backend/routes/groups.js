@@ -410,6 +410,83 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
   return invitedResponse(res);
 }));
 
+// GET /groups/:groupId/invites — MANAGER only. Every PENDING or DECLINED
+// Invite standing against this specific group, newest first — the read
+// side `POST /:groupId/invite` above never got: a MANAGER needs to see who
+// they (or a fellow MANAGER) have already invited and who's said no, both
+// to avoid re-inviting someone with a still-PENDING invite outstanding
+// (this route makes that visible up front instead of only discoverable via
+// the invite route's own `409`) and to know who's worth a resend after a
+// DECLINED one — resending is just calling `POST /:groupId/invite` again
+// with the same target, there's no dedicated resend endpoint here either
+// (see that route's own "Resend after a decline" doc comment above).
+//
+// **Added by the iOS-wiring task that consumes Phase 5's invite endpoints,
+// not by Phase 5 itself.** Phase 5 shipped the write side
+// (create/accept/decline) and the recipient's own read side
+// (`GET /invites` in routes/invites.js), but nothing let a MANAGER see a
+// group's own outstanding invites — which the group-detail screen's
+// "Pending Invites" section needs, and `GET /:groupId` deliberately doesn't
+// carry (checked directly: that route returns only `id`/`name`/
+// `createdByUserId`/`createdAt`/`members`, nothing invite-shaped). Mirrors
+// Phase 5's own established conventions exactly: MANAGER-only like
+// invite/promote/demote above, and `serializeGroupInvite`-style minimalism
+// (routes/invites.js) — but from the opposite side of the same relationship
+// (who was invited, not who's inviting me), so it reuses this file's own
+// `publicUser` for `invitedBy` and separately resolves each
+// `invitedPhoneNumber` to a `PublicUser` when that number happens to
+// already belong to one (nullable — most invited numbers, especially to a
+// stranger, belong to nobody yet). Showing a fellow MANAGER an invited
+// number (and, when known, the account it belongs to) leaks nothing new
+// relative to what `publicMember` already exposes about every *current*
+// member's phone number to that same MANAGER — the trust boundary here is
+// "fellow manager of this group," identical to the one `GET /:groupId`
+// already relies on.
+//
+// `RESOLVED` and `CANCELLED` are excluded on purpose (only PENDING/DECLINED
+// come back): a RESOLVED invite is just an ordinary member now, already
+// visible in this group's own member list, and a CANCELLED one's story
+// ended via something else happening entirely (see the InviteStatus doc
+// comment in prisma/schema.prisma) — surfacing either here would just be
+// noise for what this section exists to show: who's outstanding, or worth
+// a resend.
+router.get("/:groupId/invites", asyncHandler(async (req, res) => {
+  const membership = await membershipFor(req.params.groupId, req.userId);
+  if (!membership) {
+    return res.status(403).json({ error: "You're not a member of this group." });
+  }
+  if (membership.role !== "MANAGER") {
+    return res.status(403).json({ error: "Only a group manager can view this group's invites." });
+  }
+
+  const invites = await prisma.invite.findMany({
+    where: { groupId: req.params.groupId, status: { in: ["PENDING", "DECLINED"] } },
+    include: { invitingUser: true },
+    orderBy: { createdAt: "desc" },
+  });
+
+  // One extra query for every invited-and-already-a-user phone number,
+  // rather than N+1 lookups inside the map below — same "batch it" instinct
+  // as every other list-serializing route in this file.
+  const invitedUsers = await prisma.user.findMany({
+    where: { phoneNumber: { in: invites.map((invite) => invite.invitedPhoneNumber) } },
+  });
+  const invitedUserByPhone = new Map(invitedUsers.map((user) => [user.phoneNumber, user]));
+
+  res.json({
+    invites: invites.map((invite) => ({
+      id: invite.id,
+      invitedPhoneNumber: invite.invitedPhoneNumber,
+      invitedUser: invitedUserByPhone.has(invite.invitedPhoneNumber)
+        ? publicUser(invitedUserByPhone.get(invite.invitedPhoneNumber))
+        : null,
+      invitedBy: publicUser(invite.invitingUser),
+      status: invite.status,
+      createdAt: invite.createdAt,
+    })),
+  });
+}));
+
 // POST /groups/:groupId/members/:userId/promote — MANAGER only. Sets the
 // target membership's role to MANAGER. A target already MANAGER is a
 // harmless no-op (`200`, same response shape as an actual change) rather
