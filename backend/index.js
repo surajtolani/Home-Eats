@@ -488,6 +488,153 @@ app.get("/restaurants/details", async (req, res) => {
   }
 });
 
+// Reads one address component's `longText` (not `shortText`) out of a Place
+// Details response by its Google `types` value. `longText` specifically —
+// not the abbreviated `shortText` — so a result lines up with the iOS
+// app's own `USState.all`/`CountryCode.all` lists, which are written out in
+// full ("California"/"United States", not "CA"/"US"): see GET
+// /cities/:placeID below, which is the only caller. Returns `null` when
+// that component type isn't present at all in the response — Google
+// doesn't guarantee every one of locality/administrative_area_level_1/
+// country is present for every place (a small town might have no
+// `administrative_area_level_1`-typed component the way Google structures
+// it, for instance), and the iOS side is written to treat that as "leave
+// whatever the user already had," not as an error.
+function extractAddressComponent(components, type) {
+  const match = (components || []).find((component) => (component.types || []).includes(type));
+  return match?.longText ?? null;
+}
+
+// The Place Details field mask for GET /cities/:placeID — only
+// `addressComponents` is needed to extract city/state/country, same
+// "explicit field mask, billed only for what's asked for" convention as
+// every other Places API (New) call in this file.
+const CITY_DETAILS_FIELD_MASK = "addressComponents";
+
+// GET /cities/search?q=<partial city name>
+// Proxies Places API (New)'s Autocomplete endpoint
+// (POST https://places.googleapis.com/v1/places:autocomplete — the New API,
+// not the legacy maps.googleapis.com/maps/api/place/autocomplete, matching
+// every other Places call in this file), restricted to city-level results
+// via `includedPrimaryTypes: ["locality"]` so Autocomplete's normal grab-bag
+// of addresses/businesses/landmarks doesn't leak into a field that's
+// specifically asking for a city. Powers the profile's City field's
+// type-ahead dropdown (see CitySearchField.swift in the iOS app) — tapping
+// one of these predictions is what GET /cities/:placeID below turns into an
+// actual city/state/country triple. Unauthenticated, same as /restaurants/*
+// above: this is the same "public convenience API proxy" shape, just for
+// city lookup instead of restaurant lookup — and it needs to work even
+// before a JWT exists for some callers (RootView's profile-completion gate,
+// reached by an account that verified its phone number but never finished
+// onboarding).
+app.get("/cities/search", async (req, res) => {
+  const query = (req.query.q || "").toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: "Missing required query param 'q'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+
+  try {
+    const response = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+      },
+      body: JSON.stringify({
+        input: query,
+        includedPrimaryTypes: ["locality"],
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("Places Autocomplete error", response.status, detail);
+      return res.status(502).json({ error: "City search failed." });
+    }
+
+    const data = await response.json();
+    // Each suggestion's real content lives under `placePrediction` — the
+    // New Autocomplete API's `suggestions` array can in principle also hold
+    // `queryPrediction` entries (a plain search-query suggestion, not a
+    // specific place), but those never appear here since nothing above sets
+    // `includeQueryPredictions`, so `placePrediction` is filtered for
+    // defensively rather than assumed.
+    const predictions = (data.suggestions || [])
+      .map((suggestion) => suggestion.placePrediction)
+      .filter(Boolean)
+      .map((prediction) => ({
+        placeID: prediction.placeId,
+        // `structuredFormat` splits the full prediction text
+        // ("Greenwich, CT, USA") into the city name and everything after
+        // it — exactly the "Greenwich" / "CT, USA" two-line row the
+        // dropdown wants. Falls back to the plain `text.text` on the rare
+        // response that has no `structuredFormat` at all, so a row still
+        // renders (just without the secondary-line split) rather than
+        // showing nothing.
+        mainText: prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? "",
+        secondaryText: prediction.structuredFormat?.secondaryText?.text ?? null,
+      }));
+    res.json({ predictions });
+  } catch (error) {
+    console.error("Places Autocomplete request threw", error);
+    res.status(502).json({ error: "City search failed." });
+  }
+});
+
+// GET /cities/:placeID
+// Proxies Places API (New)'s Place Details endpoint
+// (GET https://places.googleapis.com/v1/places/{placeID}), asking only for
+// `addressComponents` via the field mask. This is the call that actually
+// makes "pre-populates everything" work: a prediction's own display text
+// from /cities/search above ("Greenwich, CT, USA") isn't reliably
+// parseable back into precise city/state/country across locales and
+// formats (a comma-split guess breaks the moment a place's formatting
+// differs even slightly), so the app calls this separately, once, right
+// after someone taps a suggestion — trading one extra billed request for
+// getting the three fields from Google's own structured data instead of
+// guessing at it. `city`/`state`/`country` can each independently be
+// `null` if Google's response doesn't include that component for this
+// particular place (see extractAddressComponent above); the iOS side
+// leaves the corresponding field/picker untouched rather than clearing it
+// when that happens. Unauthenticated, same reasoning as /cities/search.
+app.get("/cities/:placeID", async (req, res) => {
+  const placeID = (req.params.placeID || "").toString().trim();
+  if (!placeID) {
+    return res.status(400).json({ error: "Missing required path param 'placeID'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+
+  try {
+    const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeID)}`, {
+      headers: {
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": CITY_DETAILS_FIELD_MASK,
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("City details error", response.status, detail);
+      return res.status(502).json({ error: "City details request failed." });
+    }
+
+    const place = await response.json();
+    res.json({
+      city: extractAddressComponent(place.addressComponents, "locality"),
+      state: extractAddressComponent(place.addressComponents, "administrative_area_level_1"),
+      country: extractAddressComponent(place.addressComponents, "country"),
+    });
+  } catch (error) {
+    console.error("City details request threw", error);
+    res.status(502).json({ error: "City details request failed." });
+  }
+});
+
 // POST /recipes/extract
 // Body: { imageBase64?, mediaType?, notesText? } — at least one of
 // imageBase64 or notesText required. Powers "add a recipe from a photo or

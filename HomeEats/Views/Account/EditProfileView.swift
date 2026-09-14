@@ -49,8 +49,21 @@ struct EditProfileView: View {
                     .textContentType(.familyName)
             }
             Section {
-                TextField("City", text: $cityInput)
-                    .textContentType(.addressCity)
+                // Search-as-you-type, backed by Google Places (see
+                // CitySearchField's own doc comment) — picking a real city
+                // here pre-fills State/Country below from the same
+                // selection. Only overwrites `stateInput`/`countryInput`
+                // when Google's response actually included that field —
+                // never blanks out a value already on file just because it
+                // didn't.
+                CitySearchField(text: $cityInput) { details in
+                    if let state = details.state {
+                        stateInput = state
+                    }
+                    if let country = details.country {
+                        countryInput = country
+                    }
+                }
                 // State/Country are `Picker`s from a predetermined list, not
                 // free text — direct user request; same reasoning as
                 // `ProfileCompletionStepView`'s identical change, including

@@ -135,6 +135,8 @@ curl "http://localhost:4000/restaurants/search?q=pizza+near+me"
 curl -X POST "http://localhost:4000/restaurants/search-natural" \
   -H "Content-Type: application/json" \
   -d '{"query": "casual pizza place near Greenwich"}'
+curl "http://localhost:4000/cities/search?q=Green"
+curl "http://localhost:4000/cities/ChIJnQ5tX9lQWokR0HeeAd-VXOs"
 curl -X POST "http://localhost:4000/recipes/extract" \
   -H "Content-Type: application/json" \
   -d '{"notesText": "Grandma'\''s pancakes: 2 cups flour, 2 eggs, 1.5 cups milk. Mix and cook on a griddle."}'
@@ -207,6 +209,28 @@ sync). That's the only change needed on the app side:
   is missing, that button is disabled instead of half-working.
 - Recipes gets a "From a Photo or Notes" import option and a "Recommend a
   Meal" screen, both backed by Claude.
+- The profile's City field (`ProfileCompletionStepView`, `EditProfileView`)
+  becomes a real search-as-you-type field instead of plain free text — type
+  a few letters, pick a real city from the dropdown, and City/State/Country
+  all fill in together from that one selection. See "City search" below.
+  Falls back to a plain text field (no dropdown that can never return
+  anything) when this key isn't configured, same "disabled/degraded rather
+  than half-working" pattern as the ✨ button above.
+
+## 4b. City search
+
+Two more endpoints on the same Google Places proxy as `/restaurants/*`
+above, powering the profile's City field's type-ahead (see
+`CitySearchField.swift` in the iOS app). Both unauthenticated, matching how
+`/restaurants/*` is mounted — this needs to work even for an account that
+verified its phone number but hasn't finished onboarding yet (`RootView`'s
+profile-completion gate, reached before a JWT means anything to this app in
+practice).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/cities/search?q=<partial city name>` | Proxies Places API (New)'s Autocomplete endpoint (`POST places.googleapis.com/v1/places:autocomplete`), restricted to city-level results via `includedPrimaryTypes: ["locality"]`. Returns `{ predictions: [{ placeID, mainText, secondaryText }] }` — `mainText`/`secondaryText` are Google's own `structuredFormat` split of a prediction ("Greenwich" / "CT, USA"), exactly what a dropdown row wants. `400` if `q` is missing/empty, `500` if `GOOGLE_PLACES_API_KEY` isn't configured, `502` if the Places API call itself fails. |
+| GET | `/cities/:placeID` | Proxies Places API (New)'s Place Details endpoint (`GET places.googleapis.com/v1/places/{placeID}`), field-masked to `addressComponents` only. Returns `{ city, state, country }`, each pulled from the component whose `types` includes `locality`/`administrative_area_level_1`/`country` respectively, using that component's `longText` (not `shortText`) so a result lines up with the iOS app's own `USState.all`/`CountryCode.all` full-name lists ("California", not "CA"). This is the call that actually makes "pre-populates everything" work — a prediction's own display text from `/cities/search` isn't reliably parseable into precise city/state/country across locales/formats, so the app makes this separate, structured-data call once, right after a suggestion is tapped. Any of the three can legitimately come back `null` if Google's response has no matching component for that place — the iOS side leaves the corresponding field/picker untouched rather than clearing it when that happens, so an already-picked State/Country never gets silently blanked out by an incomplete Details response. `400` if `placeID` is missing, `500`/`502` same as above. |
 
 ## 5. Accounts, friends, and groups
 
@@ -806,6 +830,11 @@ together and counted.
   billed request, made only when that restaurant's page is actually
   opened. That's what lets `RestaurantDetailView` show reviews/hours
   directly instead of only linking out to the Google Maps app.
+- `/cities/search` and `/cities/:placeID` (see "City search" above) are two
+  separate billed Google calls per selection, same as `/restaurants/search`
+  and `/restaurants/details` — Autocomplete fires on debounced keystrokes
+  while typing, Place Details fires once when a suggestion is actually
+  tapped, not on every keystroke.
 - Every `/recipes/*` call costs real money the moment a key is configured
   (Claude Opus 5 — see the model table in the Anthropic Console for current
   pricing). Fine for household-scale use; if this app ever gets real

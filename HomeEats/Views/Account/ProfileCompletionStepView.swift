@@ -67,8 +67,23 @@ struct ProfileCompletionStepView: View {
                     .textContentType(.givenName)
                 TextField("Last name", text: $lastNameInput)
                     .textContentType(.familyName)
-                TextField("City", text: $cityInput)
-                    .textContentType(.addressCity)
+                // Search-as-you-type, backed by Google Places (see
+                // CitySearchField's own doc comment) — a direct follow-up to
+                // State/Country becoming `Picker`s below: picking a real
+                // city here pre-fills both of those from the same
+                // selection. `stateInput`/`countryInput` are only
+                // overwritten when Google's response actually included that
+                // field — never blanked out just because it didn't, so a
+                // state/country already chosen below (or already on file)
+                // survives a city pick that happens not to resolve one.
+                CitySearchField(text: $cityInput) { details in
+                    if let state = details.state {
+                        stateInput = state
+                    }
+                    if let country = details.country {
+                        countryInput = country
+                    }
+                }
                 // State/Country are `Picker`s from a predetermined list, not
                 // free text — direct user request. `Text("Select a
                 // state"/"Select a country").tag("")` is a real, selectable

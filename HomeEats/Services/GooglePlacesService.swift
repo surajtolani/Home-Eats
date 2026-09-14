@@ -198,6 +198,78 @@ enum GooglePlacesService {
         return try JSONDecoder().decode(PlaceDetails.self, from: data)
     }
 
+    /// One suggestion row from `searchCities` — enough for a type-ahead
+    /// dropdown showing a city name and its disambiguating context
+    /// ("Greenwich" / "CT, USA") per row. `placeID` is what `cityDetails
+    /// (placeID:)` needs to turn a tapped suggestion into an actual
+    /// city/state/country triple.
+    struct CitySuggestion: Decodable, Identifiable {
+        let placeID: String
+        let mainText: String
+        let secondaryText: String?
+        var id: String { placeID }
+    }
+
+    /// The result of resolving one `CitySuggestion` via Place Details —
+    /// mirrors the backend's own `{ city, state, country }` shape exactly,
+    /// optionality included: any of the three can legitimately be `nil` if
+    /// Google's response had no matching address component for that place
+    /// (see `GET /cities/:placeID` in backend/index.js). `CitySearchField`
+    /// hands this straight to its caller, which is responsible for only
+    /// overwriting a field/picker when the corresponding value here is
+    /// non-nil — never blanking out something the user already picked just
+    /// because Google didn't return it for this particular place.
+    struct CityDetails: Decodable {
+        let city: String?
+        let state: String?
+        let country: String?
+    }
+
+    /// Type-ahead city search — Places API (New) Autocomplete, restricted
+    /// server-side to city-level results. Callers are expected to debounce
+    /// their own keystrokes before calling this (see `CitySearchField`,
+    /// which mirrors `RestaurantSearchModel.search`'s own 300ms debounce);
+    /// this method itself fires immediately, exactly once, per call.
+    static func searchCities(_ query: String) async throws -> [CitySuggestion] {
+        guard isConfigured, let base = URL(string: baseURLString) else {
+            throw ServiceError.notConfigured
+        }
+        var components = URLComponents(
+            url: base.appendingPathComponent("cities/search"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let url = components?.url else { throw ServiceError.requestFailed }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw ServiceError.requestFailed
+        }
+        return try JSONDecoder().decode(CitySearchResponse.self, from: data).predictions
+    }
+
+    /// Resolves a tapped `CitySuggestion.placeID` into an actual
+    /// city/state/country triple via Place Details — the call that makes
+    /// "pre-populates everything" work, since a suggestion's own display
+    /// text isn't reliably parseable into those three fields on its own
+    /// (see the backend route's own doc comment for why).
+    static func cityDetails(placeID: String) async throws -> CityDetails {
+        guard isConfigured, let base = URL(string: baseURLString) else {
+            throw ServiceError.notConfigured
+        }
+        let url = base.appendingPathComponent("cities").appendingPathComponent(placeID)
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw ServiceError.requestFailed
+        }
+        return try JSONDecoder().decode(CityDetails.self, from: data)
+    }
+
+    private struct CitySearchResponse: Decodable {
+        let predictions: [CitySuggestion]
+    }
+
     /// Builds the URL to actually load a photo's image bytes from — points
     /// at this same backend's `/restaurants/photo` proxy (never at Google
     /// directly, so the API key stays server-side), suitable for handing
