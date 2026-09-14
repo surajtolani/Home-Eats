@@ -35,6 +35,17 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// ever grow the automatic way (checking an item off), never by pasting a
 /// list; see this feature's own final report.
 ///
+/// **Generate suggestions from planned recipes**: the "Suggested" section
+/// (`suggestionsSection` below) also carries a day-strip + "Generate
+/// Suggestions" control, mirroring the personal `GroceryListView`'s own
+/// "Suggestions From Your Meal Plan" — pick some upcoming days, and every
+/// ingredient from a home-cooked `GroupPlannedMeal` in that range becomes a
+/// `.suggested` candidate (deduped against what's already on the list). See
+/// `GroupGroceryListBuilder`'s own doc comment for the group-scoped
+/// ingredient-resolution/dedup story, and `suggestionsSection`'s doc comment
+/// for why a generated candidate and a participant's typed one share one
+/// review queue rather than two.
+///
 /// **No "Staples" here.** A standing group "staples" template list
 /// (`GroupStaplesManagerView`, reachable from this screen's toolbar) used to
 /// exist alongside "By Category"/"My Layout" — removed outright per direct
@@ -75,6 +86,10 @@ struct GroupSharedGroceryListView: View {
     @Query private var items: [GroupSharedGroceryItem]
     @Query(sort: \GroupStoreAisle.sortIndex) private var allAisles: [GroupStoreAisle]
     @Query(sort: \GroupGroceryHistoryEntry.name) private var historicalItems: [GroupGroceryHistoryEntry]
+    /// Read-only here — feeds `generateSuggestions()`'s day-strip picker;
+    /// see that property's own doc comment. This screen never writes a
+    /// `GroupPlannedMeal` itself (that's `GroupSharedMealPlanView`'s job).
+    @Query private var plannedMeals: [GroupPlannedMeal]
 
     @State private var group: GroupDetail?
     @State private var lastSyncOutcome: GroupSyncService.SyncOutcome?
@@ -95,6 +110,17 @@ struct GroupSharedGroceryListView: View {
     // `pastGroceriesExpanded`.
     @State private var suggestionsExpanded = true
     @State private var pastGroceriesExpanded = true
+    /// The days `generateSuggestions()` pulls planned meals from — same
+    /// "today through six days out" default, and same `Set<Date>` (not a
+    /// contiguous from/to range) shape as the personal `GroceryListView
+    /// .selectedSuggestionDates`; see that property's own doc comment for
+    /// why a `Set` (skippable individual days, e.g. a day you're eating
+    /// out) beats a start/end range here.
+    @State private var selectedSuggestionDates: Set<Date> = GroupSharedGroceryListView.defaultSuggestionDates()
+    /// True only while `generateSuggestions()`'s recipe-ingredient network
+    /// calls are in flight — disables the Generate button so a second tap
+    /// can't kick off an overlapping run.
+    @State private var isGeneratingSuggestions = false
 
     init(groupID: String, groupName: String) {
         self.groupID = groupID
@@ -105,6 +131,7 @@ struct GroupSharedGroceryListView: View {
         _items = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
         _allAisles = Query(filter: #Predicate<GroupStoreAisle> { $0.groupID == gid }, sort: \GroupStoreAisle.sortIndex)
         _historicalItems = Query(filter: #Predicate<GroupGroceryHistoryEntry> { $0.groupID == gid }, sort: \GroupGroceryHistoryEntry.name)
+        _plannedMeals = Query(filter: #Predicate<GroupPlannedMeal> { $0.groupID == gid })
     }
 
     private var myRole: GroupRole? { group?.myRole(currentUserID: accountSession.currentUser?.id) }
@@ -159,6 +186,14 @@ struct GroupSharedGroceryListView: View {
 
     private var suggestedItems: [GroupSharedGroceryItem] {
         visibleItems.filter { $0.section == .suggested }.sorted { $0.name < $1.name }
+    }
+
+    /// Same "hide a `.pendingDelete` row rather than leave it visible until
+    /// the next successful push" reasoning as `visibleItems` above — read by
+    /// `generateSuggestions()` so a meal that's mid-removal never
+    /// contributes ingredients to a fresh batch of suggestions.
+    private var visiblePlannedMeals: [GroupPlannedMeal] {
+        plannedMeals.filter { $0.syncState != .pendingDelete }
     }
 
     private var purchasableItems: [GroupSharedGroceryItem] {
@@ -450,12 +485,54 @@ struct GroupSharedGroceryListView: View {
         }
     }
 
-    // MARK: - Suggested (participant-proposed, pending manager Accept/Reject)
+    // MARK: - Suggested (participant-proposed + generated-from-recipes, pending manager Accept/Reject)
 
+    /// Both a participant's manually-typed suggestion and a
+    /// `generateSuggestions()`-produced one land in this exact same
+    /// `.suggested` review queue and this exact same section — there's no
+    /// separate "generated" bucket. That's a deliberate unification, not an
+    /// accident: a `.suggested` row has always meant "something a MANAGER
+    /// still needs to look at before it's really on the list," regardless of
+    /// where it came from, and the personal `GroceryListView`'s own
+    /// "Suggestions From Your Meal Plan" section already treats its
+    /// recipe-generated candidates and its (there, purely automatic — no
+    /// participants exist locally) suggestions as the same list for the same
+    /// reason.
     @ViewBuilder
     private var suggestionsSection: some View {
         Section {
             DisclosureGroup(isExpanded: $suggestionsExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Tap the days you want to pull ingredients from — anyone can generate suggestions, but a manager still has to accept them onto the real list.")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                    suggestionDayStrip
+                    HStack {
+                        Button("Clear", action: clearSuggestionDates)
+                            .font(.brandCaption)
+                            .disabled(selectedSuggestionDates.isEmpty)
+                        Spacer()
+                    }
+                    Button {
+                        Task { await generateSuggestions() }
+                    } label: {
+                        if isGeneratingSuggestions {
+                            HStack {
+                                Spacer()
+                                ProgressView().tint(.white)
+                                Spacer()
+                            }
+                        } else {
+                            Label("Generate Suggestions", systemImage: "sparkles")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.brandForest)
+                    .disabled(selectedSuggestionDates.isEmpty || isGeneratingSuggestions || isKnownOffline)
+                }
+                .padding(.vertical, 6)
+
                 if !suggestedItems.isEmpty {
                     Button("Accept All") { acceptAllSuggested() }
                         .font(.brandCallout.bold())
@@ -483,9 +560,110 @@ struct GroupSharedGroceryListView: View {
             }
         } footer: {
             Text(isManager
-                ? "Anyone can suggest an item for you to review — accept to move it onto the real list, or reject to remove it."
-                : "Suggest an item here for a manager to review. You can still remove your own suggestion.")
+                ? "Anyone can suggest an item (by hand, or generated from the meal plan) for you to review — accept to move it onto the real list, or reject to remove it."
+                : "Suggest an item here, or generate suggestions from the meal plan above, for a manager to review. You can still remove your own suggestion.")
         }
+    }
+
+    // MARK: - Generate suggestions from planned recipes
+
+    /// The default set of pre-selected days when the screen first loads —
+    /// today through six days out, mirroring the personal `GroceryListView
+    /// .defaultSuggestionDates()`'s identical "week ahead" default. A
+    /// `static` factory (not a plain default expression) for the same
+    /// reason as that one: it needs its own local `Calendar`/`Date.now`
+    /// rather than reaching into instance state that doesn't exist yet at
+    /// `@State` initialization time.
+    private static func defaultSuggestionDates() -> Set<Date> {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        return Set((0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: today) })
+    }
+
+    /// How many days ahead the tappable day strip shows — same window as
+    /// the personal screen's own `suggestionWindowInDays`.
+    private static let suggestionWindowInDays = 21
+
+    private var suggestionWindowDays: [Date] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        return (0..<Self.suggestionWindowInDays).compactMap {
+            calendar.date(byAdding: .day, value: $0, to: today)
+        }
+    }
+
+    private func toggleSuggestionDate(_ day: Date) {
+        let normalized = Calendar.current.startOfDay(for: day)
+        if selectedSuggestionDates.contains(normalized) {
+            selectedSuggestionDates.remove(normalized)
+        } else {
+            selectedSuggestionDates.insert(normalized)
+        }
+    }
+
+    private func clearSuggestionDates() {
+        selectedSuggestionDates.removeAll()
+    }
+
+    /// A single horizontal, tap-to-select row of upcoming days — visually
+    /// and behaviorally identical to the personal `GroceryListView
+    /// .suggestionDayStrip` (each day toggles independently, not a
+    /// contiguous from/to range, since the days worth covering aren't
+    /// always contiguous — e.g. skip a day the group's eating out).
+    private var suggestionDayStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(suggestionWindowDays, id: \.self) { day in
+                    let isSelected = selectedSuggestionDates.contains(day)
+                    Button {
+                        toggleSuggestionDate(day)
+                    } label: {
+                        VStack(spacing: 2) {
+                            Text(day.formatted(.dateTime.weekday(.abbreviated)))
+                                .font(.brandCaption2)
+                            Text(day.formatted(.dateTime.day()))
+                                .font(.brandHeadline.bold())
+                        }
+                        .frame(width: 44, height: 52)
+                        .background(isSelected ? Color.brandForest : Color.secondary.opacity(0.12))
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    /// Restores the "generate a grocery list from your planned recipes"
+    /// feature for the group list — user-reported as missing entirely (the
+    /// personal `GroceryListView`'s day-strip + `GroceryListBuilder
+    /// .regenerate` has no group-scoped counterpart until this). Filters
+    /// this group's own planned meals down to whatever days are selected,
+    /// then hands off to `GroupGroceryListBuilder.generate` — see that
+    /// type's own doc comment for the full ingredient-resolution/dedup
+    /// story. Open to both roles (see `suggestionsSection`'s own doc
+    /// comment on why a generated suggestion is no different from a
+    /// participant's typed one); disabled while offline since resolving
+    /// recipe ingredients is a real network call with nothing sensible to
+    /// queue for later — same "immediate/online-only" treatment
+    /// `GroupSyncService`'s "Known limitations" note gives `adopt`/`accept`.
+    private func generateSuggestions() async {
+        guard let currentUserID = accountSession.currentUser?.id else { return }
+        let mealsOnSelectedDays = visiblePlannedMeals.filter { meal in
+            selectedSuggestionDates.contains(Calendar.current.startOfDay(for: meal.date))
+        }
+        isGeneratingSuggestions = true
+        _ = await GroupGroceryListBuilder.generate(
+            groupID: groupID,
+            plannedMeals: mealsOnSelectedDays,
+            existingItems: visibleItems,
+            currentUserID: currentUserID,
+            modelContext: modelContext
+        )
+        isGeneratingSuggestions = false
+        await runSync()
     }
 
     private func acceptAllSuggested() {
