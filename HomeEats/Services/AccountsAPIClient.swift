@@ -824,22 +824,13 @@ extension AccountsAPIClient {
     }
 }
 
-// MARK: - Group grocery history (Phase 4 iOS wiring — GET /groups/:groupId/grocery/history)
-//
-// (A third Phase-4 sibling used to be here too: "Group staples"
-// GET/POST/PATCH/DELETE /groups/:groupId/grocery/staples/* — removed
-// outright, along with the backend route file, Prisma model, and every
-// other iOS reference, per direct user feedback that the concept added
-// nothing useful. See `GroupStoreAisle`'s doc comment in
-// HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
-
-extension AccountsAPIClient {
-    /// Read-only — see `RemoteGroupGroceryHistoryEntry`'s own doc comment
-    /// for why there's no corresponding create/update/delete method.
-    static func getGroupGroceryHistory(groupID: String) async throws -> GroupGroceryHistoryResponse {
-        try await send("GET", path: "groups/\(groupID)/grocery/history")
-    }
-}
+// (Two former Phase-4 siblings used to be here: "Group staples"
+// GET/POST/PATCH/DELETE /groups/:groupId/grocery/staples/*, and "Group
+// grocery history" GET /groups/:groupId/grocery/history — both removed
+// outright, along with their backend routes/Prisma models and every other
+// iOS reference, per direct user feedback. See `GroupStoreAisle`'s doc
+// comment in HomeEats/Models/GroupGroceryLayout.swift for both removal
+// notes.)
 
 // MARK: - Recipe library (POST/GET/PATCH/DELETE /recipe-library/*)
 //

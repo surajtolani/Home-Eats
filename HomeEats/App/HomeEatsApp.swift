@@ -57,16 +57,16 @@ struct HomeEatsApp: App {
             GroupPlannedMeal.self,
             GroupMealSuggestion.self,
             GroupSharedGroceryItem.self,
-            // Phase 4 continued — group-scoped "My Layout" aisles and
-            // grocery history (see HomeEats/Models/GroupGroceryLayout.swift),
-            // the group counterparts of the personal StoreAisle/
-            // HistoricalGroceryItem models above. (A third entry used to be
-            // here, GroupStapleItem.self, for the group-scoped standing
-            // "staples" template list — removed outright per user feedback;
-            // see that model's former doc comment, preserved as a note on
-            // GroupStoreAisle in GroupGroceryLayout.swift.)
-            GroupStoreAisle.self,
-            GroupGroceryHistoryEntry.self
+            // Phase 4 continued — group-scoped "My Layout" aisles (see
+            // HomeEats/Models/GroupGroceryLayout.swift), the group
+            // counterpart of the personal StoreAisle model above. (Two
+            // other entries used to be here: GroupStapleItem.self, for the
+            // group-scoped standing "staples" template list, and
+            // GroupGroceryHistoryEntry.self, for the group-shared "past
+            // groceries" catalog — both removed outright per user feedback;
+            // see GroupStoreAisle's doc comment in GroupGroceryLayout.swift
+            // for both removal notes.)
+            GroupStoreAisle.self
         ])
         // Local-first storage per spec: everything lives on-device by
         // default. `cloudKitDatabase: .none` keeps that explicit; flipping

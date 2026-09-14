@@ -38,7 +38,7 @@ struct GroceryListView: View {
     // visible. Default expanded so nothing looks hidden the first time you
     // land here; either can be tapped closed once you don't need it.
     @State private var suggestionsExpanded = true
-    @State private var pastGroceriesExpanded = true
+    @State private var householdGroceriesExpanded = true
     // The specific days "Generate Suggestions" pulls planned meals from —
     // defaults to the week ahead, but tapping days in `suggestionDayStrip`
     // is meant to adjust this to whatever's actually needed, e.g. just the
@@ -133,6 +133,15 @@ struct GroceryListView: View {
 
             pastGroceriesSection
         }
+        // The default (`.automatic`/inset-grouped-like) List style reserves
+        // significantly more padding above the first section header than
+        // `.plain` does — the cause of the reported "unnecessary extra
+        // space at the top below 'Grocery List'". Every other main-tab
+        // List-based screen (RecipesHomeView, CalendarPlanView,
+        // GroupSharedMealPlanView, and this screen's group-shared
+        // counterpart GroupSharedGroceryListView) already uses `.plain`;
+        // this screen was simply missing it.
+        .listStyle(.plain)
         // Reorder handles (via `.onMove` below) only ever show up on rows
         // inside a section that actually declares `.onMove` — leaving this
         // on permanently means there's always exactly one, persistent way
@@ -602,7 +611,7 @@ struct GroceryListView: View {
     @ViewBuilder
     private var pastGroceriesSection: some View {
         Section {
-            DisclosureGroup(isExpanded: $pastGroceriesExpanded) {
+            DisclosureGroup(isExpanded: $householdGroceriesExpanded) {
                 // Type-to-add — direct user request ("there should be a
                 // search bar to add stuff to your past groceries"): this
                 // catalog used to only ever grow automatically (checking an

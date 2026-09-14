@@ -85,11 +85,13 @@ Plan/Grocery tabs' active-group content (`GroupSharedMealPlanView`/
 `GroupSharedGroceryListView`): `GroupPlannedMeal`/`GroupMealSuggestion` (a
 group's shared meal plan), `GroupSharedGroceryItem` (its shared grocery
 list, including Phase 4's "My Layout" `aisleID`/`aisleManuallySet` fields),
-`GroupStoreAisle`/`GroupStapleItem`/`GroupGroceryHistoryEntry` (that group's
-own "My Layout" aisles, standing staples, and past-groceries catalog). Each
-is a local, offline-capable *mirror* of backend state, reconciled by
-`GroupSyncService` — see that file's own doc comment for the full
-push/pull/conflict-resolution design.
+`GroupStoreAisle` (that group's own "My Layout" aisles — two former
+siblings here, a standing "staples" template list and a group-shared
+"past groceries" catalog, were both removed outright per direct user
+feedback; see that model's own doc comment in `GroupGroceryLayout.swift`
+for both removal notes). Each is a local, offline-capable *mirror* of
+backend state, reconciled by `GroupSyncService` — see that file's own doc
+comment for the full push/pull/conflict-resolution design.
 
 **Services** worth knowing about:
 - `GroceryListBuilder` aggregates ingredients across a week's home-cooked
@@ -216,20 +218,27 @@ guidelines sheet:
    which lays items out by the household's own store aisles instead — drag an
    item from "Unsorted" onto an aisle to place it there for good
    (`ItemAisleAssignment`, keyed by canonical item name so it persists across
-   weeks). A **"From Your Past Groceries"** section at the bottom
-   (`HistoricalGroceryItem`) lists everything you've bought before, grouped by
-   category, with a one-tap **+** to add it to this week's list; populate it in
-   bulk by pasting an old list (`GroceryHistoryImportSheet`). The main Grocery
-   tab ports this same By Category / My Layout / Suggested / Past-Groceries
-   structure onto the active **group**'s shared list
-   (`GroupSharedGroceryListView`, `GroupSharedGroceryItem`,
-   `GroupSyncService`), with the group-scoped counterparts of "My Layout" and
-   staples reachable from its toolbar (`GroupAislesManagerView` ->
-   `GroupStoreAisle`, `GroupStaplesManagerView` -> `GroupStapleItem`) and its
-   past-groceries catalog backed by `GroupGroceryHistoryEntry` — see
-   "Known limitations" below for the two deliberate differences from the
-   personal version (no bulk paste-import, and My Layout/By Category share
-   one physical sort key group-side).
+   weeks). A **"Household Groceries"** section at the bottom
+   (`HistoricalGroceryItem`, renamed from "Past Groceries") lists everything
+   you've bought before, grouped by category, with a one-tap **+** to add it
+   to this week's list, a quick-add text field to add straight to the
+   catalog, and per-item photo/brand carryover; populate it in bulk by
+   pasting an old list (`GroceryHistoryImportSheet`). The main Grocery tab
+   ports this same By Category / My Layout / Suggested structure onto the
+   active **group**'s shared list (`GroupSharedGroceryListView`,
+   `GroupSharedGroceryItem`, `GroupSyncService`), with the group-scoped
+   counterpart of "My Layout" reachable from its toolbar
+   (`GroupAislesManagerView` -> `GroupStoreAisle`) and its own **"From Your
+   Household Groceries"** section reading directly from — and quick-adding
+   directly into — this same personal `HistoricalGroceryItem` catalog rather
+   than a separate group-shared one. (A group-scoped standing "staples"
+   template list and a group-shared "past groceries" catalog,
+   `GroupStapleItem`/`GroupGroceryHistoryEntry`, both used to exist here —
+   removed outright per direct user feedback; see `GroupStoreAisle`'s doc
+   comment in `HomeEats/Models/GroupGroceryLayout.swift` for both removal
+   notes.) See "Known limitations" below for the remaining deliberate
+   difference from the personal version (My Layout/By Category share one
+   physical sort key group-side).
 7. **Cooking guidance** — `RecipeDetailView` shows numbered step-by-step
    instructions. Imported ingredient lines are reformatted consistently
    (`RecipeIngredientEntry.displayText`, `IngredientLineParser`) rather than
@@ -261,11 +270,6 @@ This is a first build-out, scoped per the spec's own phasing notes:
     orderings still work independently on the *personal* screen; only the
     *group* screen's two views are coupled this way. A real fix needs a
     backend schema change, out of scope for this iOS-only task.
-  - **No group-scoped "Paste an Old Grocery List" bulk import.** The
-    backend has no bulk-create endpoint for `GroupGroceryHistoryEntry`, so a
-    group's past-groceries catalog can only grow the automatic way (checking
-    an item off) — never by pasting a list, unlike the personal
-    `GroceryHistoryImportSheet`.
   - **No group-scoped order reminders or meal-history logging.** Both are
     purely local, per-device features (`NotificationScheduler`,
     `MealHistoryEntry`) with no backend counterpart for a group's shared
@@ -273,8 +277,11 @@ This is a first build-out, scoped per the spec's own phasing notes:
     actions the way the personal `DaySlotsView` does.
   - **Schema-change risk, same caveat as the very next bullet below.** This
     round added new stored properties to the existing `GroupSharedGroceryItem`
-    model (`aisleID`/`aisleManuallySet`) plus three brand-new model types
-    (`GroupStoreAisle`/`GroupStapleItem`/`GroupGroceryHistoryEntry`) to the
+    model (`aisleID`/`aisleManuallySet`) plus a brand-new model type
+    (`GroupStoreAisle` — two siblings added alongside it in the same round,
+    `GroupStapleItem`/`GroupGroceryHistoryEntry`, were later removed
+    outright; see `GroupStoreAisle`'s doc comment in
+    `HomeEats/Models/GroupGroceryLayout.swift`) to the
     SwiftData schema. New types need no migration; the two new fields on an
     *existing* type are the one part worth flagging — if SwiftData's
     lightweight migration can't bridge them for someone with an existing

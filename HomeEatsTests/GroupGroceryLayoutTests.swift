@@ -1,17 +1,17 @@
 import XCTest
 @testable import HomeEats
 
-/// Decoding round-trip tests for the Phase 4 "My Layout" aisle/history wire
-/// types (`RemoteGroupStoreAisle`, `RemoteGroupGroceryHistoryEntry`) — same
-/// discipline as `GroupSharedPlanDecodingTests`: fixtures hand-checked field
-/// by field against the actual serializer functions in
-/// `backend/routes/groupGroceryAisles.js`/`backend/routes/groupGrocery.js`'s
-/// `GET .../grocery/history` handler. (A third wire type used to be covered
-/// here too, `RemoteGroupStapleItem`/`GroupStaplesResponse` — its decoding
-/// and `applyRemote` tests below were removed along with the rest of the
-/// standing "staples" template-list feature; see `GroupStoreAisle`'s doc
-/// comment in HomeEats/Models/GroupGroceryLayout.swift for the removal
-/// note.)
+/// Decoding round-trip tests for the Phase 4 "My Layout" aisle wire type
+/// (`RemoteGroupStoreAisle`) — same discipline as
+/// `GroupSharedPlanDecodingTests`: fixtures hand-checked field by field
+/// against the actual serializer function in
+/// `backend/routes/groupGroceryAisles.js`. (Two other wire types used to be
+/// covered here too: `RemoteGroupStapleItem`/`GroupStaplesResponse` (the
+/// standing "staples" template-list feature) and
+/// `RemoteGroupGroceryHistoryEntry`/`GroupGroceryHistoryResponse` (the
+/// group-shared "past groceries" catalog) — both removed outright along
+/// with their whole features; see `GroupStoreAisle`'s doc comment in
+/// HomeEats/Models/GroupGroceryLayout.swift for both removal notes.)
 final class GroupGroceryLayoutDecodingTests: XCTestCase {
     private let decoder = AccountsAPIClient.decoder
 
@@ -44,24 +44,12 @@ final class GroupGroceryLayoutDecodingTests: XCTestCase {
         XCTAssertNil(custom.linkedCategory)
     }
 
-    // MARK: - Grocery history (routes/groupGrocery.js's GET .../grocery/history)
-
-    func testGroupGroceryHistoryResponseDecodesTheSmallerReadOnlyShape() throws {
-        // Deliberately no `id`/`groupId`/`normalizedName` in this response —
-        // see `RemoteGroupGroceryHistoryEntry`'s own doc comment for why.
-        let json = """
-        {
-          "items": [
-            { "name": "milk", "category": "DAIRY_AND_EGGS", "addedAt": "2024-06-01T00:00:00.000Z" },
-            { "name": "eggs", "category": "DAIRY_AND_EGGS", "addedAt": "2024-06-02T00:00:00.000Z" }
-          ]
-        }
-        """
-        let response = try decoder.decode(GroupGroceryHistoryResponse.self, from: data(json))
-        XCTAssertEqual(response.items.count, 2)
-        XCTAssertEqual(response.items[0].name, "milk")
-        XCTAssertEqual(response.items[0].category, .dairyAndEggs)
-    }
+    // A "Grocery history" decoding test used to live here too
+    // (`GroupGroceryHistoryResponse`, routes/groupGrocery.js's GET
+    // .../grocery/history) — removed along with the rest of the
+    // group-shared "past groceries" catalog; see `GroupStoreAisle`'s doc
+    // comment in HomeEats/Models/GroupGroceryLayout.swift for the removal
+    // note.
 
     // MARK: - `RemoteGroupGroceryItem`'s Phase 4 `aisleId`/`aisleManuallySet` fields
 
@@ -80,45 +68,13 @@ final class GroupGroceryLayoutDecodingTests: XCTestCase {
     }
 }
 
-/// Unit tests for `GroupGroceryHistoryEntry.makeID(groupID:name:)` — the
-/// pure, deterministic local-id derivation `GroupSyncService
-/// .reconcileGroceryHistory` relies on to match a pulled row (which carries
-/// no server id of its own — see `RemoteGroupGroceryHistoryEntry`'s own doc
-/// comment) against an existing local one, mirroring the backend's own
-/// `normalizeHistoryName` dedupe key in routes/groupGrocery.js.
-final class GroupGroceryHistoryEntryIDTests: XCTestCase {
-    func testSameGroupAndNameProduceTheSameID() {
-        let first = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "Milk")
-        let second = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "Milk")
-        XCTAssertEqual(first, second)
-    }
-
-    func testCaseAndWhitespaceInsensitive() {
-        // Same normalization as the backend's `normalizeHistoryName` (trim +
-        // lowercase) — "Milk", "milk", and "  MILK  " must all resolve to
-        // the same local row, matching one pulled history entry regardless
-        // of exactly how its display casing happens to be spelled.
-        let a = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "Milk")
-        let b = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "milk")
-        let c = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "  MILK  ")
-        XCTAssertEqual(a, b)
-        XCTAssertEqual(a, c)
-    }
-
-    func testDifferentGroupsProduceDifferentIDsForTheSameName() {
-        // Group-scoped: the same item name in two different groups must
-        // never collide onto the same local row.
-        let g1 = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "Milk")
-        let g2 = GroupGroceryHistoryEntry.makeID(groupID: "g2", name: "Milk")
-        XCTAssertNotEqual(g1, g2)
-    }
-
-    func testDifferentNamesInTheSameGroupProduceDifferentIDs() {
-        let milk = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "Milk")
-        let eggs = GroupGroceryHistoryEntry.makeID(groupID: "g1", name: "Eggs")
-        XCTAssertNotEqual(milk, eggs)
-    }
-}
+// A `GroupGroceryHistoryEntryIDTests` class used to live here — unit tests
+// for `GroupGroceryHistoryEntry.makeID(groupID:name:)`, the pure,
+// deterministic local-id derivation `GroupSyncService.reconcileGroceryHistory`
+// relied on to match a pulled row against an existing local one. Removed
+// along with the rest of the group-shared "past groceries" catalog; see
+// `GroupStoreAisle`'s doc comment in HomeEats/Models/GroupGroceryLayout.swift
+// for the removal note.
 
 /// Unit tests for the `GroupSyncService.applyRemote(_:to: GroupStoreAisle)`
 /// overload — plain field-mapping + `.synced` assignment, exercised directly

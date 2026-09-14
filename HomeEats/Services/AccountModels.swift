@@ -849,13 +849,15 @@ struct GroupGroceryListResponse: Codable {
 //
 // Wire shapes only, same relationship to the local, offline-capable
 // SwiftData layer as the meal-plan/grocery-list types above — see
-// `HomeEats/Models/GroupGroceryLayout.swift` for the local mirrors
-// (`GroupStoreAisle`, `GroupGroceryHistoryEntry`) and `GroupSyncService` for
-// what turns one of these into the other and back. (A third wire type used
-// to be declared further down this file, `RemoteGroupStapleItem`/
-// `GroupStaplesResponse` — removed along with the rest of the standing
-// "staples" template-list feature; see `GroupStoreAisle`'s doc comment for
-// the removal note.)
+// `HomeEats/Models/GroupGroceryLayout.swift` for the local mirror
+// (`GroupStoreAisle`) and `GroupSyncService` for what turns one of these
+// into the other and back. (Two other wire types used to be declared
+// further down this file: `RemoteGroupStapleItem`/`GroupStaplesResponse` —
+// removed along with the rest of the standing "staples" template-list
+// feature — and `RemoteGroupGroceryHistoryEntry`/`GroupGroceryHistoryResponse`
+// — removed along with the rest of the group-shared "past groceries"
+// catalog; see `GroupStoreAisle`'s doc comment in GroupGroceryLayout.swift
+// for both removal notes.)
 
 /// One row of `GET .../grocery/aisles`, and every aisle-mutating route's
 /// response — exactly `serializeAisle(...)` in routes/groupGroceryAisles.js.
@@ -878,26 +880,4 @@ struct RemoteGroupStoreAisle: Codable, Identifiable {
 
 struct GroupStoreAislesResponse: Codable {
     let aisles: [RemoteGroupStoreAisle]
-}
-
-// MARK: - Group grocery history (Phase 4 iOS wiring — GET .../grocery/history in routes/groupGrocery.js)
-
-/// One row of `GET /groups/:groupId/grocery/history` — deliberately smaller
-/// than the backend's full `GroupGroceryHistoryEntry` row (no `id`/`groupId`/
-/// `normalizedName`): this route is read-only, and nothing on this app's
-/// side ever needs to address one row by id — every entry is written
-/// automatically, server-side, as a side effect of `PATCH .../grocery/:id`'s
-/// `isChecked` transition (see that route's own doc comment), never
-/// created/edited/deleted directly by a client — so the response, and this
-/// app's local mirror (`GroupGroceryHistoryEntry` in
-/// `HomeEats/Models/GroupGroceryLayout.swift`), only carry what's actually
-/// rendered.
-struct RemoteGroupGroceryHistoryEntry: Codable {
-    let name: String
-    let category: RemoteGroceryCategory
-    let addedAt: Date
-}
-
-struct GroupGroceryHistoryResponse: Codable {
-    let items: [RemoteGroupGroceryHistoryEntry]
 }

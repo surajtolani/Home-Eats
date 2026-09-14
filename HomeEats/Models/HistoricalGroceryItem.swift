@@ -12,12 +12,15 @@ import SwiftData
 /// Renamed "Household Groceries" in the UI (was "Past Groceries") — direct
 /// user framing: this is deliberately *individualized*, a local, per-device/
 /// per-account catalog that's never synced to the backend or shared with any
-/// group, as opposed to the group-scoped `GroupGroceryHistoryEntry` (shared
-/// across every member of one group) that plays the same "add with one tap"
-/// role on `GroupSharedGroceryListView`. `GroupSharedGroceryListView`'s own
-/// "From Your Household Groceries" section reads directly from this same
-/// table to let a group member bring one of their own personal go-tos onto
-/// a shared list, without that catalog entry itself ever becoming shared.
+/// group. `GroupSharedGroceryListView`'s own "From Your Household Groceries"
+/// section reads directly from this same table (and can add to it inline)
+/// to let a group member bring one of their own personal go-tos onto a
+/// shared list, without that catalog entry itself ever becoming shared. A
+/// separate, group-scoped `GroupGroceryHistoryEntry` model used to play a
+/// similar "add with one tap" role there, shared across every member of one
+/// group — removed outright per direct user feedback that it was redundant
+/// with this personal catalog; see `GroupStoreAisle`'s doc comment in
+/// HomeEats/Models/GroupGroceryLayout.swift for the removal note.
 @Model
 final class HistoricalGroceryItem {
     @Attribute(.unique) var id: UUID

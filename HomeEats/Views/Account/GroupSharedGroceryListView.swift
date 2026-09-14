@@ -19,15 +19,21 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// local-only reference view per this feature's scope) onto the
 /// group-scoped, offline-capable, backend-synced `GroupSharedGroceryItem`
 /// model: a **By Category / My Layout** view-mode toggle, drag-to-reorder,
-/// a "Suggested" section, and a "From Your Past Groceries" section — the
-/// same three pieces of on-screen structure as the personal reference (its
-/// own view-mode picker plus those same two collapsible sections below it),
-/// now Phase-4-backed by the group-scoped `GroupStoreAisle`/
-/// `GroupGroceryHistoryEntry` models instead of the local `StoreAisle`/
-/// `HistoricalGroceryItem`. A quick-add field at the top of the list
-/// (`quickAddField` below) lets a plain name-only add reach the list
-/// directly via Return, with no sheet at all — see that property's own doc
-/// comment for the role-gating and the "why keep the sheet too" reasoning.
+/// and a "Suggested" section — Phase-4-backed by the group-scoped
+/// `GroupStoreAisle` model instead of the local `StoreAisle`. This screen
+/// also has its own "From Your Household Groceries" section
+/// (`householdGroceriesSection` below), reading the signed-in user's
+/// personal `HistoricalGroceryItem` catalog directly — a group-shared "past
+/// groceries" catalog (`GroupGroceryHistoryEntry`) used to live here too,
+/// removed outright per direct user feedback that a second, group-scoped
+/// catalog for the same "bring something I usually get onto this list" job
+/// was redundant once the personal one was reachable from here — see
+/// `GroupStoreAisle`'s doc comment in
+/// HomeEats/Models/GroupGroceryLayout.swift for the removal note. A
+/// quick-add field at the top of the list (`quickAddField` below) lets a
+/// plain name-only add reach the list directly via Return, with no sheet at
+/// all — see that property's own doc comment for the role-gating and the
+/// "why keep the sheet too" reasoning.
 /// One thing this version deliberately does NOT port: the personal screen's
 /// "Paste an Old Grocery List" bulk-import sheet
 /// (`GroceryHistoryImportSheet`) — there is no group-scoped bulk-import
@@ -85,7 +91,6 @@ struct GroupSharedGroceryListView: View {
 
     @Query private var items: [GroupSharedGroceryItem]
     @Query(sort: \GroupStoreAisle.sortIndex) private var allAisles: [GroupStoreAisle]
-    @Query(sort: \GroupGroceryHistoryEntry.name) private var historicalItems: [GroupGroceryHistoryEntry]
     /// The signed-in user's own, personal Household Groceries catalog — not
     /// scoped to `groupID` at all (unlike every other `@Query` here), since
     /// it's the same local, individualized table `GroceryListView` reads
@@ -109,6 +114,11 @@ struct GroupSharedGroceryListView: View {
 
     /// Backs `quickAddField` — see that property's own doc comment.
     @State private var quickAddText = ""
+    /// Backs `householdGroceriesSection`'s own type-to-add field — see that
+    /// property's own doc comment. Separate state from `quickAddText`
+    /// above (that one adds straight onto this GROUP's list; this one adds
+    /// to the viewer's personal Household Groceries catalog instead).
+    @State private var householdQuickAddText = ""
     @State private var viewMode: GroupGroceryViewMode = .byCategory
     /// Same "always active, real writable binding rather than `.constant`"
     /// reasoning as the personal `GroceryListView.editMode` — see that
@@ -116,9 +126,8 @@ struct GroupSharedGroceryListView: View {
     @State private var editMode: EditMode = .active
     // The only two collapsible sections on this screen, defaulted open —
     // same as the personal `GroceryListView`'s own `suggestionsExpanded`/
-    // `pastGroceriesExpanded`.
+    // `householdGroceriesExpanded`.
     @State private var suggestionsExpanded = true
-    @State private var pastGroceriesExpanded = true
     @State private var householdGroceriesExpanded = true
     /// The days `generateSuggestions()` pulls planned meals from — same
     /// "today through six days out" default, and same `Set<Date>` (not a
@@ -140,7 +149,6 @@ struct GroupSharedGroceryListView: View {
         let gid = groupID
         _items = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
         _allAisles = Query(filter: #Predicate<GroupStoreAisle> { $0.groupID == gid }, sort: \GroupStoreAisle.sortIndex)
-        _historicalItems = Query(filter: #Predicate<GroupGroceryHistoryEntry> { $0.groupID == gid }, sort: \GroupGroceryHistoryEntry.name)
         _plannedMeals = Query(filter: #Predicate<GroupPlannedMeal> { $0.groupID == gid })
     }
 
@@ -287,9 +295,17 @@ struct GroupSharedGroceryListView: View {
             suggestionsSection
 
             householdGroceriesSection
-
-            pastGroceriesSection
         }
+        // `.plain`, not the default inset-grouped style — direct user
+        // report of "an unnecessary lot of extra space at the top below
+        // 'grocery list'": the default List style reserves noticeably more
+        // padding above a List's first section header than `.plain` does,
+        // on top of wrapping every section in its own inset card. Matches
+        // every other main-tab List-based screen in this app
+        // (`RecipesHomeView`, `CalendarPlanView`, `GroupSharedMealPlanView`
+        // all already use `.plain`) — this screen and the personal
+        // `GroceryListView` were the two left on the default by oversight.
+        .listStyle(.plain)
         // `.syncStatusOverlay` (see `SyncStatusBanner.swift`) floats this at
         // the BOTTOM of the `List`, as a true overlay rather than a `Section`
         // inserted into/removed from the list's own content — this used to
@@ -730,14 +746,26 @@ struct GroupSharedGroceryListView: View {
     /// Direct user request: "once you add it to the grocery tab for that
     /// group, the 'item' gets duped to the group grocery list for that
     /// group. That way if you always generally buy a specific brand, you
-    /// can include that to the master grocery list." Separate from, and
-    /// shown above, `pastGroceriesSection` below (that one is this GROUP's
-    /// own shared history, built from what any member has checked off here
-    /// before — this one is the signed-in viewer's personal catalog,
-    /// individualized to them, from `GroceryListView`'s own "Household
-    /// Groceries" section). Always shown, even empty, same "don't make it
-    /// disappear until something populates it" reasoning as every other
-    /// collapsible section on this screen.
+    /// can include that to the master grocery list." This is now the only
+    /// "past groceries"-style catalog this screen shows — a group-shared
+    /// one (`GroupGroceryHistoryEntry`) used to live here too, removed
+    /// outright per direct follow-up feedback ("not sure we need the 'from
+    /// your group's past groceries' section... the 'from your household
+    /// groceries' should just be your standard groceries") — see
+    /// `GroupStoreAisle`'s doc comment in
+    /// HomeEats/Models/GroupGroceryLayout.swift for the removal note.
+    /// Always shown, even empty, same "don't make it disappear until
+    /// something populates it" reasoning as every other collapsible section
+    /// on this screen.
+    ///
+    /// Includes its own type-to-add field (`submitHouseholdQuickAdd()`
+    /// below) — same one the personal `GroceryListView`'s own Household
+    /// Groceries section has, duplicated here rather than only reachable
+    /// from the Grocery tab, per the same follow-up request ("want there to
+    /// be a place to add an item to your household groceries") read in the
+    /// context of this screen specifically: someone managing a group's list
+    /// shouldn't have to leave it to add something new to their own catalog
+    /// first.
     ///
     /// Only the name/category duplicate onto the new `GroupSharedGroceryItem`
     /// — never the noted product/brand itself (`HistoricalGroceryItem
@@ -750,8 +778,23 @@ struct GroupSharedGroceryListView: View {
     private var householdGroceriesSection: some View {
         Section {
             DisclosureGroup(isExpanded: $householdGroceriesExpanded) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Add to Household Groceries", text: $householdQuickAddText)
+                        .submitLabel(.done)
+                        .onSubmit(submitHouseholdQuickAdd)
+                    if !householdQuickAddText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button(action: submitHouseholdQuickAdd) {
+                            Image(systemName: "arrow.up.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.brandForest)
+                    }
+                }
+                .padding(.vertical, 2)
+
                 if myHouseholdItems.isEmpty {
-                    Text("Nothing in your Household Groceries yet — add some from the Grocery tab.")
+                    Text("Nothing in your Household Groceries yet — add one above.")
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
                 } else {
@@ -773,7 +816,7 @@ struct GroupSharedGroceryListView: View {
                 majorHeader("From Your Household Groceries")
             }
         } footer: {
-            Text("Your own personal catalog, not shared with the group — tap + (or Add All) to bring one of your usual items onto this list.")
+            Text("Your own personal catalog, not shared with the group — type a name above to add to it, or tap + (or Add All) to bring one of your usual items onto this list.")
         }
     }
 
@@ -782,9 +825,18 @@ struct GroupSharedGroceryListView: View {
         return items.contains { GroceryListBuilder.canonicalKey(for: $0.name) == key }
     }
 
-    /// Same role-split reasoning as `quickAdd(_ historyItem: GroupGroceryHistoryEntry)`
-    /// below — any member may call this, landing as `.thisWeek` for a
-    /// MANAGER or `.suggested` for a PARTICIPANT.
+    /// Any member may quick-add — same "routine list use" bucket as
+    /// checking an item off; lands directly as `.thisWeek` (skipping the
+    /// suggest-then-accept step) matching the personal app's own
+    /// `quickAdd`. This does mean a `PARTICIPANT` can put something
+    /// straight onto the real list via this one specific path — a
+    /// deliberate parity choice with the personal reference rather than a
+    /// role-gating gap: see this feature's own final report for the
+    /// reasoning (the backend's `POST /groups/:groupId/grocery` itself would
+    /// still reject a `PARTICIPANT`'s attempt to create with anything but
+    /// `SUGGESTED`, so the eventual push of this row is done as a `.suggested`
+    /// item for a `PARTICIPANT`, not `.thisWeek`, to avoid a push that can
+    /// only ever fail).
     private func quickAddFromHousehold(_ historyItem: HistoricalGroceryItem) {
         guard !alreadyInList(historyItem), let currentUserID = accountSession.currentUser?.id else { return }
         let item = GroupSharedGroceryItem(
@@ -803,77 +855,22 @@ struct GroupSharedGroceryListView: View {
         }
     }
 
-    // MARK: - Quick add from past groceries
-
-    /// Always shown, even empty — same "don't make it disappear until
-    /// something populates it" reasoning as the personal
-    /// `GroceryListView.pastGroceriesSection`. No "Paste an Old List" entry
-    /// point here (see this file's own top doc comment) — this fills in
-    /// only automatically, as items get checked off.
-    @ViewBuilder
-    private var pastGroceriesSection: some View {
-        Section {
-            DisclosureGroup(isExpanded: $pastGroceriesExpanded) {
-                if historicalItems.isEmpty {
-                    Text("Nothing here yet — this fills in automatically as your group checks items off below.")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                } else {
-                    Button("Add All", action: addAllHistorical)
-                        .font(.brandCallout.bold())
-                        .foregroundStyle(Color.brandForest)
-                    ForEach(historicalItems) { historyItem in
-                        GroupGrocerySuggestionRow(
-                            name: historyItem.name,
-                            quantityText: nil,
-                            isSecondary: alreadyInList(historyItem),
-                            addIsDisabled: alreadyInList(historyItem),
-                            onAdd: { quickAdd(historyItem) },
-                            onReject: nil
-                        )
-                    }
-                }
-            } label: {
-                majorHeader("From Your Group's Past Groceries")
-            }
-        } footer: {
-            Text("This fills in automatically as your group checks items off below — tap + (or Add All) to bring an item from here straight onto the list.")
+    /// Adds a brand-new Household Groceries entry from `householdQuickAddText`
+    /// — same canonical-name dedupe every other add path on this catalog
+    /// already uses (see the personal `GroceryListView
+    /// .submitHouseholdQuickAdd`'s identical logic), so typing a name
+    /// that's already in the catalog is a harmless no-op rather than a
+    /// visible duplicate row.
+    private func submitHouseholdQuickAdd() {
+        let trimmedName = householdQuickAddText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        let key = GroceryListBuilder.canonicalKey(for: trimmedName)
+        guard !myHouseholdItems.contains(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }) else {
+            householdQuickAddText = ""
+            return
         }
-    }
-
-    private func alreadyInList(_ historyItem: GroupGroceryHistoryEntry) -> Bool {
-        let key = GroceryListBuilder.canonicalKey(for: historyItem.name)
-        return items.contains { GroceryListBuilder.canonicalKey(for: $0.name) == key }
-    }
-
-    /// Any member may quick-add — same "routine list use" bucket as
-    /// checking an item off; lands directly as `.thisWeek` (skipping the
-    /// suggest-then-accept step) matching the personal app's own
-    /// `quickAdd`. This does mean a `PARTICIPANT` can put something
-    /// straight onto the real list via this one specific path — a
-    /// deliberate parity choice with the personal reference rather than a
-    /// role-gating gap: see this feature's own final report for the
-    /// reasoning (the backend's `POST /groups/:groupId/grocery` itself would
-    /// still reject a `PARTICIPANT`'s attempt to create with anything but
-    /// `SUGGESTED`, so the eventual push of this row is done as a `.suggested`
-    /// item for a `PARTICIPANT`, not `.thisWeek`, to avoid a push that can
-    /// only ever fail).
-    private func quickAdd(_ historyItem: GroupGroceryHistoryEntry) {
-        guard !alreadyInList(historyItem), let currentUserID = accountSession.currentUser?.id else { return }
-        let item = GroupSharedGroceryItem(
-            id: GroupSharedGroceryItem.newLocalPlaceholderID(), groupID: groupID, name: historyItem.name,
-            category: historyItem.category, section: isManager ? .thisWeek : .suggested,
-            addedByUserID: currentUserID, syncState: .pendingCreate
-        )
-        modelContext.insert(item)
-        try? modelContext.save()
-        Task { await runSync() }
-    }
-
-    private func addAllHistorical() {
-        for historyItem in historicalItems where !alreadyInList(historyItem) {
-            quickAdd(historyItem)
-        }
+        modelContext.insert(HistoricalGroceryItem(name: trimmedName))
+        householdQuickAddText = ""
     }
 
     // MARK: - Rows

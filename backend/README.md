@@ -461,9 +461,8 @@ response has the shape `{ "error": "..." }`.
 | GET | `/groups/:groupId/grocery` | required (member) | — | `{ items: [...] }` — every item on the group's shared list; client groups/filters by category/section locally. |
 | POST | `/groups/:groupId/grocery` | required (any member); role-gated on `section` | `{ name, category, section, quantityText?, quantityCount?, orderIndex? }` | `category` is one of `PRODUCE`/`DAIRY_AND_EGGS`/`MEAT_AND_SEAFOOD`/`BAKERY`/`PANTRY`/`FROZEN`/`BEVERAGES`/`SNACKS`/`HOUSEHOLD`/`OTHER`; `section` is `SUGGESTED`/`THIS_WEEK`/`STAPLES`. `quantityCount` (an integer >= 1) defaults to `1` if omitted. A `PARTICIPANT` may only create with `section: SUGGESTED` (`403` for any other section — the "suggest an item" path); a `MANAGER` may create with any section (the "add directly to the real list" path). |
 | PATCH | `/groups/:groupId/grocery/:id/accept` | **MANAGER only** | — | Moves a `SUGGESTED` item to `THIS_WEEK`. `403` for a `PARTICIPANT`, `409` if the item isn't currently `SUGGESTED`. |
-| PATCH | `/groups/:groupId/grocery/:id` | required (any member); field-gated by role | Any subset of `{ name, category, quantityText, section, isChecked, orderIndex, quantityCount, aisleId }` | **Asymmetric on purpose** — see "Group grocery list" below. Any member may set `isChecked`/`orderIndex`/`quantityCount`/`aisleId` (routine day-to-day list use, including "My Layout" placement and adjusting how many to buy). Only a `MANAGER` may set `name`/`category`/`quantityText`/`section` (editing what's on the list). A request from a `PARTICIPANT` that touches even one manager-only field is rejected wholesale (`403`) — nothing is partially applied. `aisleId` may be `null` (explicitly "Unsorted") or a `GroupStoreAisle` id belonging to this same group (`400` if it names an aisle in another group, or one that doesn't exist); sending it at all — including `null` — also sets `aisleManuallySet: true` on the item (see "My Layout" below). Checking an item off (`isChecked` `false` -> `true`) also records a `GroupGroceryHistoryEntry` for it — see "Grocery history" below. |
+| PATCH | `/groups/:groupId/grocery/:id` | required (any member); field-gated by role | Any subset of `{ name, category, quantityText, section, isChecked, orderIndex, quantityCount, aisleId }` | **Asymmetric on purpose** — see "Group grocery list" below. Any member may set `isChecked`/`orderIndex`/`quantityCount`/`aisleId` (routine day-to-day list use, including "My Layout" placement and adjusting how many to buy). Only a `MANAGER` may set `name`/`category`/`quantityText`/`section` (editing what's on the list). A request from a `PARTICIPANT` that touches even one manager-only field is rejected wholesale (`403`) — nothing is partially applied. `aisleId` may be `null` (explicitly "Unsorted") or a `GroupStoreAisle` id belonging to this same group (`400` if it names an aisle in another group, or one that doesn't exist); sending it at all — including `null` — also sets `aisleManuallySet: true` on the item (see "My Layout" below). |
 | DELETE | `/groups/:groupId/grocery/:id` | depends on the item's current `section` | — | `SUGGESTED`: **MANAGER, or the item's own original suggester** (rejecting a suggestion) — anyone else gets `403`. `THIS_WEEK`/`STAPLES`: **any member** (routine list maintenance — "we bought it" / "we don't need it") — no extra check. |
-| GET | `/groups/:groupId/grocery/history` | required (member) | — | `{ items: [{ name, category, addedAt }] }` — every distinct item name this group has ever checked off, alphabetical. See "Grocery history" below for why this is a durable log, not a live query. |
 | GET | `/groups/:groupId/grocery/aisles` | required (member) | — | `{ aisles: [...] }` — every `GroupStoreAisle` for the group, sorted by `sortIndex`. Seeds ten starter aisles (one per `GroceryCategory`) the first time this is called for a group with none yet — see "My Layout" below. |
 | POST | `/groups/:groupId/grocery/aisles` | required (any member) | `{ name }` | Creates a custom aisle, appended to the end of the walking order (`sortIndex` = current max + 1). `linkedCategory` is always `null` for a manually-created aisle — only the seeded starters get one. |
 | PATCH | `/groups/:groupId/grocery/aisles/:id` | required (any member) | Any subset of `{ name, sortIndex }` | Rename and/or reposition — including a starter aisle, same as the local app. `404` if the aisle doesn't belong to this group. |
@@ -727,39 +726,21 @@ table above and "Group grocery list" below), which is a tag on one specific
 line already on the live list, not a standing template — that tag, and
 everything that depends on it, is untouched.
 
-### Grocery history (past-groceries quick-add)
-
-`GET /groups/:groupId/grocery/history` is the group-scoped counterpart of
-the local "From Your Past Groceries" section, backed by a new
-`GroupGroceryHistoryEntry` table — **not** a live query over
-`GroupGroceryItem`, which is the simpler approach this feature's spec
-correctly prefers by default, and the one to reach for first absent a
-concrete reason otherwise.
-
-The reason found here: `GroupGroceryItem` rows are hard-deleted when
-removed from the list, and per this file's own `DELETE` rule above, "we
-bought it" is an everyday, established reason a `THIS_WEEK`/`STAPLES` row
-gets deleted — not an edge case. A query over *currently-existing* rows
-would lose an item's name from "history" at the exact moment someone
-finishes buying it and clears it off the list, which is the one moment
-this feature most needs to remember it for. A derived query can't express
-"remember this even after the row it came from is gone," so a small
-durable table earns its keep rather than being redundant bookkeeping to
-keep in sync — it's populated automatically, at exactly one trigger point,
-by the same request that would otherwise lose the information, so there's
-no separate sync step that could drift.
-
-The trigger mirrors the local `GroceryItemRow.recordAsHistorical` exactly:
-`PATCH /groups/:groupId/grocery/:id` upserts one of these (a no-op if
-already known) whenever `isChecked` transitions `false` -> `true` — inside
-the same transaction as the item update, so a history entry is never
-recorded without the checkbox actually flipping or vice versa. Recording
-only on that transition (not on every create/delete) deliberately keeps a
-`SUGGESTED` item that was rejected without ever being bought out of
-history. Dedup is by `normalizedName` (lowercased/trimmed) rather than the
-iOS canonicalizer's pluralization-aware `canonicalKey` — good enough to
-stop the same typed name (modulo case/whitespace) from creating two rows,
-without porting that algorithm server-side.
+**Removed: the group-shared "past groceries" catalog.** `GET
+/groups/:groupId/grocery/history` — the group-scoped counterpart of the
+local "Household Groceries" catalog, backed by a `GroupGroceryHistoryEntry`
+table populated by a side effect inside `PATCH /groups/:groupId/grocery/:id`
+(an `isChecked` `false` -> `true` transition upserted a row) — used to live
+here. It was removed outright (model, migration to drop the table, the
+route, the PATCH side effect, and the iOS
+`GroupGroceryHistoryEntry`/`pastGroceriesSection` side of it) per direct
+user feedback that a group-shared history was redundant: each member's own
+personal `HistoricalGroceryItem` "Household Groceries" catalog already
+does this job, is reachable from inside the group grocery screen itself
+(a quick-add field directly in its "From Your Household Groceries"
+section), and — unlike the group-shared version — survives correctly if
+the member ever leaves the group. Same "outright removal, not just hidden"
+precedent as the staples list just above.
 
 ## 9. Notifications
 

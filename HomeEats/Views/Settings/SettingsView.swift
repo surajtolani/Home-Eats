@@ -20,12 +20,13 @@ struct SettingsView: View {
     // aisle offline would sign out with no warning at all, and
     // `GroupSyncService.purgeAllLocalGroupData` (which purges this
     // unconditionally, same as the rest) would silently drop it.
-    // `GroupGroceryHistoryEntry` has no pending state of its own to lose
-    // (see that model's own doc comment), so it's deliberately not queried
-    // here. (A former sibling query here, `groupStaples: [GroupStapleItem]`,
-    // was removed along with the rest of the standing "staples"
-    // template-list feature — see `GroupStoreAisle`'s doc comment in
-    // HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
+    // (Two former sibling queries here — `groupStaples: [GroupStapleItem]`
+    // and `groupGroceryHistory: [GroupGroceryHistoryEntry]` (which had no
+    // pending state of its own to lose in the first place) — were removed
+    // along with the rest of the standing "staples" template-list feature
+    // and the group-shared "past groceries" catalog, respectively; see
+    // `GroupStoreAisle`'s doc comment in
+    // HomeEats/Models/GroupGroceryLayout.swift for both removal notes.)
     @Query private var groupAisles: [GroupStoreAisle]
 
     @State private var reminderTime: Date = Calendar.current.date(

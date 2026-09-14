@@ -94,48 +94,19 @@ final class GroupStoreAisle {
     }
 }
 
-/// Local, read-only mirror of one row from a group's "past groceries"
-/// catalog (`GET /groups/:groupId/grocery/history` — see
-/// routes/groupGrocery.js's own doc comment on that route, and
-/// `GroupGroceryHistoryEntry` in prisma/schema.prisma). Parallels the local,
-/// personal `HistoricalGroceryItem` model, untouched per this feature's own
-/// scope notes.
-///
-/// Deliberately simpler than every other model in this file: there is no
-/// create/update/delete route for this at all (see the wire type
-/// `RemoteGroupGroceryHistoryEntry`'s own doc comment in AccountModels.swift)
-/// — every row here is written automatically, server-side, and this app
-/// never queues a pending local change against one, so there is no
-/// `syncState` field here at all. `id` is a locally-computed, deterministic
-/// key (`groupID` + normalized `name` — see `makeID(groupID:name:)` below),
-/// not a server id (the response itself carries none), so two pulls of the
-/// same underlying row always resolve to the same local row rather than
-/// duplicating it. `GroupSyncService.reconcileGroceryHistory` simply
-/// replaces this group's whole local set with whatever the latest pull
-/// returned each cycle — see that method's own doc comment.
-@Model
-final class GroupGroceryHistoryEntry {
-    @Attribute(.unique) var id: String
-    var groupID: String
-    var name: String
-    var category: GroceryCategory
-    var addedAt: Date
-
-    init(groupID: String, name: String, category: GroceryCategory, addedAt: Date = .now) {
-        self.id = Self.makeID(groupID: groupID, name: name)
-        self.groupID = groupID
-        self.name = name
-        self.category = category
-        self.addedAt = addedAt
-    }
-
-    /// Deterministic per-(group, item) key — same lowercased/trimmed
-    /// normalization as the backend's own `normalizeHistoryName(...)` in
-    /// routes/groupGrocery.js, so this local row's identity lines up with
-    /// the server's own dedupe key (`@@unique([groupId, normalizedName])`
-    /// on `GroupGroceryHistoryEntry` in prisma/schema.prisma) even though
-    /// the wire response carries no id of its own to key off directly.
-    static func makeID(groupID: String, name: String) -> String {
-        groupID + "::" + name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-}
+// `GroupGroceryHistoryEntry` — a per-group "past groceries" catalog
+// (auto-populated by any member checking an item off, `GET
+// /groups/:groupId/grocery/history`) — used to live here too. Removed
+// outright per direct user feedback ("not sure we need the 'from your
+// group's past groceries' section... the 'from your household groceries'
+// should just be your standard groceries"): the personal, individualized
+// `HistoricalGroceryItem` catalog (surfaced on this same screen via
+// `GroupSharedGroceryListView.householdGroceriesSection`) already covers
+// the "bring something I usually get onto this list" job, so a second,
+// group-shared catalog for the same purpose was redundant — same
+// "removed the concept outright, not just its UI" reasoning as
+// `GroupStapleItem` above. Also removed alongside this: the backend
+// model/route/migration and every other iOS reference (`GroupSyncService`'s
+// push/pull, `AccountsAPIClient.getGroupGroceryHistory`,
+// `RemoteGroupGroceryHistoryEntry`) — see backend/README.md's "Group
+// grocery list" section for the removal note.

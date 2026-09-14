@@ -282,13 +282,11 @@ enum GroupSyncService {
         allSucceeded = await pushPlannedMeals(groupID: groupID, modelContext: modelContext) && allSucceeded
         allSucceeded = await pushSuggestions(groupID: groupID, modelContext: modelContext) && allSucceeded
         allSucceeded = await pushGroceryItems(groupID: groupID, modelContext: modelContext) && allSucceeded
-        // Phase 4 — "My Layout" aisles. Grocery history has no push
-        // counterpart at all (see `reconcileGroceryHistory`'s own doc
-        // comment: it's a read-only, server-populated catalog). A former
-        // sibling call here, `pushStaples`, was removed along with the rest
-        // of the standing "staples" template-list feature — see
-        // `GroupStoreAisle`'s doc comment in
-        // HomeEats/Models/GroupGroceryLayout.swift for the removal note.
+        // Phase 4 — "My Layout" aisles. A former sibling call here,
+        // `pushStaples`, was removed along with the rest of the standing
+        // "staples" template-list feature — see `GroupStoreAisle`'s doc
+        // comment in HomeEats/Models/GroupGroceryLayout.swift for the
+        // removal note.
         allSucceeded = await pushAisles(groupID: groupID, modelContext: modelContext) && allSucceeded
         try? modelContext.save()
         return allSucceeded
@@ -615,33 +613,30 @@ enum GroupSyncService {
     private static func pull(groupID: String, modelContext: ModelContext) async -> Bool {
         async let mealPlanResult = try? AccountsAPIClient.getGroupMealPlan(groupID: groupID)
         async let groceryResult = try? AccountsAPIClient.getGroupGroceryList(groupID: groupID)
-        // Phase 4 — "My Layout" aisles and grocery history. Fetched every
-        // sync cycle (not only when their screens happen to be on screen),
-        // same "small, household-scale, low-traffic" reasoning the rest of
-        // this file's periodic-resync design already accepts — and, for
-        // aisles specifically, load-bearing: `getGroupGroceryAisles` is also
-        // what lazily seeds a group's ten starter aisles the first time it's
-        // ever called (see that method's own doc comment) — calling it
-        // here, on every sync, means those starter aisles are already seeded
-        // and synced locally well before someone first switches "My Layout"
-        // on, rather than "My Layout" opening to an empty/all-Unsorted list
-        // for the one sync cycle it would otherwise take to catch up. A
-        // former sibling fetch here, `getGroupGroceryStaples`, was removed
-        // along with the rest of the standing "staples" template-list
-        // feature — see `GroupStoreAisle`'s doc comment in
-        // HomeEats/Models/GroupGroceryLayout.swift for the removal note.
+        // Phase 4 — "My Layout" aisles. Fetched every sync cycle (not only
+        // when its screen happens to be on screen), same "small,
+        // household-scale, low-traffic" reasoning the rest of this file's
+        // periodic-resync design already accepts — and load-bearing:
+        // `getGroupGroceryAisles` is also what lazily seeds a group's ten
+        // starter aisles the first time it's ever called (see that method's
+        // own doc comment) — calling it here, on every sync, means those
+        // starter aisles are already seeded and synced locally well before
+        // someone first switches "My Layout" on, rather than "My Layout"
+        // opening to an empty/all-Unsorted list for the one sync cycle it
+        // would otherwise take to catch up. Two former sibling fetches used
+        // to be here: `getGroupGroceryStaples` (the standing "staples"
+        // template-list feature) and `getGroupGroceryHistory` (the
+        // group-shared "past groceries" catalog) — both removed outright per
+        // direct user feedback; see `GroupStoreAisle`'s doc comment in
+        // HomeEats/Models/GroupGroceryLayout.swift for both removal notes.
         async let aislesResult = try? AccountsAPIClient.getGroupGroceryAisles(groupID: groupID)
-        async let historyResult = try? AccountsAPIClient.getGroupGroceryHistory(groupID: groupID)
-        let (mealPlan, grocery, aisles, history) = await (
-            mealPlanResult, groceryResult, aislesResult, historyResult
-        )
-        guard let mealPlan, let grocery, let aisles, let history else { return false }
+        let (mealPlan, grocery, aisles) = await (mealPlanResult, groceryResult, aislesResult)
+        guard let mealPlan, let grocery, let aisles else { return false }
 
         await reconcilePlannedMeals(remote: mealPlan.plannedMeals, groupID: groupID, modelContext: modelContext)
         await reconcileSuggestions(remote: mealPlan.suggestions, groupID: groupID, modelContext: modelContext)
         reconcileGroceryItems(remote: grocery.items, groupID: groupID, modelContext: modelContext)
         reconcileAisles(remote: aisles.aisles, groupID: groupID, modelContext: modelContext)
-        reconcileGroceryHistory(remote: history.items, groupID: groupID, modelContext: modelContext)
         try? modelContext.save()
         return true
     }
@@ -911,50 +906,13 @@ enum GroupSyncService {
         }
     }
 
-    // MARK: - Pull + reconcile: grocery history (Phase 4, read-only)
-    //
-    // (A former sibling section lived here too: "Push + pull + reconcile:
+    // (Two former sibling sections lived here too: "Push + pull + reconcile:
     // staples", the sync half of the group-scoped standing "staples"
-    // template-list feature — removed outright along with the rest of it
-    // per direct user feedback. See `GroupStoreAisle`'s doc comment in
-    // HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
-
-    private static func localGroceryHistory(groupID: String, modelContext: ModelContext) -> [GroupGroceryHistoryEntry] {
-        let descriptor = FetchDescriptor<GroupGroceryHistoryEntry>(predicate: #Predicate { $0.groupID == groupID })
-        return (try? modelContext.fetch(descriptor)) ?? []
-    }
-
-    /// Unlike every other reconcile method in this file, this one needs no
-    /// `ReconciliationAction` decision at all: `GroupGroceryHistoryEntry` has
-    /// no `syncState` and no local write path ever creates/edits/deletes one
-    /// (see that model's own doc comment) — every local row is always,
-    /// implicitly, "synced", so simply replacing this group's whole local
-    /// set with the latest pull is correct on every cycle, no conflict ever
-    /// possible.
-    private static func reconcileGroceryHistory(remote: [RemoteGroupGroceryHistoryEntry], groupID: String, modelContext: ModelContext) {
-        let localRows = localGroceryHistory(groupID: groupID, modelContext: modelContext)
-        var localByID: [String: GroupGroceryHistoryEntry] = [:]
-        for row in localRows { localByID[row.id] = row }
-
-        var remoteIDs = Set<String>()
-        for entry in remote {
-            let id = GroupGroceryHistoryEntry.makeID(groupID: groupID, name: entry.name)
-            remoteIDs.insert(id)
-            if let existing = localByID[id] {
-                existing.name = entry.name
-                existing.category = entry.category.localCategory
-                existing.addedAt = entry.addedAt
-            } else {
-                modelContext.insert(GroupGroceryHistoryEntry(
-                    groupID: groupID, name: entry.name, category: entry.category.localCategory, addedAt: entry.addedAt
-                ))
-            }
-        }
-
-        for row in localRows where !remoteIDs.contains(row.id) {
-            modelContext.delete(row)
-        }
-    }
+    // template-list feature, and "Pull + reconcile: grocery history", the
+    // sync half of the group-shared "past groceries" catalog — both removed
+    // outright per direct user feedback. See `GroupStoreAisle`'s doc
+    // comment in HomeEats/Models/GroupGroceryLayout.swift for both removal
+    // notes.)
 
     // MARK: - Recipe title resolution
 
@@ -1034,17 +992,14 @@ extension GroupSyncService {
         deleteAllRows(of: GroupSharedGroceryItem.self, modelContext: modelContext)
         // Phase 4 — the same shared-device/wrong-account-attribution risk
         // this method's own doc comment describes applies identically to
-        // these newer mirrors; `GroupGroceryHistoryEntry` has no pending
-        // state of its own to misattribute, but purging it too keeps this
-        // method's "every group-sync mirror, unconditionally" contract
-        // simple and exhaustive rather than special-casing the one type that
-        // happens not to need it for this particular reason. (A former
-        // sibling call here, `deleteAllRows(of: GroupStapleItem.self, ...)`,
-        // was removed along with the rest of the standing "staples"
-        // template-list feature — see `GroupStoreAisle`'s doc comment in
-        // HomeEats/Models/GroupGroceryLayout.swift for the removal note.)
+        // this newer mirror. (Two former sibling calls here —
+        // `deleteAllRows(of: GroupStapleItem.self, ...)` and `deleteAllRows(of:
+        // GroupGroceryHistoryEntry.self, ...)` — were removed along with the
+        // rest of the standing "staples" template-list feature and the
+        // group-shared "past groceries" catalog, respectively; see
+        // `GroupStoreAisle`'s doc comment in
+        // HomeEats/Models/GroupGroceryLayout.swift for both removal notes.)
         deleteAllRows(of: GroupStoreAisle.self, modelContext: modelContext)
-        deleteAllRows(of: GroupGroceryHistoryEntry.self, modelContext: modelContext)
         try? modelContext.save()
     }
 

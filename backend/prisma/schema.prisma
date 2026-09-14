@@ -162,13 +162,13 @@ model Group {
   mealSuggestions MealSuggestion[]
   groceryItems    GroupGroceryItem[]
 
-  // Group grocery "My Layout" / history (Phase 4) — see the doc comments on
-  // GroupStoreAisle and GroupGroceryHistoryEntry below. (A former sibling
-  // relation here, `staples GroupStapleItem[]`, was removed along with the
-  // standing "staples" template-list feature — see GroupStoreAisle's doc
-  // comment for the removal note.)
-  storeAisles    GroupStoreAisle[]
-  groceryHistory GroupGroceryHistoryEntry[]
+  // Group grocery "My Layout" (Phase 4) — see GroupStoreAisle's doc comment
+  // below. (Two former sibling relations here — `staples GroupStapleItem[]`
+  // and `groceryHistory GroupGroceryHistoryEntry[]` — were removed along
+  // with the standing "staples" template-list feature and the group-shared
+  // "past groceries" catalog, respectively; see GroupStoreAisle's doc
+  // comment for both removal notes.)
+  storeAisles GroupStoreAisle[]
 }
 
 // MANAGER/PARTICIPANT — the two-tier permission model added in Phase 3 for
@@ -790,27 +790,40 @@ model GroupGroceryItem {
   @@index([groupId, aisleId])
 }
 
-// --- Group grocery "My Layout" / history (Phase 4) ---------------------
-// Group-scoped counterparts of the local, on-device-only `StoreAisle`/
-// `ItemAisleAssignment` and `HistoricalGroceryItem` SwiftData models — see
-// backend/README.md's "Group grocery list" section for the full picture,
-// HomeEats/Models/StoreAisle.swift / HomeEats/Models/HistoricalGroceryItem.swift
-// for what each is mirroring, and routes/groupGroceryAisles.js for the API
-// (the history endpoint lives in routes/groupGrocery.js itself instead —
-// see GroupGroceryHistoryEntry's doc comment below for why).
+// --- Group grocery "My Layout" (Phase 4) --------------------------------
+// Group-scoped counterpart of the local, on-device-only `StoreAisle`/
+// `ItemAisleAssignment` SwiftData models — see backend/README.md's "Group
+// grocery list" section for the full picture,
+// HomeEats/Models/StoreAisle.swift for what it's mirroring, and
+// routes/groupGroceryAisles.js for the API.
 //
-// A third Phase-4 counterpart used to live here too: `GroupStapleItem`, a
-// group-scoped standing "staples" template list (the group counterpart of
-// the local `StapleItem` model), with its own route file
-// (routes/groupGroceryStaples.js). Removed outright — model, route file,
-// and the iOS `GroupStapleItem`/`GroupStaplesManagerView` side of it — per
-// direct user feedback that the concept added nothing useful ("delete the
-// concept of staples"); see the removal commit and
-// prisma/migrations/*_drop_group_staple_item for the actual table drop.
+// Two other Phase-4 counterparts used to live here too:
+//
+// - `GroupStapleItem`, a group-scoped standing "staples" template list (the
+//   group counterpart of the local `StapleItem` model), with its own route
+//   file (routes/groupGroceryStaples.js). Removed outright — model, route
+//   file, and the iOS `GroupStapleItem`/`GroupStaplesManagerView` side of
+//   it — per direct user feedback that the concept added nothing useful
+//   ("delete the concept of staples"); see the removal commit and
+//   prisma/migrations/*_drop_group_staple_item for the actual table drop.
+//
+// - `GroupGroceryHistoryEntry`, a group-shared "things this group has
+//   bought before" catalog (the group counterpart of the local
+//   `HistoricalGroceryItem` model), populated by a side effect inside
+//   `routes/groupGrocery.js`'s `PATCH .../grocery/:id` handler and served
+//   from `GET /groups/:groupId/grocery/history` in that same file. Removed
+//   outright — model, route, PATCH side effect, and the iOS
+//   `GroupGroceryHistoryEntry`/`pastGroceriesSection` side of it — per
+//   direct user feedback that the group-shared history was redundant with
+//   each member's own personal `HistoricalGroceryItem` "Household
+//   Groceries" catalog, which now does this job alone; see the removal
+//   commit and prisma/migrations/*_drop_group_grocery_history_entry for the
+//   actual table drop.
+//
 // The pre-existing `GroupGrocerySection.STAPLES` enum value below is a
 // separate, unrelated concept (a tag on one specific line already on the
 // live list, mirroring the local `GroceryListSection.staples`) and is
-// untouched by this removal — see that enum's own doc comment.
+// untouched by either removal — see that enum's own doc comment.
 //
 // A group's "My Layout" — a household-defined arrangement of the shared
 // list into the aisles of their actual store, independent of the fixed
@@ -862,53 +875,11 @@ model GroupStoreAisle {
   @@index([groupId, sortIndex])
 }
 
-// "Things this group has bought before," for one-tap re-adding — the
-// group-scoped counterpart of the iOS `HistoricalGroceryItem` catalog.
-//
-// **Why this is its own table instead of a query derived from
-// `GroupGroceryItem`** (the simpler default this feature's spec correctly
-// prefers, and the one to reach for first for anything not already proven
-// otherwise): `GroupGroceryItem` rows are ordinary, hard-deleted when
-// they're removed from the list — and per `routes/groupGrocery.js`'s own
-// `DELETE` doc comment, "we bought it" is an established, everyday reason a
-// `THIS_WEEK`/`STAPLES` row gets deleted, not an edge case. A query over
-// *currently-existing* rows would therefore lose an item's name from
-// "history" at the exact moment someone finishes buying it and clears it
-// off the list — the one moment this feature most needs to remember it. A
-// derived query genuinely can't express "remember this even after the row
-// it came from is gone," so a small durable table earns its keep here
-// rather than being redundant bookkeeping to keep in sync — it's populated
-// automatically, at exactly one trigger point (see below), by the same
-// request that would otherwise lose the information, so there's no
-// separate sync step to drift.
-//
-// The trigger, mirroring iOS's own `GroceryItemRow.recordAsHistorical`
-// exactly: `routes/groupGrocery.js`'s `PATCH .../grocery/:id` writes one of
-// these (upserted, so it's a no-op if already known) whenever `isChecked`
-// transitions `false` -> `true` on a `GroupGroceryItem` — "checked off" is
-// this app's stand-in for "actually bought," same as locally. Recording on
-// `isChecked` rather than on every create/delete deliberately keeps a
-// `SUGGESTED` item that got rejected (deleted without ever being checked
-// off) out of "history" — it was proposed, never bought, and shouldn't come
-// back as a one-tap "we've bought this before" suggestion.
-//
-// `normalizedName` (lowercased/trimmed) backs `@@unique([groupId,
-// normalizedName])`, giving a real DB-level guarantee against the same item
-// getting two entries — a deliberately simpler dedupe than the iOS
-// canonicalizer's pluralization-aware `canonicalKey` (which is what the
-// `GroupGroceryItem`/`GroupStoreAisle` doc comments above explain avoiding
-// porting server-side); `name` keeps the first-seen display casing, same
-// as iOS's own `HistoricalGroceryItem.name`.
-model GroupGroceryHistoryEntry {
-  id             String          @id @default(uuid())
-  groupId        String
-  name           String
-  normalizedName String
-  category       GroceryCategory
-  createdAt      DateTime        @default(now())
-
-  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
-
-  @@unique([groupId, normalizedName])
-  @@index([groupId])
-}
+// A `GroupGroceryHistoryEntry` model used to live here — "things this
+// group has bought before," for one-tap re-adding, the group-scoped
+// counterpart of the iOS `HistoricalGroceryItem` catalog. Removed outright
+// per direct user feedback that a group-shared history was redundant with
+// each member's own personal `HistoricalGroceryItem` catalog, which now
+// does this job alone; see GroupStoreAisle's doc comment above for the
+// full removal note and prisma/migrations/*_drop_group_grocery_history_entry
+// for the actual table drop.
