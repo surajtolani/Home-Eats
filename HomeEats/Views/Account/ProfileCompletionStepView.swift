@@ -69,10 +69,28 @@ struct ProfileCompletionStepView: View {
                     .textContentType(.familyName)
                 TextField("City", text: $cityInput)
                     .textContentType(.addressCity)
-                TextField("State", text: $stateInput)
-                    .textContentType(.addressState)
-                TextField("Country", text: $countryInput)
-                    .textContentType(.countryName)
+                // State/Country are `Picker`s from a predetermined list, not
+                // free text — direct user request. `Text("Select a
+                // state"/"Select a country").tag("")` is a real, selectable
+                // placeholder row (not a disabled prompt) specifically so an
+                // untouched field stays genuinely empty — `canSave` below
+                // needs a real "nothing chosen yet" state, and a `Picker`
+                // with no explicit placeholder row would otherwise default
+                // to silently pre-selecting its first real option, which
+                // would let someone "complete" their profile with a
+                // state/country they never actually picked.
+                Picker("State", selection: $stateInput) {
+                    Text("Select a state").tag("")
+                    ForEach(USState.all, id: \.self) { state in
+                        Text(state).tag(state)
+                    }
+                }
+                Picker("Country", selection: $countryInput) {
+                    Text("Select a country").tag("")
+                    ForEach(CountryCode.all) { country in
+                        Text(country.name).tag(country.name)
+                    }
+                }
             } header: {
                 Text("Your Profile")
             } footer: {

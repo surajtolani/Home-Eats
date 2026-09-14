@@ -51,10 +51,23 @@ struct EditProfileView: View {
             Section {
                 TextField("City", text: $cityInput)
                     .textContentType(.addressCity)
-                TextField("State", text: $stateInput)
-                    .textContentType(.addressState)
-                TextField("Country", text: $countryInput)
-                    .textContentType(.countryName)
+                // State/Country are `Picker`s from a predetermined list, not
+                // free text — direct user request; same reasoning as
+                // `ProfileCompletionStepView`'s identical change, including
+                // why each has a real, selectable "Select a ..." placeholder
+                // row rather than defaulting to the first real option.
+                Picker("State", selection: $stateInput) {
+                    Text("Select a state").tag("")
+                    ForEach(USState.all, id: \.self) { state in
+                        Text(state).tag(state)
+                    }
+                }
+                Picker("Country", selection: $countryInput) {
+                    Text("Select a country").tag("")
+                    ForEach(CountryCode.all) { country in
+                        Text(country.name).tag(country.name)
+                    }
+                }
             } footer: {
                 // No longer "optional, not shown to anyone yet" — all five
                 // fields on this screen are mandatory now (see `canSave`
