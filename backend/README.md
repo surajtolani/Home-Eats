@@ -809,6 +809,39 @@ A client that already knows how to render `GET /friends`'s
 to also render this combined feed — it's the same two shapes, just fetched
 together and counted.
 
+## 10. Personal restaurant library
+
+A signed-in user's own saved restaurants — added so this survives a
+local-store reset and is recoverable across devices/reinstalls, the direct
+fix for a real incident where a missing iOS SwiftData migration default
+wiped a user's entire local store (see `prisma/schema.prisma`'s own doc
+comment on the `Restaurant` model, and the iOS `HomeEatsApp.swift`'s on
+`ModelContainer` creation, for the full story). Routes live in
+`routes/restaurants.js`, mounted at `/restaurants/library` — deliberately
+NOT bare `/restaurants`, which is already the unauthenticated Google-Places-
+proxy search API (`/restaurants/search`, `/restaurants/search-natural`,
+`/restaurants/photo`, `/restaurants/details`) registered directly on `app`
+in `index.js`. Every route here requires auth. No sharing/visibility
+concept at all, unlike recipe-library — every restaurant here is simply
+"the caller's own."
+
+| Method | Path | Auth | Body | Notes |
+|---|---|---|---|---|
+| GET | `/restaurants/library` | required | — | `{ restaurants: [...] }` — every restaurant the caller owns, oldest first. No pagination — a household's library is small enough to just send it all, same call `GET /recipe-library/mine` makes. |
+| POST | `/restaurants/library` | required | `{ name, cuisine?, priceRange?, rating?, notes?, websiteUrl?, address?, isFavorite?, googlePhotoNames?, googlePlaceId?, latitude?, longitude? }` | Creates a restaurant owned by the caller. Returns `{ restaurant }`. |
+| PATCH | `/restaurants/library/:id` | required, owner only | Any subset of the same fields as `POST` (all optional, `name` included) | `404` if the id doesn't exist or isn't the caller's. The iOS client always sends every field on every call (its own full current state, `null` for anything it has no value for) rather than a genuine partial diff — see `PersonalLibrarySyncService`'s own doc comment for why — but the schema itself accepts a real subset if a future caller wants one. |
+| DELETE | `/restaurants/library/:id` | required, owner only | — | `404` if the id doesn't exist or isn't the caller's, otherwise `204`. |
+
+The iOS sync design (`PersonalLibrarySyncService`) is deliberately simpler
+than the group meal-plan/grocery sync engine: a personal library has
+exactly one writer (the account itself), so there's no multi-writer
+conflict story to protect against — every sync pass just re-sends each
+local restaurant/recipe's full current state (create if it has no backend
+id yet, otherwise `PATCH`) and pulls down any backend row with no local
+match by id. See that type's own doc comment for the full reasoning,
+including why deletes are handled immediately/inline rather than through
+this same pass.
+
 ## Notes
 
 - New routes here (`/recipe-library`) are mounted separately from the

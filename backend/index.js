@@ -26,6 +26,7 @@ const groupsRouter = require("./routes/groups");
 const invitesRouter = require("./routes/invites");
 const notificationsRouter = require("./routes/notifications");
 const recipeLibraryRouter = require("./routes/recipeLibrary");
+const restaurantsRouter = require("./routes/restaurants");
 const groupMealPlanRouter = require("./routes/groupMealPlan");
 const groupGroceryRouter = require("./routes/groupGrocery");
 const groupGroceryAislesRouter = require("./routes/groupGroceryAisles");
@@ -159,6 +160,19 @@ app.use("/groups/:groupId/grocery", requireAuth, groupGroceryRouter);
 // method+path with those. See routes/recipeLibrary.js and
 // backend/README.md's "Recipe sharing" section.
 app.use("/recipe-library", requireAuth, recipeLibraryRouter);
+
+// --- Personal restaurant library -----------------------------------------
+// A signed-in user's own saved restaurants, account-backed for durability —
+// see routes/restaurants.js's own doc comment for the full story (a real
+// incident: a missing SwiftData migration default wiped a user's entire
+// local store, restaurants included, which had no server copy to recover
+// from). Mounted at `/restaurants/library`, not bare `/restaurants` — that
+// prefix is already the unauthenticated Google-Places-proxy search API
+// registered directly on `app` just below (`/restaurants/search`,
+// `/restaurants/search-natural`, `/restaurants/photo`, `/restaurants/details`),
+// same "own distinct, never-colliding prefix" choice `/recipe-library`
+// makes relative to `/recipes/*`.
+app.use("/restaurants/library", requireAuth, restaurantsRouter);
 
 // Shared mapping from a Places API (New) place object to the shape both
 // /restaurants/search and /restaurants/search-natural return — kept in one

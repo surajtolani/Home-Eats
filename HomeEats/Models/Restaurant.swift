@@ -44,6 +44,25 @@ final class Restaurant {
     /// detail view falls back to geocoding `address` in that case.
     var latitude: Double?
     var longitude: Double?
+    /// This restaurant's id on the backend's personal restaurant library
+    /// (`POST /restaurants/library`'s response — see `AccountsAPIClient`),
+    /// once it's ever been synced there. `nil` until `PersonalLibrarySyncService`
+    /// first pushes this row; kept around after that so every later push is
+    /// an update (`PATCH .../library/:id`) against the same server row
+    /// instead of creating a duplicate. Optional with no explicit default
+    /// needed for migration — same reasoning as `Recipe.backendRecipeID`'s
+    /// own doc comment (a `String?` already defaults to `nil`, unlike a
+    /// non-optional field, which needs an explicit default value right on
+    /// the property declaration — see that field's doc comment, and
+    /// `GroupSharedGroceryItem.quantityCount`'s, for the real incident that
+    /// taught this codebase why).
+    ///
+    /// Added specifically so this restaurant survives a local-store reset
+    /// and is recoverable across devices/reinstalls — previously, every
+    /// restaurant lived purely on-device with no server copy at all. See
+    /// `PersonalLibrarySyncService`'s own doc comment for the full sync
+    /// design.
+    var backendID: String?
 
     init(
         id: UUID = UUID(),
@@ -59,7 +78,8 @@ final class Restaurant {
         googlePhotoNames: [String] = [],
         googlePlaceID: String? = nil,
         latitude: Double? = nil,
-        longitude: Double? = nil
+        longitude: Double? = nil,
+        backendID: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -75,6 +95,7 @@ final class Restaurant {
         self.googlePlaceID = googlePlaceID
         self.latitude = latitude
         self.longitude = longitude
+        self.backendID = backendID
     }
 
     /// A single "Italian · $$ · ★★★★☆" line for list/detail display, Google

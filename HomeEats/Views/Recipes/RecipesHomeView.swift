@@ -106,6 +106,21 @@ struct RecipesHomeView: View {
                                     recipe.isSavedToCollection = false
                                 } else {
                                     CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+                                    // Fires the backend delete immediately,
+                                    // inline — same "immediate, online-only"
+                                    // pattern `GroupSyncService` already uses
+                                    // for adopt/accept, not a queued pending-
+                                    // delete state (see
+                                    // `PersonalLibrarySyncService`'s own doc
+                                    // comment on why this feature skips that
+                                    // machinery). Captured before the local
+                                    // delete below, since `recipe` isn't safe
+                                    // to read from afterward; `nil` (never
+                                    // synced) just means there's nothing on
+                                    // the server to delete.
+                                    if let backendRecipeID = recipe.backendRecipeID {
+                                        Task { try? await AccountsAPIClient.deleteRecipe(id: backendRecipeID) }
+                                    }
                                     modelContext.delete(recipe)
                                 }
                             }
@@ -203,6 +218,15 @@ struct RecipesHomeView: View {
                 sharedLoadError = nil
                 isLoadingShared = false
             }
+        }
+        // Opportunistic personal-library sync on top of `RootView`'s own
+        // launch/sign-in trigger — see `PersonalLibrarySyncService`'s own
+        // doc comment for the full design. Visiting this tab is exactly
+        // the kind of natural moment worth syncing on, since it's when a
+        // recovered recipe would actually become visible.
+        .task(id: accountSession.isSignedIn) {
+            guard accountSession.isSignedIn else { return }
+            await PersonalLibrarySyncService.sync(modelContext: modelContext)
         }
     }
 

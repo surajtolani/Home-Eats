@@ -197,6 +197,30 @@ struct RootView: View {
             await notificationsSession.refresh()
             await runNotificationsPollLoop()
         }
+        // Backs up the signed-in account's personal Restaurant/Recipe
+        // libraries to the backend (and recovers anything the server has
+        // that this device doesn't) the moment sign-in completes, and again
+        // on every relaunch that's already signed in — same `.task(id:)`
+        // re-keying reasoning as the two `.task`s just above. See
+        // `PersonalLibrarySyncService`'s own doc comment for the full sync
+        // design and why this exists at all (a real local-data-loss
+        // incident). Then keeps re-running periodically for as long as the
+        // app stays open — a plain `.task(id:)` alone only ever fires once
+        // per sign-in session (it re-keys on `accountSession.isSignedIn`
+        // *changing*, not on every recipe/restaurant edit made afterward),
+        // and `RecipesHomeView`/`RestaurantListView` mounted inside
+        // `RootView`'s always-alive `TabView` (see either's own doc
+        // comment) means their own identical one-shot `.task` triggers
+        // would otherwise only ever really fire once too, in practice —
+        // so a mid-session edit could sit unsynced until the next full app
+        // relaunch without this loop. A longer cadence than the group
+        // screens' own 25-second periodic resync (this is durability/
+        // recovery, not real-time collaboration with competing writers —
+        // nothing here needs to feel instant).
+        .task(id: accountSession.isSignedIn) {
+            guard accountSession.isSignedIn else { return }
+            await runPersonalLibrarySyncLoop()
+        }
         .onChange(of: reminderRouter.shouldPresentPlanningFlow) { _, shouldPresent in
             guard shouldPresent else { return }
             // The weekly planning notification used to launch a separate
@@ -236,6 +260,19 @@ struct RootView: View {
             try? await Task.sleep(nanoseconds: 25_000_000_000)
             if Task.isCancelled { break }
             await notificationsSession.refresh()
+        }
+    }
+
+    /// Runs `PersonalLibrarySyncService.sync` once immediately, then every
+    /// two minutes for as long as this `.task` stays alive — see that
+    /// `.task`'s own comment for why a one-shot call alone isn't enough
+    /// here. Same "plain `Task.sleep` loop, cancelled automatically when
+    /// its `.task` is torn down" shape as `runNotificationsPollLoop` above,
+    /// just a slower cadence.
+    private func runPersonalLibrarySyncLoop() async {
+        while !Task.isCancelled {
+            await PersonalLibrarySyncService.sync(modelContext: modelContext)
+            try? await Task.sleep(nanoseconds: 120_000_000_000)
         }
     }
 }

@@ -919,6 +919,117 @@ extension AccountsAPIClient {
     }
 }
 
+// MARK: - Personal restaurant library (routes/restaurants.js, mounted at
+// /restaurants/library) — see `RemoteRestaurant`'s own doc comment in
+// AccountModels.swift, and `PersonalLibrarySyncService`, for the full story.
+
+extension AccountsAPIClient {
+    static func getMyRestaurants() async throws -> [RemoteRestaurant] {
+        let response: RestaurantLibraryListResponse = try await send("GET", path: "restaurants/library")
+        return response.restaurants
+    }
+
+    static func createRestaurant(_ payload: RestaurantLibraryPayload) async throws -> RemoteRestaurant {
+        struct Response: Decodable { let restaurant: RemoteRestaurant }
+        let response: Response = try await send("POST", path: "restaurants/library", body: payload.asJSONObject())
+        return response.restaurant
+    }
+
+    /// Always sends every field (never a partial diff) — `PersonalLibrarySyncService`
+    /// pushes a restaurant's full current local state on every sync pass
+    /// rather than tracking which fields actually changed since the last
+    /// push (see that type's own doc comment for why: no multi-writer
+    /// conflict story to protect against here, so the simplicity is worth
+    /// the redundant bytes for a household-scale library). The backend's
+    /// `PATCH .../library/:id` schema still accepts a genuine subset if a
+    /// future caller ever wants one — this just doesn't build one.
+    static func updateRestaurant(id restaurantID: String, _ payload: RestaurantLibraryPayload) async throws -> RemoteRestaurant {
+        struct Response: Decodable { let restaurant: RemoteRestaurant }
+        let response: Response = try await send("PATCH", path: "restaurants/library/\(restaurantID)", body: payload.asJSONObject())
+        return response.restaurant
+    }
+
+    static func deleteRestaurant(id restaurantID: String) async throws {
+        try await sendNoContent("DELETE", path: "restaurants/library/\(restaurantID)")
+    }
+}
+
+/// The request body `POST /restaurants/library` and `PATCH
+/// /restaurants/library/:id` both take — same "always send every field"
+/// choice `updateRestaurant`'s own doc comment explains, so unlike
+/// `RecipeLibraryPayload`/`RecipeLibraryUpdatePayload` this is ONE type for
+/// both verbs, not two, and no `FieldUpdate` wrapper for explicit-null vs
+/// unchanged: every optional field here is simply sent as whatever the
+/// local `Restaurant` currently has, `nil` included, every time.
+struct RestaurantLibraryPayload {
+    var name: String
+    var cuisine: String?
+    var priceRange: String?
+    var rating: Int?
+    var notes: String?
+    var websiteUrl: String?
+    var address: String?
+    var isFavorite: Bool
+    var googlePhotoNames: [String]
+    var googlePlaceId: String?
+    var latitude: Double?
+    var longitude: Double?
+
+    init(restaurant: Restaurant) {
+        name = restaurant.name
+        cuisine = restaurant.cuisine
+        priceRange = restaurant.priceRange
+        rating = restaurant.rating
+        notes = restaurant.notes
+        websiteUrl = restaurant.websiteURL
+        address = restaurant.address
+        isFavorite = restaurant.isFavorite
+        googlePhotoNames = restaurant.googlePhotoNames
+        googlePlaceId = restaurant.googlePlaceID
+        latitude = restaurant.latitude
+        longitude = restaurant.longitude
+    }
+
+    /// Every optional field sent EXPLICITLY, `NSNull()` standing in for a
+    /// Swift `nil` (same established technique as `setFieldUpdate`'s own
+    /// doc comment below) rather than the plain `object["key"] = value`
+    /// pattern `RecipeLibraryPayload.asJSONObject()` uses elsewhere in this
+    /// file — that plain form *omits* the key entirely when `value` is
+    /// `nil` (assigning Swift's own `nil` through a `[String: Any]`
+    /// subscript removes the key), which is wrong here specifically:
+    /// since this type always represents a restaurant's *complete* current
+    /// state (never a partial diff — see this struct's own doc comment),
+    /// `PATCH`'s handler applies whatever's in the parsed body as-is
+    /// (`data: parsed.data`, no per-field `!== undefined` filtering — see
+    /// routes/restaurants.js). An omitted key there would silently fail to
+    /// clear a field the user removed locally (e.g. cuisine set, then
+    /// cleared) instead of actually clearing it on the server — sending an
+    /// explicit JSON `null` for every genuinely-nil field is what makes
+    /// "always overwrite everything" actually true, for `POST` and `PATCH`
+    /// alike.
+    func asJSONObject() -> [String: Any] {
+        // `.map { $0 as Any } ?? NSNull()` per field, not a bare `?? NSNull()`
+        // — `??`'s two sides need to unify to one type, and a `String?`/
+        // `Int?`/`Double?` doesn't unify with `NSNull` directly; explicitly
+        // erasing to `Any` first (same as `setFieldUpdate` below) is what
+        // makes this compile.
+        [
+            "name": name,
+            "isFavorite": isFavorite,
+            "googlePhotoNames": googlePhotoNames,
+            "cuisine": cuisine.map { $0 as Any } ?? NSNull(),
+            "priceRange": priceRange.map { $0 as Any } ?? NSNull(),
+            "rating": rating.map { $0 as Any } ?? NSNull(),
+            "notes": notes.map { $0 as Any } ?? NSNull(),
+            "websiteUrl": websiteUrl.map { $0 as Any } ?? NSNull(),
+            "address": address.map { $0 as Any } ?? NSNull(),
+            "googlePlaceId": googlePlaceId.map { $0 as Any } ?? NSNull(),
+            "latitude": latitude.map { $0 as Any } ?? NSNull(),
+            "longitude": longitude.map { $0 as Any } ?? NSNull()
+        ]
+    }
+}
+
 // MARK: - Mapping a local Recipe to the backend's create/update body
 
 /// The request body `POST /recipe-library` and `PATCH /recipe-library/:id`

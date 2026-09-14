@@ -79,6 +79,12 @@ model User {
   recipeSharesReceived RecipeShare[] @relation("RecipeShareUserTarget")
   recipeSharesSent     RecipeShare[] @relation("RecipeShareSharer")
 
+  // Personal restaurant library — see the Restaurant model below. Unlike
+  // Recipe, there is no sharing step at all yet: every restaurant is
+  // purely "mine," account-backed for durability/recoverability rather
+  // than local-only (see that model's own doc comment for why this exists).
+  ownedRestaurants Restaurant[]
+
   // Group meal planning / grocery lists (Phase 3) — see the doc comments on
   // PlannedMeal, MealSuggestion, MealSuggestionVote, and GroupGroceryItem
   // below for the full model.
@@ -453,6 +459,48 @@ model RecipeShare {
   @@unique([recipeId, sharedWithGroupId])
   @@index([sharedWithUserId])
   @@index([sharedWithGroupId])
+}
+
+// A user's personal restaurant library — the backend counterpart of the
+// iOS `Restaurant` SwiftData model (HomeEats/Models/Restaurant.swift),
+// mirrored field-for-field. Added so restaurants (previously purely
+// local-only, unlike Recipe which has always had at least a share-time
+// backend copy) survive a local-store reset and are recoverable across
+// devices/reinstalls — a real user's entire local restaurant/recipe
+// library was lost to exactly that kind of reset (see
+// HomeEatsApp.swift's own doc comment on ModelContainer creation for how),
+// which is the direct reason this model exists.
+//
+// No sharing/visibility concept at all (unlike Recipe/RecipeShare) — every
+// restaurant here is simply "the owner's," full stop. `ownerId` cascades on
+// delete, same as every other per-user owned row in this schema.
+model Restaurant {
+  id               String   @id @default(uuid())
+  ownerId          String
+  name             String
+  cuisine          String?
+  priceRange       String?
+  rating           Int?
+  notes            String?
+  websiteUrl       String?
+  address          String?
+  isFavorite       Boolean  @default(false)
+  // Google Places photo resource names ("places/ID/photos/REF") — mirrors
+  // the iOS `Restaurant.googlePhotoNames: [String]` exactly; empty for a
+  // restaurant added manually or via the MapKit fallback. A native Postgres
+  // array (not a join table) — same "small, always read/written as a whole
+  // unit, never queried into individually" reasoning as `Recipe
+  // .instructions: String[]` above.
+  googlePhotoNames String[] @default([])
+  googlePlaceId    String?
+  latitude         Float?
+  longitude        Float?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
 }
 
 // --- Group meal planning (Phase 3) --------------------------------------

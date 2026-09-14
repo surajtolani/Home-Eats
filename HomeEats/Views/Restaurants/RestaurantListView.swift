@@ -5,6 +5,7 @@ import CoreLocation
 
 struct RestaurantListView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var accountSession: AccountSession
     @Query(sort: \Restaurant.name) private var restaurants: [Restaurant]
 
     @State private var showEditor = false
@@ -56,6 +57,13 @@ struct RestaurantListView: View {
                         for index in offsets {
                             let restaurant = restaurants[index]
                             CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
+                            // Same "immediate, online-only, captured before
+                            // the local delete" pattern as `RecipesHomeView`'s
+                            // own recipe delete — see
+                            // `PersonalLibrarySyncService`'s doc comment.
+                            if let backendID = restaurant.backendID {
+                                Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
+                            }
                             modelContext.delete(restaurant)
                         }
                     }
@@ -102,6 +110,13 @@ struct RestaurantListView: View {
         }
         .sheet(isPresented: $showNaturalSearch) {
             NaturalLanguageRestaurantSearchView(userCoordinate: locationProvider.coordinate)
+        }
+        // Opportunistic personal-library sync, same reasoning and pattern
+        // as `RecipesHomeView`'s own identical `.task` — see
+        // `PersonalLibrarySyncService`'s doc comment.
+        .task(id: accountSession.isSignedIn) {
+            guard accountSession.isSignedIn else { return }
+            await PersonalLibrarySyncService.sync(modelContext: modelContext)
         }
     }
 

@@ -499,6 +499,44 @@ struct SharedRecipeEntry: Codable, Identifiable {
     }
 }
 
+// MARK: - Personal restaurant library (routes/restaurants.js, mounted at
+// /restaurants/library) — the backend counterpart of the local `Restaurant`
+// SwiftData model, added so a restaurant survives a local-store reset. See
+// `PersonalLibrarySyncService`'s own doc comment for the full sync design
+// this feeds, and `Restaurant.backendID`'s for why this exists at all.
+
+/// One row of `GET /restaurants/library`, and every restaurant-mutating
+/// route's response — exactly `serializeRestaurant(...)` in
+/// backend/routes/restaurants.js.
+struct RemoteRestaurant: Codable, Identifiable {
+    let id: String
+    let ownerID: String
+    let name: String
+    let cuisine: String?
+    let priceRange: String?
+    let rating: Int?
+    let notes: String?
+    let websiteUrl: String?
+    let address: String?
+    let isFavorite: Bool
+    let googlePhotoNames: [String]
+    let googlePlaceId: String?
+    let latitude: Double?
+    let longitude: Double?
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, cuisine, priceRange, rating, notes, websiteUrl, address, isFavorite
+        case googlePhotoNames, googlePlaceId, latitude, longitude, createdAt, updatedAt
+        case ownerID = "ownerId"
+    }
+}
+
+struct RestaurantLibraryListResponse: Codable {
+    let restaurants: [RemoteRestaurant]
+}
+
 // MARK: - Group meal planning (Phase 4 — routes/groupMealPlan.js)
 //
 // These types are the *wire* shapes only — decode targets for
