@@ -407,6 +407,20 @@ struct GroupSharedMealPlanView: View {
             }
         }
         .listStyle(.plain)
+        // User feedback: "under weekly view, please delete the arrows on
+        // the right - since you can click on the actual day and it goes to
+        // the same place, cleaner layout." Each row above is already a
+        // `NavigationLink` to the exact same destination `GroupDayDetailView`
+        // push — the trailing chevron `List` draws on top of a
+        // `NavigationLink` row is pure redundant decoration here, not a
+        // second, different way to navigate. `.navigationLinkIndicatorVisibility(.hidden)`
+        // (iOS 16.4+, well within this project's 17.0 deployment target —
+        // see project.yml) hides just that chevron while leaving the whole
+        // row exactly as tappable as before; it does NOT touch `weekHeader`'s
+        // own chevrons just above (those are real week-to-week navigation,
+        // `weekOffset -= 1`/`+= 1` — a completely different, non-redundant
+        // control the user's feedback wasn't about).
+        .navigationLinkIndicatorVisibility(.hidden)
     }
 
     // MARK: - Shared helpers
@@ -1120,46 +1134,62 @@ struct GroupMealSheetContent: View {
     }
 }
 
-/// A real, on-device restaurant *search* — not a bare free-text field — for
-/// the group meal plan's "decide"/"suggest" restaurant flow. This used to be
-/// a plain `TextField("Restaurant name", text: $name)`: nothing stopped
-/// someone from typing gibberish and having it "suggest" a place that
-/// doesn't exist, since the field had no connection to any real-world data
-/// at all (see this feature's user-reported bug report). Fixed by searching
-/// with `MKLocalSearch`, tapping a real result to pick it — same
-/// search-as-you-type interaction `RestaurantListView`'s own
-/// `RestaurantSearchModel` already uses for the personal Eating Out list.
+/// A real restaurant *search* — not a bare free-text field — for the group
+/// meal plan's "decide"/"suggest" restaurant flow. This used to be a plain
+/// `TextField("Restaurant name", text: $name)`: nothing stopped someone from
+/// typing gibberish and having it "suggest" a place that doesn't exist,
+/// since the field had no connection to any real-world data at all (see
+/// this feature's user-reported bug report). Fixed two ways:
 ///
-/// **Why this doesn't just reuse `RestaurantSearchModel` wholesale**: that
-/// type also calls `GooglePlacesService` (rating/price/cuisine/photos) and
-/// builds a `Restaurant` SwiftData row on selection — machinery this screen
-/// has no use for, since `RemotePlannedMeal.restaurantName`/
-/// `RemoteMealSuggestion.restaurantName` are, and stay, a plain string (see
-/// that type's own doc comment — there's still no backend-side restaurant
-/// entity to pick from, and none is needed just to fix the missing search
-/// grounding). Reaching into `RestaurantListView.swift` to extract a shared
-/// component risked destabilizing a live, in-use personal feature for a
-/// dependency this screen doesn't actually need; `GroupRestaurantSearchModel`
-/// below duplicates just the `MKLocalSearch`-only half of that file's
-/// `RestaurantSearchModel` (no Google, no `Restaurant` model, no photos) —
-/// small enough that duplicating it here is clearly simpler than threading a
-/// shared abstraction between a SwiftData-backed personal screen and this
-/// plain-string-backed group one.
+/// 1. **Live search-as-you-type**, tapping a real result to pick it — same
+///    interaction, and the same **Google Places first, `MKLocalSearch`
+///    fallback** precedence, as `RestaurantListView`'s own
+///    `RestaurantSearchModel.search(_:)` (see that method's own
+///    `GooglePlacesService.isConfigured` check): Google's richer text
+///    search when it's configured, falling back to Apple's free on-device
+///    index only if Google isn't set up or its request fails.
+///    `GroupRestaurantSearchModel` below duplicates that precedence rather
+///    than reusing `RestaurantSearchModel` wholesale, since that type also
+///    builds a `Restaurant` SwiftData row on selection and exposes
+///    rating/price/cuisine/photos this screen has no use for — every
+///    downstream `restaurantName` here is, and stays, a plain string (see
+///    that field's own doc comment: still no backend-side restaurant entity
+///    to pick from, and none is needed just to fix the missing search
+///    grounding). Reaching into `RestaurantListView.swift` to extract a
+///    shared component risked destabilizing a live, in-use personal feature
+///    for a dependency shape this screen doesn't fully need; duplicating
+///    just the search *call* (not the whole model) keeps that risk at zero
+///    while still linking to the real API the user specifically asked for
+///    ("the search bar should be linked to the google places api").
+/// 2. **A "Your Restaurants" quick-pick**, listing this device's own saved,
+///    personal `Restaurant` rows (the same ones `RestaurantListView` shows
+///    under "Eating Out") above the live search — user feedback was that
+///    "eat out and order in has a search bar and not the options you have
+///    from your restaurant list." Tapping one submits its name exactly like
+///    a live search result does; nothing here reads or writes the `Restaurant`
+///    row itself, so no group-scoped schema is involved.
 ///
-/// **What gets submitted**: `result.name` alone, not "name, address" — every
-/// downstream display of `restaurantName` (`GroupPlannedMealRow`'s pill,
-/// `GroupSuggestionRow`, `GroupAgendaDayRow`'s one-line slot summary) is a
-/// compact, space-constrained label, the same shape a hand-typed name always
-/// produced, and an address tacked on would either get silently truncated
-/// there or badly overflow a pill sized for a short name. The result list in
-/// this sheet still shows the address as a secondary line — enough to tell
-/// two same-named places apart before picking one — it just isn't carried
-/// into the string that ends up stored.
+/// **What gets submitted**: a result's/saved restaurant's plain name alone,
+/// not "name, address" — every downstream display of `restaurantName`
+/// (`GroupPlannedMealRow`'s pill, `GroupSuggestionRow`, `GroupAgendaDayRow`'s
+/// one-line slot summary) is a compact, space-constrained label, the same
+/// shape a hand-typed name always produced, and an address tacked on would
+/// either get silently truncated there or badly overflow a pill sized for a
+/// short name. The result list in this sheet still shows the address as a
+/// secondary line — enough to tell two same-named places apart before
+/// picking one — it just isn't carried into the string that ends up stored.
 private struct GroupRestaurantNameSheet: View {
     let isOrderIn: Bool
     let onSubmit: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    /// This device's own saved, personal restaurants — see this type's own
+    /// doc comment for why they're offered here too, not just live search
+    /// results. Unfiltered by `searchText` on purpose: `RestaurantListView`
+    /// itself always shows the full "Your Restaurants" list regardless of
+    /// whether a search is active, and this sheet matches that precedent
+    /// exactly rather than inventing a different rule.
+    @Query(sort: \Restaurant.name) private var savedRestaurants: [Restaurant]
     @State private var searchText = ""
     @StateObject private var searchModel = GroupRestaurantSearchModel()
     @StateObject private var locationProvider = UserLocationProvider()
@@ -1171,36 +1201,14 @@ private struct GroupRestaurantNameSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if !isSearchActive {
-                    Text("Search for a place above, then tap it to pick it.")
+                if isSearchActive {
+                    searchResultsSection
+                }
+                if savedRestaurants.isEmpty && !isSearchActive {
+                    Text("Search above to find a place, or save some to Eating Out to see them here.")
                         .foregroundStyle(.secondary)
-                } else if searchModel.isSearching && searchModel.results.isEmpty {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                } else if let errorMessage = searchModel.errorMessage {
-                    Text(errorMessage).foregroundStyle(.secondary)
-                } else if searchModel.results.isEmpty {
-                    Text("No matches found.").foregroundStyle(.secondary)
-                } else {
-                    ForEach(searchModel.results) { result in
-                        Button {
-                            onSubmit(result.name)
-                            dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(result.name).foregroundStyle(.primary)
-                                if let address = result.address {
-                                    Text(address)
-                                        .font(.brandCaption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                        }
-                    }
+                } else if !savedRestaurants.isEmpty {
+                    savedRestaurantsSection
                 }
             }
             .searchable(text: $searchText, prompt: "Search for a restaurant")
@@ -1222,16 +1230,81 @@ private struct GroupRestaurantNameSheet: View {
             }
         }
     }
+
+    private var searchResultsSection: some View {
+        Section {
+            if searchModel.isSearching && searchModel.results.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+            } else if let errorMessage = searchModel.errorMessage {
+                Text(errorMessage).foregroundStyle(.secondary)
+            } else if searchModel.results.isEmpty {
+                Text("No matches found.").foregroundStyle(.secondary)
+            } else {
+                ForEach(searchModel.results) { result in
+                    Button {
+                        onSubmit(result.name)
+                        dismiss()
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(result.name).foregroundStyle(.primary)
+                            if let address = result.address {
+                                Text(address)
+                                    .font(.brandCaption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Search Results")
+        }
+    }
+
+    private var savedRestaurantsSection: some View {
+        Section {
+            ForEach(savedRestaurants) { restaurant in
+                Button {
+                    onSubmit(restaurant.name)
+                    dismiss()
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(restaurant.name).foregroundStyle(.primary)
+                            if let address = restaurant.address {
+                                Text(address)
+                                    .font(.brandCaption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        if restaurant.isFavorite {
+                            Image(systemName: "star.fill")
+                                .foregroundStyle(.yellow)
+                                .font(.brandCaption)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Your Restaurants")
+        }
+    }
 }
 
-/// A minimal, `MKLocalSearch`-only counterpart of `RestaurantSearchModel`
-/// (`RestaurantListView.swift`) — see `GroupRestaurantNameSheet`'s own doc
-/// comment for why this is a deliberate, small duplication rather than a
-/// shared abstraction. No Google Places fallback logic (this screen has
-/// nothing that would benefit from rating/price/cuisine/photos — the result
-/// only ever becomes a plain `restaurantName` string), and no debounce
-/// tuning beyond matching that file's own 300ms value, for the same
-/// "don't fire a network search on every keystroke" reason.
+/// `RestaurantSearchModel`'s exact search precedence
+/// (`GooglePlacesService.search` first, `MKLocalSearch` fallback), just
+/// without the pieces `GroupRestaurantNameSheet` doesn't need — see that
+/// type's own doc comment for why this is a deliberate, small duplication
+/// rather than a shared abstraction with the personal, `Restaurant`-backed
+/// model. Same 300ms debounce as `RestaurantSearchModel.search`, for the
+/// same "don't fire a network search on every keystroke" reason.
 @MainActor
 private final class GroupRestaurantSearchModel: ObservableObject {
     struct Result: Identifiable {
@@ -1271,38 +1344,59 @@ private final class GroupRestaurantSearchModel: ObservableObject {
             errorMessage = nil
             defer { isSearching = false }
 
-            let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = trimmed
-            request.resultTypes = .pointOfInterest
-            if let coordinate {
-                // A ~50km region biases MapKit's own ranking toward this
-                // area — without it MapKit ranks purely by name/relevance,
-                // same reasoning as `RestaurantSearchModel.searchWithMapKit`.
-                request.region = MKCoordinateRegion(
-                    center: coordinate, latitudinalMeters: 100_000, longitudinalMeters: 100_000
+            // Same precedence as `RestaurantSearchModel.search`: Google's
+            // richer text search first when it's configured, falling
+            // through to the free MapKit path either when Google isn't set
+            // up at all, or if the request itself fails for any reason
+            // (rather than dead-ending the search on a bad server moment).
+            if GooglePlacesService.isConfigured {
+                do {
+                    let places = try await GooglePlacesService.search(trimmed, near: coordinate)
+                    guard !Task.isCancelled else { return }
+                    results = places.map { Result(id: $0.id, name: $0.name, address: $0.address) }
+                    return
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    // Fall through to MapKit below.
+                }
+            }
+
+            await searchWithMapKit(trimmed, near: coordinate)
+        }
+    }
+
+    private func searchWithMapKit(_ query: String, near coordinate: CLLocationCoordinate2D?) async {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = query
+        request.resultTypes = .pointOfInterest
+        if let coordinate {
+            // A ~50km region biases MapKit's own ranking toward this
+            // area — without it MapKit ranks purely by name/relevance,
+            // same reasoning as `RestaurantSearchModel.searchWithMapKit`.
+            request.region = MKCoordinateRegion(
+                center: coordinate, latitudinalMeters: 100_000, longitudinalMeters: 100_000
+            )
+        }
+        do {
+            let response = try await MKLocalSearch(request: request).start()
+            guard !Task.isCancelled else { return }
+            let items = coordinate.map { userLocation in
+                response.mapItems.sorted {
+                    distance(from: userLocation, to: $0.placemark.coordinate)
+                        < distance(from: userLocation, to: $1.placemark.coordinate)
+                }
+            } ?? response.mapItems
+            results = items.enumerated().map { index, item in
+                Result(
+                    id: "mapkit-\(index)-\(item.name ?? "")",
+                    name: item.name ?? "Unknown",
+                    address: item.placemark.title
                 )
             }
-            do {
-                let response = try await MKLocalSearch(request: request).start()
-                guard !Task.isCancelled else { return }
-                let items = coordinate.map { userLocation in
-                    response.mapItems.sorted {
-                        distance(from: userLocation, to: $0.placemark.coordinate)
-                            < distance(from: userLocation, to: $1.placemark.coordinate)
-                    }
-                } ?? response.mapItems
-                results = items.enumerated().map { index, item in
-                    Result(
-                        id: "mapkit-\(index)-\(item.name ?? "")",
-                        name: item.name ?? "Unknown",
-                        address: item.placemark.title
-                    )
-                }
-            } catch {
-                guard !Task.isCancelled else { return }
-                results = []
-                errorMessage = "Couldn't search right now — check your connection."
-            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            results = []
+            errorMessage = "Couldn't search right now — check your connection."
         }
     }
 
