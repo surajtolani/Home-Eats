@@ -724,6 +724,7 @@ struct RemoteGroupGroceryItem: Codable, Identifiable {
     let category: RemoteGroceryCategory
     let section: GroupGrocerySection
     let quantityText: String
+    let quantityCount: Int
     let isChecked: Bool
     let orderIndex: Double
     /// "My Layout" placement (Phase 4) — mirrors `aisleId`/`aisleManuallySet`
@@ -741,7 +742,7 @@ struct RemoteGroupGroceryItem: Codable, Identifiable {
     let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case id, name, category, section, quantityText, isChecked, orderIndex, createdAt, updatedAt
+        case id, name, category, section, quantityText, quantityCount, isChecked, orderIndex, createdAt, updatedAt
         case groupID = "groupId"
         case aisleID = "aisleId"
         case aisleManuallySet
@@ -757,7 +758,7 @@ struct RemoteGroupGroceryItem: Codable, Identifiable {
     /// fields explicitly, which `serializeItem(...)` always does.
     init(
         id: String, groupID: String, name: String, category: RemoteGroceryCategory, section: GroupGrocerySection,
-        quantityText: String, isChecked: Bool, orderIndex: Double,
+        quantityText: String, quantityCount: Int = 1, isChecked: Bool, orderIndex: Double,
         aisleID: String? = nil, aisleManuallySet: Bool = false,
         addedByUserID: String, createdAt: Date, updatedAt: Date
     ) {
@@ -767,6 +768,7 @@ struct RemoteGroupGroceryItem: Codable, Identifiable {
         self.category = category
         self.section = section
         self.quantityText = quantityText
+        self.quantityCount = quantityCount
         self.isChecked = isChecked
         self.orderIndex = orderIndex
         self.aisleID = aisleID

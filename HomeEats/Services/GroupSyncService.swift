@@ -106,11 +106,22 @@ enum GroceryCreateReconciliation {
     ///   follow-up `PATCH`. `false` (the common case — nothing local ever
     ///   diverged from what got created) means the response is fully
     ///   authoritative.
+    /// `currentQuantityCount`/`remoteQuantityCount` default to `1`/`1` (a
+    /// no-op comparison) so every pre-existing call site — including this
+    /// suite's own tests, written before `quantityCount` existed on either
+    /// side of this comparison — keeps compiling and passing unchanged;
+    /// `pushGroceryItems` below passes real values now that `POST
+    /// .../grocery` accepts `quantityCount` too, same race as
+    /// `isChecked`/`orderIndex` (a user bumping a brand-new item's count
+    /// before its first sync ever completes).
     static func shouldPreserveLocalCheckedAndOrder(
         currentIsChecked: Bool, remoteIsChecked: Bool,
-        currentOrderIndex: Double, remoteOrderIndex: Double
+        currentOrderIndex: Double, remoteOrderIndex: Double,
+        currentQuantityCount: Int = 1, remoteQuantityCount: Int = 1
     ) -> Bool {
-        currentIsChecked != remoteIsChecked || currentOrderIndex != remoteOrderIndex
+        currentIsChecked != remoteIsChecked
+            || currentOrderIndex != remoteOrderIndex
+            || currentQuantityCount != remoteQuantityCount
     }
 }
 
@@ -475,11 +486,12 @@ enum GroupSyncService {
                 do {
                     let created = try await AccountsAPIClient.createGroupGroceryItem(
                         groupID: groupID, name: row.name, category: row.category, section: row.section,
-                        quantityText: row.quantityText, orderIndex: row.orderIndex
+                        quantityText: row.quantityText, quantityCount: row.quantityCount, orderIndex: row.orderIndex
                     )
                     let checkedOrOrderDiffersFromResponse = GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
                         currentIsChecked: row.isChecked, remoteIsChecked: created.isChecked,
-                        currentOrderIndex: row.orderIndex, remoteOrderIndex: created.orderIndex
+                        currentOrderIndex: row.orderIndex, remoteOrderIndex: created.orderIndex,
+                        currentQuantityCount: row.quantityCount, remoteQuantityCount: created.quantityCount
                     )
                     let aisleDiffersFromResponse = row.aisleID != created.aisleID
                         || row.aisleManuallySet != created.aisleManuallySet
@@ -513,11 +525,12 @@ enum GroupSyncService {
                     if row.aisleManuallySet {
                         updated = try await AccountsAPIClient.updateGroupGroceryItem(
                             groupID: groupID, id: row.id, isChecked: row.isChecked, orderIndex: row.orderIndex,
-                            aisleID: .set(row.aisleID)
+                            quantityCount: row.quantityCount, aisleID: .set(row.aisleID)
                         )
                     } else {
                         updated = try await AccountsAPIClient.updateGroupGroceryItem(
-                            groupID: groupID, id: row.id, isChecked: row.isChecked, orderIndex: row.orderIndex
+                            groupID: groupID, id: row.id, isChecked: row.isChecked, orderIndex: row.orderIndex,
+                            quantityCount: row.quantityCount
                         )
                     }
                     applyRemote(updated, to: row)
@@ -544,7 +557,7 @@ enum GroupSyncService {
     /// `preserveLocalCheckedAndOrder` (see the `.pendingCreate` case in
     /// `pushGroceryItems` above, and `GroceryCreateReconciliation` below,
     /// for the one caller that ever passes `true`) skips overwriting
-    /// `isChecked`/`orderIndex` from `remote` and marks the row
+    /// `isChecked`/`orderIndex`/`quantityCount` from `remote` and marks the row
     /// `.pendingUpdate` instead of `.synced`, so a local change made either
     /// before this row's create call was ever dispatched, or while it was
     /// still in flight, isn't clobbered — the row's next push then sends
@@ -580,6 +593,7 @@ enum GroupSyncService {
         if !preserveLocalCheckedAndOrder {
             row.isChecked = remote.isChecked
             row.orderIndex = remote.orderIndex
+            row.quantityCount = remote.quantityCount
         }
         if !preserveLocalAisle {
             row.aisleID = remote.aisleID
@@ -757,7 +771,8 @@ enum GroupSyncService {
             } else {
                 let item = GroupSharedGroceryItem(
                     id: remoteItem.id, groupID: groupID, name: remoteItem.name, category: remoteItem.category.localCategory,
-                    section: remoteItem.section, quantityText: remoteItem.quantityText, isChecked: remoteItem.isChecked,
+                    section: remoteItem.section, quantityText: remoteItem.quantityText, quantityCount: remoteItem.quantityCount,
+                    isChecked: remoteItem.isChecked,
                     orderIndex: remoteItem.orderIndex, aisleID: remoteItem.aisleID, aisleManuallySet: remoteItem.aisleManuallySet,
                     addedByUserID: remoteItem.addedByUserID, createdAt: remoteItem.createdAt,
                     syncState: .synced, serverUpdatedAt: remoteItem.updatedAt

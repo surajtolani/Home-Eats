@@ -795,6 +795,7 @@ struct GroupSharedGroceryListView: View {
             item: item,
             isManager: isManager,
             onSetChecked: { checked in setChecked(item, checked) },
+            onSetQuantityCount: { count in setQuantityCount(item, count) },
             onEdit: { editingItem = item },
             onDelete: { delete(item) },
             moveMenu: AnyView(moveMenu)
@@ -929,6 +930,21 @@ struct GroupSharedGroceryListView: View {
         Task { await runSync() }
     }
 
+    /// Any member may adjust this — same "routine, day-to-day use of an
+    /// already-decided list" bucket as `setChecked` above (see
+    /// routes/groupGrocery.js's own comment on PATCH /:id). Deliberately
+    /// NOT a direct `$item.quantityCount` binding the way the personal
+    /// `GroceryListView`'s `QuantityStepper` uses — that model has no sync
+    /// state to keep consistent; this one does, so every change has to go
+    /// through `markDirtyIfSynced` + a follow-up `runSync()` the same way
+    /// `setChecked` does, not just autosave silently.
+    private func setQuantityCount(_ item: GroupSharedGroceryItem, _ count: Int) {
+        item.quantityCount = count
+        markDirtyIfSynced(item)
+        try? modelContext.save()
+        Task { await runSync() }
+    }
+
     /// Marks a row as needing a push only if it was previously fully
     /// `.synced` — same reasoning as the original group screen's own
     /// `markDirtyIfSynced`; see `GroupSyncState`'s doc comment for the state
@@ -997,11 +1013,22 @@ private struct GroupGroceryItemRow: View {
     @Bindable var item: GroupSharedGroceryItem
     let isManager: Bool
     let onSetChecked: (Bool) -> Void
+    let onSetQuantityCount: (Int) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
-    /// The "Move to Aisle" menu — see `GroupSharedGroceryListView.row(for:moveMenu:)`'s
-    /// own doc comment for why this is shown as its own always-tappable
-    /// button rather than relying solely on `.contextMenu`.
+    /// The "Move to Aisle" menu — shown inline right next to the item name
+    /// now (see the `HStack` below), not in the trailing icon cluster.
+    /// Direct user request: with the category capsule that used to sit here
+    /// removed (redundant with the "By Category" section headers already
+    /// above every row) and a real quantity stepper added to the trailing
+    /// side, keeping this icon there too would leave three icons crowded
+    /// together on the right — moving it up here, in the space the capsule
+    /// vacated, is what actually declutters that side rather than just
+    /// relabeling the crowding. Still shown as its own always-tappable
+    /// button rather than relying solely on `.contextMenu` — see
+    /// `GroupSharedGroceryListView.row(for:moveMenu:)`'s own doc comment for
+    /// why (a permanently-active `EditMode` list swallows the long-press
+    /// before it reaches a row's own `.contextMenu`).
     let moveMenu: AnyView
 
     var body: some View {
@@ -1020,16 +1047,14 @@ private struct GroupGroceryItemRow: View {
                     Text(item.name.titleCasedForDisplay)
                         .strikethrough(item.isChecked)
                         .foregroundStyle(item.isChecked ? .secondary : .primary)
-                    // Category shown right next to the name — direct user
-                    // request ("the categorization can be right next to the
-                    // actual ingredient name") rather than only visible
-                    // after opening the Edit sheet.
-                    Text(item.category.displayName)
-                        .font(.brandCaption2)
+                    // Moving to a different aisle is open to any member —
+                    // see `GroupSharedGroceryListView`'s own doc comment.
+                    // Small and secondary so it reads as a row-level detail
+                    // next to the name, not a second headline action.
+                    moveMenu
+                        .labelStyle(.iconOnly)
+                        .font(.brandCaption)
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
                 }
                 if !item.quantityText.isEmpty {
                     Text(item.quantityText)
@@ -1046,34 +1071,20 @@ private struct GroupGroceryItemRow: View {
                     .help("Not synced yet")
             }
 
-            // Moving to a different aisle is open to any member — see
-            // `GroupSharedGroceryListView`'s own doc comment.
-            moveMenu
-                .labelStyle(.iconOnly)
-                .foregroundStyle(.secondary)
-
-            // A directly-visible trash icon — not manager-gated, same
-            // permission the swipe-to-delete "Remove" action below already
-            // had (routine maintenance, mirrors `DELETE .../grocery/:id` on
-            // a non-suggested item, open to any member) — per direct user
-            // request ("what happened to the +,- and trash can icon - can
-            // you use that icon instead of the 'edit item'"): the personal
-            // app's own item row always showed a trash affordance directly
-            // rather than only behind a swipe, and this brings that back.
-            // Renaming/recategorizing/changing quantity or section (the old
-            // `onEdit` pencil button this icon replaces in this always-
-            // visible slot) is still reachable — moved into the trailing
-            // swipe actions below, MANAGER-only, unchanged from before —
-            // not into a `.contextMenu`, which this screen's own
-            // `moveToAisleMenu` doc comment already established isn't
-            // reliably reachable here (a permanently-active `EditMode` list
-            // swallows the long-press before it reaches a row's own
-            // `.contextMenu`).
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            // `[trash-or-minus] N [+]` — same control, same behavior, as the
+            // personal `GroceryListView`'s own `QuantityStepper`: direct user
+            // request to bring it back on this screen too ("there should be
+            // a trash can (if item count is 1) or a '-' if more than one,
+            // the[n] the item count, then a plus sign"). Any member may
+            // adjust it — same bucket as `isChecked`/`orderIndex` (routine,
+            // day-to-day use of an already-decided list), not a manager-only
+            // field — see `GroupSharedGroceryListView.setQuantityCount`'s
+            // own doc comment for why this goes through that function
+            // rather than a direct `$item.quantityCount` binding.
+            GroupQuantityStepper(
+                count: Binding(get: { item.quantityCount }, set: onSetQuantityCount),
+                onDeleteAtMinimum: onDelete
+            )
         }
         .swipeActions(edge: .leading) {
             if !item.isChecked {
@@ -1088,9 +1099,11 @@ private struct GroupGroceryItemRow: View {
         .swipeActions(edge: .trailing) {
             // THIS_WEEK/STAPLES: any member may delete — routine
             // maintenance, mirrors `DELETE .../grocery/:id` on a
-            // non-suggested item exactly. Kept alongside the always-visible
-            // trash icon above (not redundant — some people reach for the
-            // swipe out of habit, others the icon; both do the same thing).
+            // non-suggested item exactly. Kept alongside the trailing
+            // `GroupQuantityStepper` above, whose own trash-at-minimum state
+            // does the same thing (not redundant — some people reach for the
+            // swipe out of habit, others the stepper; both do the same
+            // thing).
             Button(role: .destructive, action: onDelete) {
                 Label("Remove", systemImage: "trash")
             }
@@ -1101,6 +1114,50 @@ private struct GroupGroceryItemRow: View {
                 .tint(.brandHoney)
             }
         }
+    }
+}
+
+/// A `[-] N [+]` control for `GroupSharedGroceryItem.quantityCount` — direct
+/// port of the personal `GroceryListView`'s own private `QuantityStepper`
+/// (same visuals, same at-minimum-becomes-trash behavior), duplicated here
+/// rather than shared/exported since that type is `private` to its own file
+/// and this one needs its `count` changes routed through
+/// `GroupSharedGroceryListView.setQuantityCount` (sync-state bookkeeping)
+/// instead of a bare SwiftData binding — see `GroupGroceryItemRow`'s own
+/// call site for why.
+private struct GroupQuantityStepper: View {
+    @Binding var count: Int
+    let onDeleteAtMinimum: () -> Void
+
+    private var isAtMinimum: Bool { count <= 1 }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                if isAtMinimum {
+                    onDeleteAtMinimum()
+                } else {
+                    count -= 1
+                }
+            } label: {
+                Image(systemName: isAtMinimum ? "trash" : "minus.circle")
+            }
+            .foregroundStyle(isAtMinimum ? Color.brandTerracotta : Color.brandForest)
+
+            Text("\(count)")
+                .font(.brandCaption)
+                .monospacedDigit()
+                .frame(minWidth: 16)
+                .foregroundStyle(Color.brandForest)
+
+            Button {
+                count += 1
+            } label: {
+                Image(systemName: "plus.circle")
+            }
+            .foregroundStyle(Color.brandForest)
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -674,6 +674,7 @@ extension AccountsAPIClient {
         category: GroceryCategory,
         section: GroupGrocerySection,
         quantityText: String = "",
+        quantityCount: Int = 1,
         orderIndex: Double = 0
     ) async throws -> RemoteGroupGroceryItem {
         struct Response: Decodable { let item: RemoteGroupGroceryItem }
@@ -684,6 +685,7 @@ extension AccountsAPIClient {
                 "category": RemoteGroceryCategory(localCategory: category).rawValue,
                 "section": section.rawValue,
                 "quantityText": quantityText,
+                "quantityCount": quantityCount,
                 "orderIndex": orderIndex
             ]
         )
@@ -708,8 +710,8 @@ extension AccountsAPIClient {
     /// optional overwrite, so a plain Swift optional is unambiguous on its
     /// own). Deliberately field-granular at the call site, not just at the
     /// backend: `GroupSyncService`'s offline-queued path only ever calls
-    /// this with `isChecked`/`orderIndex` (the two fields any member may
-    /// set — see routes/groupGrocery.js's field-by-field role split), never
+    /// this with `isChecked`/`orderIndex`/`quantityCount` (the fields any
+    /// member may set — see routes/groupGrocery.js's field-by-field role split), never
     /// with the manager-only fields alongside them, precisely so it can
     /// never accidentally trip the backend's "touching even one
     /// manager-only field rejects the whole request" rule for a
@@ -723,6 +725,7 @@ extension AccountsAPIClient {
         section: GroupGrocerySection? = nil,
         isChecked: Bool? = nil,
         orderIndex: Double? = nil,
+        quantityCount: Int? = nil,
         // "My Layout" placement (Phase 4) — a real tri-state, not a plain
         // `String?`: `.unchanged` (the default) omits the key entirely,
         // `.set(nil)` sends an explicit JSON `null` ("place this in
@@ -745,6 +748,7 @@ extension AccountsAPIClient {
         if let section { body["section"] = section.rawValue }
         if let isChecked { body["isChecked"] = isChecked }
         if let orderIndex { body["orderIndex"] = orderIndex }
+        if let quantityCount { body["quantityCount"] = quantityCount }
         body.setFieldUpdate(aisleID, forKey: "aisleId")
         let response: Response = try await send("PATCH", path: "groups/\(groupID)/grocery/\(id)", body: body)
         return response.item

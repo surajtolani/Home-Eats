@@ -147,33 +147,6 @@ struct GroupSharedMealPlanView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // `.animation(nil, value:)` here, specifically — voting is
-            // local-first (see `GroupMealSuggestion.voteLocally`'s doc
-            // comment) and briefly sets `syncState = .pendingUpdate` for the
-            // voted-on row the instant you tap, the same way any other
-            // local write does, until the next sync cycle (usually a couple
-            // seconds later, see the periodic loop in `.task` below) pushes
-            // it and flips it back. That's correct and intentional — but
-            // `hasPendingChanges` reads across every suggestion/meal, so
-            // this banner was popping in and back out on nearly every single
-            // vote, which read as the whole screen "moving up and down" (a
-            // real report — SwiftUI implicitly animates a `VStack`'s
-            // conditional content appearing/disappearing, and everything
-            // below this banner shifts down then back up with it). The
-            // banner's own correctness is unchanged — it still reflects real
-            // pending/offline state exactly as before — this only removes
-            // the animated slide on that specific transition, so a fleeting
-            // pending state (the normal case for a vote) shows and clears
-            // without visibly pushing the rest of the screen around.
-            if hasPendingChanges || isKnownOffline {
-                Label(statusMessage, systemImage: "wifi.slash")
-                    .font(.brandCaption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.top, 4)
-            }
-
             // The Calendar/Weekly toggle AND "Go to This Week" together —
             // the "row below" the shared static `GroupTopBar` (see that
             // type's own doc comment for the top-bar redesign this
@@ -214,14 +187,64 @@ struct GroupSharedMealPlanView: View {
             .padding(.horizontal)
             .padding(.top, 8)
 
-            switch viewMode {
-            case .calendar:
-                calendarWithAgenda
-            case .thisWeek:
-                thisWeekAgenda
+            // Wrapped in a `ZStack` (rather than the sync banner being a
+            // sibling `if`-row directly in the outer `VStack`, which is what
+            // this looked like before) specifically so the banner below can
+            // be a true floating overlay — see its own comment for why that
+            // matters.
+            ZStack(alignment: .top) {
+                switch viewMode {
+                case .calendar:
+                    calendarWithAgenda
+                case .thisWeek:
+                    thisWeekAgenda
+                }
+
+                // A floating overlay, not a row inserted into/removed from
+                // the layout — this is the fix for a real, reported bug:
+                // voting is local-first (see `GroupMealSuggestion
+                // .voteLocally`'s doc comment) and briefly sets `syncState =
+                // .pendingUpdate` for the voted-on row the instant you tap,
+                // the same way any other local write does, until the
+                // immediate follow-up sync it triggers (`vote(_:direction:)`
+                // calls `onLocalWrite`, which runs `runSync()` right away —
+                // this isn't waiting for the ~25s periodic loop) pushes it
+                // and flips it back, typically well under a second later.
+                // That's correct and intentional — but this used to be a
+                // conditionally-included row at the top of the outer
+                // `VStack`, so its appearing/disappearing shifted every
+                // sibling below it down and back up on nearly every single
+                // vote — a real, literal "the whole screen moves up and
+                // down" bug (disabling the implicit insertion animation
+                // wasn't enough: even an instant, unanimated layout change
+                // still visibly *jumps* content by exactly the banner's
+                // height for that ~1 second). An `.overlay`-style floating
+                // banner can never do that — it's composited on top of
+                // `calendarWithAgenda`/`thisWeekAgenda` without occupying
+                // any space those views' own layout accounts for, so
+                // nothing below it — or above it, the Picker/"This Week"
+                // row is a sibling of this whole `ZStack`, untouched either
+                // way — ever moves because of it. Since it can no longer
+                // shift anything, a real fade animation here (unlike the
+                // `.animation(nil, ...)` this replaced) is both safe and an
+                // improvement: a vote's brief pending flicker now reads as a
+                // quick fade rather than a hard on/off flash.
+                if hasPendingChanges || isKnownOffline {
+                    Label(statusMessage, systemImage: "wifi.slash")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.vertical, 6)
+                        .background(.bar)
+                        .transition(.opacity)
+                        // Purely informational — never intercepts taps meant
+                        // for whatever it's momentarily floating over.
+                        .allowsHitTesting(false)
+                }
             }
+            .animation(.easeInOut(duration: 0.2), value: hasPendingChanges)
         }
-        .animation(nil, value: hasPendingChanges)
         .navigationTitle(group?.name ?? groupName)
         .navigationBarTitleDisplayMode(.inline)
         .task {

@@ -9,9 +9,12 @@ import SwiftData
 /// (`HomeEats/Models/GroceryItem.swift`) for the same reason the backend's
 /// own `GroupGroceryItem` is named distinctly from a plain `GroceryItem`
 /// there — see that model's doc comment: this is a deliberately smaller
-/// shape (no `weekStartDate`/`selectedProductOptionID`/`quantityCount`/
-/// `categoryManuallySet`/`layoutOrderIndex` — v1 has no group-scoped "My
-/// Layout" aisle subsystem at all, category-grouped ordering only). Reuses
+/// shape (no `selectedProductOptionID`/`categoryManuallySet`/
+/// `layoutOrderIndex` — v1 has no group-scoped "My Layout" aisle subsystem
+/// at all, category-grouped ordering only). `quantityCount` (below) is an
+/// exception to that "deliberately smaller" list — added after all, direct
+/// user request for the same `[trash-or-minus] N [+]` stepper the personal
+/// model already has. Reuses
 /// the local `GroceryCategory` type directly (not a duplicate enum) for its
 /// existing displayName/symbolName/sortIndex display logic, same "the
 /// backend's own enum case names were chosen to match it exactly" reasoning
@@ -27,6 +30,15 @@ final class GroupSharedGroceryItem {
     var category: GroceryCategory
     var section: GroupGrocerySection
     var quantityText: String
+    /// How many of this item to get — kept separate from `quantityText` (a
+    /// free-text description like "3 cups" pulled from a recipe, not
+    /// necessarily a whole-item count), same split the personal
+    /// `GroceryItem.quantityCount` already draws. Syncs the same way
+    /// `isChecked`/`orderIndex` do — any member may change it, through the
+    /// normal offline-queued path (see `syncState`'s own doc comment) —
+    /// not through `GroupSyncService.editGroceryItem`'s manager-only,
+    /// immediate-online-call path.
+    var quantityCount: Int
     var isChecked: Bool
     /// Manual sort position within a category, lowest first — same
     /// "average of its new neighbors" fractional-reorder convention as the
@@ -73,6 +85,7 @@ final class GroupSharedGroceryItem {
         category: GroceryCategory,
         section: GroupGrocerySection,
         quantityText: String = "",
+        quantityCount: Int = 1,
         isChecked: Bool = false,
         orderIndex: Double = 0,
         aisleID: String? = nil,
@@ -88,6 +101,7 @@ final class GroupSharedGroceryItem {
         self.category = category
         self.section = section
         self.quantityText = quantityText
+        self.quantityCount = quantityCount
         self.isChecked = isChecked
         self.orderIndex = orderIndex
         self.aisleID = aisleID

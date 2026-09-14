@@ -431,23 +431,47 @@ final class GroupGroceryItemCreateRaceTests: XCTestCase {
         ))
     }
 
+    /// Same race class as `isChecked`/`orderIndex` above, for
+    /// `quantityCount` — added later, direct user request for a real
+    /// `[trash-or-minus] N [+]` stepper on the group grocery screen. Unlike
+    /// `isChecked`, `POST .../grocery` DOES accept `quantityCount` at create
+    /// time, so this mismatch would only really arise from a bump made
+    /// *during* the create call's flight — still worth covering the same
+    /// way, since the function has no way to know which race produced the
+    /// mismatch and shouldn't need to.
+    func testQuantityCountDiffersFromResponse_preservesLocal() {
+        XCTAssertTrue(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+            currentIsChecked: false, remoteIsChecked: false,
+            currentOrderIndex: 2, remoteOrderIndex: 2,
+            currentQuantityCount: 3, remoteQuantityCount: 1
+        ))
+    }
+
+    func testQuantityCountMatchesResponseAlongsideEverythingElse_doesNotPreserveLocal() {
+        XCTAssertFalse(GroceryCreateReconciliation.shouldPreserveLocalCheckedAndOrder(
+            currentIsChecked: false, remoteIsChecked: false,
+            currentOrderIndex: 2, remoteOrderIndex: 2,
+            currentQuantityCount: 4, remoteQuantityCount: 4
+        ))
+    }
+
     // MARK: - `GroupSyncService.applyRemote`
 
     private func makeLocalRow(
-        isChecked: Bool, orderIndex: Double, syncState: GroupSyncState = .pendingCreate
+        isChecked: Bool, orderIndex: Double, quantityCount: Int = 1, syncState: GroupSyncState = .pendingCreate
     ) -> GroupSharedGroceryItem {
         GroupSharedGroceryItem(
             id: GroupSharedGroceryItem.newLocalPlaceholderID(), groupID: "g1", name: "Milk",
-            category: .dairyAndEggs, section: .thisWeek, quantityText: "1 gal",
+            category: .dairyAndEggs, section: .thisWeek, quantityText: "1 gal", quantityCount: quantityCount,
             isChecked: isChecked, orderIndex: orderIndex, addedByUserID: "u1", syncState: syncState
         )
     }
 
-    private func makeRemoteItem(isChecked: Bool, orderIndex: Double) -> RemoteGroupGroceryItem {
+    private func makeRemoteItem(isChecked: Bool, orderIndex: Double, quantityCount: Int = 1) -> RemoteGroupGroceryItem {
         RemoteGroupGroceryItem(
             id: "server-1", groupID: "g1", name: "Milk", category: .dairyAndEggs, section: .thisWeek,
-            quantityText: "1 gal", isChecked: isChecked, orderIndex: orderIndex, addedByUserID: "u1",
-            createdAt: .now, updatedAt: .now
+            quantityText: "1 gal", quantityCount: quantityCount, isChecked: isChecked, orderIndex: orderIndex,
+            addedByUserID: "u1", createdAt: .now, updatedAt: .now
         )
     }
 
@@ -482,6 +506,17 @@ final class GroupGroceryItemCreateRaceTests: XCTestCase {
         let remote = makeRemoteItem(isChecked: false, orderIndex: 0)
         GroupSyncService.applyRemote(remote, to: row, preserveLocalCheckedAndOrder: true)
         XCTAssertEqual(row.orderIndex, 3, "local reorder must win, not be clobbered by the create response")
+        XCTAssertEqual(row.syncState, .pendingUpdate)
+    }
+
+    /// `quantityCount` counterpart of the two tests above — added later,
+    /// same bucket as `isChecked`/`orderIndex` in `applyRemote` (all three
+    /// share the single `preserveLocalCheckedAndOrder` flag).
+    func testCreateResponseAfterConcurrentQuantityBump_preservesLocalQuantityCountAndMarksPendingUpdate() {
+        let row = makeLocalRow(isChecked: false, orderIndex: 0, quantityCount: 3)
+        let remote = makeRemoteItem(isChecked: false, orderIndex: 0, quantityCount: 1)
+        GroupSyncService.applyRemote(remote, to: row, preserveLocalCheckedAndOrder: true)
+        XCTAssertEqual(row.quantityCount, 3, "local quantity bump must win, not be clobbered by the create response")
         XCTAssertEqual(row.syncState, .pendingUpdate)
     }
 

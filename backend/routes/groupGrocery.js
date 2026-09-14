@@ -69,6 +69,7 @@ function serializeItem(item) {
     category: item.category,
     section: item.section,
     quantityText: item.quantityText,
+    quantityCount: item.quantityCount,
     isChecked: item.isChecked,
     orderIndex: item.orderIndex,
     // "My Layout" placement — see prisma/schema.prisma's GroupGroceryItem
@@ -160,6 +161,7 @@ const CreateItemSchema = z
     category: z.enum(GROCERY_CATEGORIES),
     section: z.enum(GROCERY_SECTIONS),
     quantityText: z.string().trim().max(200).optional().default(""),
+    quantityCount: z.number().int().min(1).max(999).optional().default(1),
     orderIndex: z.number().finite().optional().default(0),
   })
   .strict();
@@ -195,6 +197,7 @@ router.post("/", asyncHandler(async (req, res) => {
       category: data.category,
       section: data.section,
       quantityText: data.quantityText,
+      quantityCount: data.quantityCount,
       orderIndex: data.orderIndex,
       addedByUserId: req.userId,
     },
@@ -235,12 +238,13 @@ router.patch("/:id/accept", asyncHandler(async (req, res) => {
 // asymmetric, field by field, rather than one role gate for the whole
 // route:
 //
-// - `isChecked`/`orderIndex`: any member may change these. Checking an item
-//   off (shopping) or reordering it (tidying the list) is routine
-//   day-to-day use of an already-decided list, not a planning decision —
-//   the same reasoning the meal plan gives PARTICIPANTs a vote/suggest but
-//   not a decide action doesn't apply here, since nothing about *using* the
-//   list changes what's actually on it.
+// - `isChecked`/`orderIndex`/`quantityCount`: any member may change these.
+//   Checking an item off (shopping), reordering it (tidying the list), or
+//   adjusting how many to get is routine day-to-day use of an
+//   already-decided list, not a planning decision — the same reasoning the
+//   meal plan gives PARTICIPANTs a vote/suggest but not a decide action
+//   doesn't apply here, since nothing about *using* the list changes what's
+//   actually on it.
 // - `name`/`category`/`quantityText`/`section`: MANAGER only. These change
 //   what's actually on the list or how it's organized/categorized — more
 //   like editing the plan itself (the same category POST's section rule
@@ -274,6 +278,7 @@ const UpdateItemSchema = z
     section: z.enum(GROCERY_SECTIONS).optional(),
     isChecked: z.boolean().optional(),
     orderIndex: z.number().finite().optional(),
+    quantityCount: z.number().int().min(1).max(999).optional(),
     aisleId: z.string().uuid().nullable().optional(),
   })
   .strict();
@@ -323,6 +328,7 @@ router.patch("/:id", asyncHandler(async (req, res) => {
   if (data.section !== undefined) updates.section = data.section;
   if (data.isChecked !== undefined) updates.isChecked = data.isChecked;
   if (data.orderIndex !== undefined) updates.orderIndex = data.orderIndex;
+  if (data.quantityCount !== undefined) updates.quantityCount = data.quantityCount;
   if (data.aisleId !== undefined) {
     updates.aisleId = data.aisleId;
     updates.aisleManuallySet = true;

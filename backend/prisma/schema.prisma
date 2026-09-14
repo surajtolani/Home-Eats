@@ -645,12 +645,15 @@ enum GroupGrocerySection {
 // A single shared grocery-list line. Named `GroupGroceryItem` (rather than
 // reusing `GroceryItem`) to keep it visibly distinct from the iOS
 // `GroceryItem` SwiftData model it parallels: this is deliberately a
-// smaller shape — no `weekStartDate`/`selectedProductOptionID`/
-// `quantityCount`/`categoryManuallySet`/`layoutOrderIndex`. `orderIndex` is
-// a `Float` (not `Int`) for the same reason as the iOS model's own
-// `orderIndex`: reordering can slot an item between two existing ones (new
-// value = the average of its neighbors) without renumbering every other row
-// in the category.
+// smaller shape — no `selectedProductOptionID`/`categoryManuallySet`/
+// `layoutOrderIndex`. `orderIndex` is a `Float` (not `Int`) for the same
+// reason as the iOS model's own `orderIndex`: reordering can slot an item
+// between two existing ones (new value = the average of its neighbors)
+// without renumbering every other row in the category.
+//
+// UPDATE: `quantityCount` (below) was added after all, direct user request
+// for the same `[trash-or-minus] N [+]` stepper the personal `GroceryItem`
+// model already has — see that field's own doc comment.
 //
 // UPDATE (Phase 4): this originally had no group-scoped "My Layout"
 // counterpart at all — see the superseded note that used to live here, and
@@ -672,6 +675,16 @@ model GroupGroceryItem {
   category         GroceryCategory
   section          GroupGrocerySection
   quantityText     String              @default("")
+  // How many of this item to get — kept separate from `quantityText` (a
+  // free-text description like "3 cups" pulled from a recipe, not
+  // necessarily a whole-item count), same split the personal `GroceryItem`
+  // model already draws between its own `quantityCount`/`quantityText`.
+  // Bucketed with `isChecked`/`orderIndex` below, not with `name`/
+  // `category`/`quantityText`/`section`: adjusting how many to buy is
+  // routine day-to-day list use (any member may change it in PATCH
+  // /:id — see that route's own comment), not a planning decision like
+  // what's on the list or how it's organized.
+  quantityCount    Int                 @default(1)
   isChecked        Boolean             @default(false)
   orderIndex       Float               @default(0)
   // Where this item sits in "My Layout" — mirrors the iOS
