@@ -3,6 +3,15 @@ import SwiftUI
 /// One group's member list, with invite/leave/remove actions — fetched live
 /// from `GET /groups/:groupId` (see `GroupsListView`'s doc comment on why
 /// groups have no local model at all).
+///
+/// **Phase 5 additions**: `memberRow`'s `.contextMenu` lets a `MANAGER`
+/// promote a `PARTICIPANT` or demote a fellow `MANAGER` (see
+/// `roleChangeMenuItems`'s own doc comment for exactly who sees which
+/// action), and a "Pending Invites" section (visible to a `MANAGER` only,
+/// via the new `GET /groups/:groupId/invites` — see `GroupSentInvite`'s own
+/// doc comment in AccountModels.swift for why that endpoint isn't part of
+/// Phase 5 itself) lists this group's own outstanding `PENDING`/`DECLINED`
+/// invites, with a "Resend" action on a declined one.
 struct GroupDetailView: View {
     let groupID: String
     /// Shown as the nav title immediately (carried over from the
@@ -17,6 +26,16 @@ struct GroupDetailView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showInvite = false
+    /// This group's own outstanding invites (`PENDING`/`DECLINED` only —
+    /// see `GroupSentInvite`'s own doc comment), for the "Pending Invites"
+    /// section below. Loaded alongside `group` in `load()`, only when
+    /// `isManager` (the underlying `GET /groups/:groupId/invites` is
+    /// `MANAGER`-only server-side too — see that route's own doc comment in
+    /// routes/groups.js). Left empty rather than blanking the whole screen
+    /// if this one fetch fails (see `load()`'s own `try?`) — this is
+    /// secondary information a `GroupDetailView` visit has always worked
+    /// fine without until now.
+    @State private var sentInvites: [GroupSentInvite] = []
     /// A failed Leave/Remove tap, shown as a non-blocking `.alert` — not
     /// through `errorMessage`, which replaces this entire screen's content
     /// (member list, Meal Plan/Grocery List links, everything) the moment
@@ -78,6 +97,19 @@ struct GroupDetailView: View {
                         memberRow(member)
                     }
                 }
+                // Not part of Phase 5 itself — see `GroupSentInvite`'s own
+                // doc comment in AccountModels.swift and
+                // `getGroupInvites`'s own doc comment for why this endpoint
+                // exists at all. Hidden entirely (not just an empty-state
+                // message) when there's nothing outstanding, same as every
+                // other conditionally-shown section on this screen.
+                if isManager && !sentInvites.isEmpty {
+                    Section("Pending Invites") {
+                        ForEach(sentInvites) { invite in
+                            pendingInviteRow(invite)
+                        }
+                    }
+                }
             }
         }
         .navigationTitle(group?.name ?? groupName)
@@ -123,6 +155,12 @@ struct GroupDetailView: View {
     // Name only, no phone-number subtitle — same "identify people by who
     // they are, not the number tied to their account" reasoning as
     // `FriendsListView.friendRow`; see its own doc comment.
+    //
+    // **Promote/demote (Phase 5)** live in a `.contextMenu` (long-press)
+    // rather than another always-visible button — this row is already
+    // fairly packed (role badge, name, Leave/Remove), and promote/demote is
+    // a rarer action than either of those; see `roleChangeMenuItems`'s own
+    // doc comment for exactly who sees which action.
     private func memberRow(_ member: GroupMember) -> some View {
         HStack {
             HStack(spacing: 6) {
@@ -163,6 +201,67 @@ struct GroupDetailView: View {
                 .buttonStyle(.borderless)
             }
         }
+        .contextMenu {
+            roleChangeMenuItems(for: member)
+        }
+    }
+
+    /// A `MANAGER` viewing a `PARTICIPANT` (never themselves — you can't
+    /// promote yourself, there'd be nobody to grant it) gets "Promote to
+    /// Manager"; a `MANAGER` viewing a fellow `MANAGER` OTHER than
+    /// themselves gets "Demote to Participant" (per this task's own spec —
+    /// self-demote already exists, just spelled "Leave" above, since
+    /// demoting yourself while remaining a member isn't a scenario this UI
+    /// separately exposes). `@ViewBuilder` rather than returning `some View`
+    /// directly — the `if`/`else` below produces genuinely different view
+    /// types (`Button` vs. `EmptyView`), which a single non-`@ViewBuilder`
+    /// return type can't express without an `AnyView` erase.
+    @ViewBuilder
+    private func roleChangeMenuItems(for member: GroupMember) -> some View {
+        let isSelf = member.id == accountSession.currentUser?.id
+        if isManager && !isSelf {
+            if member.role == .participant {
+                Button {
+                    Task { await promote(member.id) }
+                } label: {
+                    Label("Promote to Manager", systemImage: "arrow.up.circle")
+                }
+            } else {
+                Button {
+                    Task { await demote(member.id) }
+                } label: {
+                    Label("Demote to Participant", systemImage: "arrow.down.circle")
+                }
+            }
+        }
+    }
+
+    /// A group's own outstanding invite — who was invited, by whom, and
+    /// (for a `DECLINED` one) a "Resend" action. See `GroupSentInvite`'s own
+    /// doc comment for the exact shape and `resendInvite(_:)` below for why
+    /// "Resend" is just calling `POST /groups/:groupId/invite` again.
+    private func pendingInviteRow(_ invite: GroupSentInvite) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(invite.displayLabel)
+                Text("Invited by \(invite.invitedBy.displayNameOrPhoneNumber)")
+                    .font(.brandCaption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            switch invite.status {
+            case .pending:
+                Text("Pending")
+                    .font(.brandCaption)
+                    .foregroundStyle(.secondary)
+            case .declined:
+                Button("Resend") {
+                    Task { await resendInvite(invite) }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
     }
 
     private func load() async {
@@ -175,7 +274,21 @@ struct GroupDetailView: View {
         // which can run after `group` is already on screen.
         let isFirstLoad = group == nil
         do {
-            group = try await AccountsAPIClient.getGroup(id: groupID)
+            let fetched = try await AccountsAPIClient.getGroup(id: groupID)
+            group = fetched
+            // `MANAGER`-only server-side (see `getGroupInvites`'s own doc
+            // comment) — computed from `fetched` directly rather than
+            // `isManager` (which reads `group`, not yet updated to
+            // `fetched` at this point in the method) to avoid gating on a
+            // stale role from before this very load. `try?`, not `try`: a
+            // failed invites fetch is secondary information that shouldn't
+            // blank the rest of an otherwise-successful group load — see
+            // `sentInvites`'s own doc comment.
+            if fetched.myRole(currentUserID: accountSession.currentUser?.id) == .manager {
+                sentInvites = (try? await AccountsAPIClient.getGroupInvites(groupID: groupID)) ?? []
+            } else {
+                sentInvites = []
+            }
         } catch {
             if isFirstLoad {
                 errorMessage = error.localizedDescription
@@ -188,6 +301,47 @@ struct GroupDetailView: View {
     private func remove(_ userID: String) async {
         do {
             try await AccountsAPIClient.removeGroupMember(groupID: groupID, userID: userID)
+            await load()
+        } catch {
+            actionFailure = error.localizedDescription
+        }
+    }
+
+    private func promote(_ userID: String) async {
+        do {
+            _ = try await AccountsAPIClient.promoteMember(groupID: groupID, userID: userID)
+            await load()
+        } catch {
+            actionFailure = error.localizedDescription
+        }
+    }
+
+    /// A `409` here (the last-manager guard — see `demoteMember`'s own doc
+    /// comment) surfaces through `actionFailure`'s existing alert exactly
+    /// like any other failure this screen already handles that way, rather
+    /// than silently doing nothing — same "surface it clearly" requirement
+    /// this task's own spec calls out for this specific case.
+    private func demote(_ userID: String) async {
+        do {
+            _ = try await AccountsAPIClient.demoteMember(groupID: groupID, userID: userID)
+            await load()
+        } catch {
+            actionFailure = error.localizedDescription
+        }
+    }
+
+    /// "Resend" for a `DECLINED` invite is just calling
+    /// `POST /groups/:groupId/invite` again with the same phone number —
+    /// see `inviteToGroup(groupID:phoneNumber:)`'s own "Resend after a
+    /// decline" doc comment. Always the `phoneNumber:` overload, never
+    /// `userID:`, regardless of whether `invite.invitedUser` is now set —
+    /// the phone-number path accepts any target (friend, non-friend, or
+    /// stranger) unconditionally, so it's the one overload guaranteed to
+    /// work here no matter how the original invite was created or whether
+    /// the caller and the invited person are (still, or now) friends.
+    private func resendInvite(_ invite: GroupSentInvite) async {
+        do {
+            try await AccountsAPIClient.inviteToGroup(groupID: groupID, phoneNumber: invite.invitedPhoneNumber)
             await load()
         } catch {
             actionFailure = error.localizedDescription
@@ -224,7 +378,14 @@ private struct InviteToGroupView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("From Your Friends") {
+                // Phase 5: tapping a friend here no longer adds them
+                // instantly — `inviteToGroup(groupID:userID:)` now queues a
+                // PENDING `Invite` the same as the phone-number path below
+                // always has (see that method's own doc comment). The
+                // footer makes that explicit rather than leaving the
+                // pre-Phase-5 impression that a tap here means "now a
+                // member."
+                Section {
                     if isLoadingFriends {
                         ProgressView()
                     } else if invitableFriends.isEmpty {
@@ -237,6 +398,10 @@ private struct InviteToGroupView: View {
                             }
                         }
                     }
+                } header: {
+                    Text("From Your Friends")
+                } footer: {
+                    Text("Tapping a friend sends them an invite to this group — they'll join once they accept, same as anyone invited by phone number below.")
                 }
                 Section {
                     Button {

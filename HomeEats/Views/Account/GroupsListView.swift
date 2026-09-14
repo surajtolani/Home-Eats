@@ -183,7 +183,23 @@ struct CreateGroupView: View {
                 } header: {
                     Text("Members")
                 } footer: {
-                    Text("You're always included. Pick from your accepted friends above, or add anyone else by contact or phone number — they'll get a friend request and join once they accept.")
+                    // Deliberately distinguishes the two paths here — unlike
+                    // `POST /groups/:groupId/invite` (used everywhere else
+                    // an existing group grows), `POST /groups`'s own
+                    // `memberUserIds` isn't part of Phase 5's invite-consent
+                    // change: a friend checked off above still becomes a
+                    // real member the instant this group is created, with
+                    // no accept step of their own — verified directly
+                    // against routes/groups.js's `POST /` handler (see
+                    // `AccountsAPIClient.createGroup`'s own doc comment) and
+                    // against a real running backend, not assumed from how
+                    // the rest of this task's invite changes read. Only the
+                    // phone-number path below goes through a real Invite
+                    // (`inviteToGroup(groupID:phoneNumber:)`, fired after
+                    // creation in `create()` below) — hence "gets an invite
+                    // instead" here, matching `pendingPhoneInvites`' own
+                    // "Will invite" label just above this footer.
+                    Text("You're always included. Friends you pick above join the group immediately. Anyone else, added by contact or phone number, gets an invite instead — a friend request too, if they're not already a friend — and joins once they accept.")
                 }
                 .disabled(didFinishCreating)
                 if let errorMessage {
