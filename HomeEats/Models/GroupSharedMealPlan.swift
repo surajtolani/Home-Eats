@@ -192,8 +192,23 @@ final class GroupMealSuggestion {
     /// list). Two separate counts, not one net score, for the same reason
     /// `serializeSuggestion(...)`'s own doc comment gives: a lone net score
     /// can't tell "nobody's voted" apart from "deeply split."
-    var upvoteCount: Int
-    var downvoteCount: Int
+    ///
+    /// `= 0` right here (not just wherever this model gets constructed) —
+    /// added after `GroupMealSuggestion` itself already existed and had
+    /// real persisted rows, so without a property-level default this is
+    /// exactly the "non-optional attribute with no default" migration
+    /// hazard `HomeEatsApp.swift`'s own doc comment on `ModelContainer`
+    /// creation warns about: a real, confirmed incident (a user's entire
+    /// local store — every model, not just this one — got wiped) traced
+    /// back to this missing default (see `GroupSharedGroceryItem
+    /// .quantityCount`'s identical fix and doc comment for the fuller
+    /// explanation). `0`/`0` is a safe backfill for a pre-existing row that
+    /// predates these fields — the next sync's pull immediately overwrites
+    /// it with the server's real counts regardless (see `applyRemote`-style
+    /// reconciliation in `GroupSyncService`), so a briefly-wrong 0/0 is
+    /// harmless, self-correcting, and vastly better than wiping local data.
+    var upvoteCount: Int = 0
+    var downvoteCount: Int = 0
     /// The last `myVote` value this device actually confirmed with the
     /// server (set on both a successful push and a pull's upsert) — kept
     /// separately from `myVote` itself so a local vote change can be

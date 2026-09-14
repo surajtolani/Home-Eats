@@ -38,7 +38,20 @@ final class GroupSharedGroceryItem {
     /// normal offline-queued path (see `syncState`'s own doc comment) —
     /// not through `GroupSyncService.editGroceryItem`'s manager-only,
     /// immediate-online-call path.
-    var quantityCount: Int
+    ///
+    /// `= 1` right here, not just as an `init` parameter default below —
+    /// this is what makes SwiftData's lightweight migration safe for
+    /// existing installs. An `init` default only applies when constructing
+    /// a brand-new object; it does nothing for every already-persisted row
+    /// on disk from before this field existed, which is exactly the
+    /// "non-optional attribute with no default" case `HomeEatsApp.swift`'s
+    /// own doc comment on `ModelContainer` creation warns wipes the ENTIRE
+    /// local store (every model, not just this one — a real, confirmed
+    /// incident: this field originally shipped without this `= 1`).
+    /// Matches the personal `GroceryItem.quantityCount`'s own identical
+    /// `= 1`, which is why porting that pattern over should have included
+    /// this from the start.
+    var quantityCount: Int = 1
     var isChecked: Bool
     /// Manual sort position within a category, lowest first — same
     /// "average of its new neighbors" fractional-reorder convention as the
@@ -57,7 +70,16 @@ final class GroupSharedGroceryItem {
     /// does). Originally this model had no "My Layout" counterpart at all —
     /// see this type's own top doc comment, which predates Phase 4.
     var aisleID: String?
-    var aisleManuallySet: Bool
+    /// `= false` right here — added (see this field's own doc comment
+    /// above) after `GroupSharedGroceryItem` itself already existed and had
+    /// real persisted rows, so without a property-level default this is the
+    /// same "non-optional attribute with no default" migration hazard as
+    /// `quantityCount` above (see that field's own doc comment for the full
+    /// explanation, including the confirmed incident it caused) — and `false`
+    /// is exactly the correct backfill for a pre-existing row anyway: one
+    /// that predates this whole "My Layout" feature was, definitionally,
+    /// never manually placed.
+    var aisleManuallySet: Bool = false
     var addedByUserID: String
     var createdAt: Date
     /// This row's sync-tracking state — see `GroupSyncState`'s own doc
