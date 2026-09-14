@@ -234,13 +234,40 @@ struct GroupSharedGroceryListView: View {
                 }
             }
 
+            // The By Category/My Layout toggle AND the "+"/"Manage My
+            // Layout" actions together — the "row below" the shared static
+            // `GroupTopBar` (see that type's own doc comment for the
+            // top-bar redesign this implements). Both actions used to be
+            // `.topBarTrailing` toolbar items in this view's own `.toolbar`
+            // — moved here instead, per direct user request that the top
+            // bar itself stay static with only the group switcher/
+            // notifications/account icons on it, and "all the other things
+            // ... or anything else" go in a row underneath.
             Section {
-                Picker("View", selection: $viewMode) {
-                    ForEach(GroupGroceryViewMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+                HStack(spacing: 8) {
+                    Picker("View", selection: $viewMode) {
+                        ForEach(GroupGroceryViewMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
                     }
+                    .pickerStyle(.segmented)
+
+                    Button { showAddSheet = true } label: { Image(systemName: "plus") }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                    Menu {
+                        Button {
+                            presentAfterMenuDismiss { showAislesManager = true }
+                        } label: {
+                            Label("Manage My Layout", systemImage: "square.grid.2x2")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                .pickerStyle(.segmented)
                 .listRowSeparator(.hidden)
             }
 
@@ -257,30 +284,6 @@ struct GroupSharedGroceryListView: View {
         .environment(\.editMode, $editMode)
         .navigationTitle(group?.name ?? groupName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showAddSheet = true } label: { Image(systemName: "plus") }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                // A single-item `Menu` rather than a plain button:
-                // deliberately kept in this shape (not simplified down to a
-                // bare toolbar button now that "Manage Staples" is gone —
-                // see this file's own top doc comment for that removal)
-                // since a separate, concurrent task is reworking this
-                // screen's overall toolbar layout and a menu-vs-button shape
-                // change here would just be extra churn for that work to
-                // land on top of.
-                Menu {
-                    Button {
-                        presentAfterMenuDismiss { showAislesManager = true }
-                    } label: {
-                        Label("Manage My Layout", systemImage: "square.grid.2x2")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-            }
-        }
         .task {
             await loadGroup()
             await runSync()

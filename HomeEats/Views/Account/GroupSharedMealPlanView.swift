@@ -156,12 +156,31 @@ struct GroupSharedMealPlanView: View {
                     .padding(.top, 4)
             }
 
-            Picker("View", selection: $viewMode) {
-                ForEach(PlanViewMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+            // The Calendar/Weekly toggle AND "Go to This Week" together —
+            // the "row below" the shared static `GroupTopBar` (see that
+            // type's own doc comment for the top-bar redesign this
+            // implements). "Go to This Week" used to be a `.topBarTrailing`
+            // toolbar item in this view's own `.toolbar` — moved here
+            // instead, per direct user request that the top bar itself stay
+            // static with only the group switcher/notifications/account
+            // icons on it, and "all the other things like go to week or
+            // share or heart or anything else" go in a row underneath.
+            // A sibling of the `switch` below, not nested inside either of
+            // its branches — visible in both view modes, same as the
+            // toolbar button this replaced.
+            HStack(spacing: 8) {
+                Picker("View", selection: $viewMode) {
+                    ForEach(PlanViewMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
+                .pickerStyle(.segmented)
+
+                Button("This Week") { goToThisWeek() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isAtDefaultPosition)
             }
-            .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.top, 8)
 
@@ -174,14 +193,6 @@ struct GroupSharedMealPlanView: View {
         }
         .navigationTitle(group?.name ?? groupName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            // Visible in both view modes — not just Calendar — same
-            // reasoning as `CalendarPlanView`'s own toolbar button.
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Go to This Week") { goToThisWeek() }
-                    .disabled(isAtDefaultPosition)
-            }
-        }
         .task {
             await loadGroup()
             await runSync()
