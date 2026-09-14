@@ -33,6 +33,17 @@ struct RootView: View {
     /// right after sign-in below, and what both the "you have no groups
     /// yet" gate and the group-scoped tab content read from.
     @EnvironmentObject private var activeGroupSession: ActiveGroupSession
+    /// The signed-in caller's own pending-notifications feed — see its own
+    /// doc comment. Refreshed right after sign-in below, on the same
+    /// periodic cadence `GroupSharedMealPlanView`/`GroupSharedGroceryListView`
+    /// already use for their own background resync, for as long as the app
+    /// stays signed in (see `runNotificationsPollLoop()` below) — kept as
+    /// ONE loop here, at the root, rather than one per tab: `GroupTopBar`'s
+    /// notification bell is placed on both main tabs at once, and `TabView`
+    /// keeps every tab's content alive simultaneously, so a per-tab loop
+    /// would mean two independent, concurrently-running pollers for the
+    /// exact same feed.
+    @EnvironmentObject private var notificationsSession: NotificationsSession
 
     @State private var selectedTab: Tab = .plan
 
@@ -165,6 +176,18 @@ struct RootView: View {
             guard accountSession.isSignedIn else { return }
             await activeGroupSession.refreshGroups()
         }
+        // Separate `.task(id:)` from the one just above — SwiftUI runs each
+        // independently, cancelling and restarting both together on the
+        // same `accountSession.isSignedIn` transitions, so this fetch+poll
+        // loop and the groups refresh above it never interfere with each
+        // other's lifetime. See `notificationsSession`'s own doc comment for
+        // why this loop lives here (once, at the root) rather than inside
+        // `GroupTopBar`/its notification bell.
+        .task(id: accountSession.isSignedIn) {
+            guard accountSession.isSignedIn else { return }
+            await notificationsSession.refresh()
+            await runNotificationsPollLoop()
+        }
         .onChange(of: reminderRouter.shouldPresentPlanningFlow) { _, shouldPresent in
             guard shouldPresent else { return }
             // The weekly planning notification used to launch a separate
@@ -186,6 +209,24 @@ struct RootView: View {
             // has to happen here rather than be left for the next
             // `refreshGroups()` to naturally overwrite.
             activeGroupSession.reset()
+            // Same reasoning, same trigger — see `NotificationsSession.reset()`'s
+            // own doc comment.
+            notificationsSession.reset()
+        }
+    }
+
+    /// Same "plain `Task.sleep` loop, cancelled automatically when its
+    /// `.task` is torn down" design, and the same 25-second cadence, as
+    /// `GroupSharedMealPlanView`/`GroupSharedGroceryListView`'s own periodic
+    /// resync loops (see either view's doc comment) — piggybacking on that
+    /// established cadence for the notification badge too, rather than
+    /// inventing a second, differently-tuned polling interval for no real
+    /// reason.
+    private func runNotificationsPollLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            if Task.isCancelled { break }
+            await notificationsSession.refresh()
         }
     }
 }
@@ -236,14 +277,20 @@ private struct GroupScopedPlanTab: View {
                 ContentUnavailableView(
                     "No Group Selected",
                     systemImage: "person.3",
-                    description: Text("Choose a group from the switcher above.")
+                    description: Text("Choose a group from the circular icon above.")
                 )
             }
         }
+        // `GroupTopBar` — the shared static top row (group switcher on the
+        // left, notification bell + account icon on the right) — see its
+        // own doc comment. Replaces the plain `GroupSwitcherMenu()`
+        // `ToolbarItem` this used to be; the Calendar/Weekly picker and "Go
+        // to This Week" that used to live partly here, partly in
+        // `GroupSharedMealPlanView`'s own toolbar, are now entirely inside
+        // that view's own body, in the "row below" this bar — see that
+        // view's own doc comment on the move.
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                GroupSwitcherMenu()
-            }
+            GroupTopBar()
         }
     }
 }
@@ -263,14 +310,16 @@ private struct GroupScopedGroceryTab: View {
                 ContentUnavailableView(
                     "No Group Selected",
                     systemImage: "person.3",
-                    description: Text("Choose a group from the switcher above.")
+                    description: Text("Choose a group from the circular icon above.")
                 )
             }
         }
+        // Same `GroupTopBar` as `GroupScopedPlanTab` above — see its own doc
+        // comment. The "+"/"Manage My Layout" controls that used to live in
+        // `GroupSharedGroceryListView`'s own toolbar moved into that view's
+        // own body instead, in the row below this bar.
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                GroupSwitcherMenu()
-            }
+            GroupTopBar()
         }
     }
 }
