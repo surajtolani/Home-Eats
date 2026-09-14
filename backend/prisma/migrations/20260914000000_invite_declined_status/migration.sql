@@ -1,0 +1,17 @@
+-- Phase 5: distinguish "the recipient explicitly declined THIS Invite"
+-- (DECLINED, new) from "this Invite's fate was decided by something else
+-- happening" (CANCELLED, pre-existing — e.g. its tied friend request being
+-- declined via cancelInvitesForDeclinedFriendship). See the InviteStatus
+-- doc comment in prisma/schema.prisma for the full reasoning and
+-- backend/README.md's "Invites and consent" section for the resend flow
+-- this distinction supports.
+--
+-- Purely additive: adds one new enum value, nothing existing changes shape,
+-- no column/table alterations. Safe to run against a database that already
+-- has every earlier migration applied — PENDING/RESOLVED/CANCELLED rows are
+-- completely untouched, and Postgres 12+ allows ALTER TYPE ... ADD VALUE
+-- inside the transaction `prisma migrate deploy` wraps each migration file
+-- in (the once-real restriction on doing this inside a transaction was
+-- lifted in Postgres 12; this project's Postgres is 16 — see
+-- backend/README.md's Postgres setup section).
+ALTER TYPE "InviteStatus" ADD VALUE 'DECLINED';

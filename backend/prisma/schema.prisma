@@ -130,8 +130,9 @@ model Friendship {
 // it's what the Phase 3 role-backfill migration used to decide who starts
 // MANAGER (see the GroupRole/GroupMembership doc comments below), but
 // nothing at runtime keeps a membership's `role` tied to it after that: a
-// MANAGER can leave or be demoted-by-a-future-endpoint independently of
-// whether they happen to be group.createdByUserId. Nullable, with
+// MANAGER can leave or be demoted (Phase 5's `POST
+// /groups/:groupId/members/:userId/demote`) independently of whether they
+// happen to be group.createdByUserId. Nullable, with
 // `onDelete: SetNull` rather than `Cascade`: the creator is just the one who
 // happened to tap "Create" — deleting their User row (no such route exists
 // yet, but will) must not take the whole Group down with it and thereby
@@ -172,9 +173,13 @@ model Group {
 // (a meal suggestion pending a vote, or a grocery item in the SUGGESTED
 // section) — see routes/groupMealPlan.js and routes/groupGrocery.js for
 // exactly which routes require which role. Deliberately just these two
-// tiers, and deliberately no promote/demote-role endpoint yet (see
-// backend/README.md) — that's a reasonable follow-up once real usage shows
-// it's needed, not something this phase needs to solve.
+// tiers. Phase 5 added promote/demote (`POST
+// /groups/:groupId/members/:userId/promote`/`demote` in routes/groups.js) —
+// any current MANAGER can promote another member to MANAGER or demote one
+// back to PARTICIPANT, so a group can end up with several MANAGERs at once
+// (nothing here or in the membership checks below ever assumed exactly
+// one), all with equal standing — promoting someone doesn't make the
+// promoter "senior" to them in any way the code tracks.
 enum GroupRole {
   MANAGER
   PARTICIPANT
@@ -214,24 +219,77 @@ model GroupMembership {
 enum InviteStatus {
   PENDING
   RESOLVED
+  // "This invite's story is over via something ELSE happening" — the
+  // friend request it was standing in for got declined
+  // (`cancelInvitesForDeclinedFriendship` in routes/friends.js). Kept
+  // distinct from DECLINED below on purpose: they're semantically
+  // different outcomes (nobody actually said "no" to this specific group
+  // invite here — a different, related thing was declined instead), and
+  // Phase 5's resend behavior only cares about "is this invite still
+  // PENDING", so the distinction costs nothing at the query level while
+  // preserving the more precise history for anyone reading the row later.
   CANCELLED
+  // Phase 5: the invited person actually looked at this specific group
+  // Invite (via POST /invites/:inviteId/decline) and said no — distinct
+  // from CANCELLED above, which means the invite's fate was decided by
+  // something else happening (its tied friend request being declined),
+  // not by an explicit answer to this invite. Both are terminal/"granted
+  // nothing" outcomes and both make room for a fresh PENDING Invite to the
+  // same phone number + group later (every "already invited" check in
+  // routes/groups.js only ever blocks on a PENDING row) — see
+  // backend/README.md's "Invites and consent" section for the resend flow.
+  DECLINED
 }
 
-// Invites someone by phone number who isn't a User yet. `groupId` is null
-// for a plain "become my friend" invite, or set for "join my group"
-// (routes/groups.js's POST /groups/:groupId/invite). When that phone number
-// eventually verifies (POST /auth/verify-code), every PENDING Invite for it
-// gets the inviter turned into an ordinary PENDING Friendship (an incoming
-// request the new user sees and can accept/decline like any other — see
-// GET /friends' incomingRequests) — deliberately NOT auto-accepted, and
-// NOT auto-joined to `groupId`'s Group yet even if set: an invite is a
-// strong signal, but the invited person still has to actually agree before
-// anything is granted. The Invite row itself is left PENDING at signup and
-// only resolves once that Friendship is actually accepted or declined (see
-// `resolveInvitesForAcceptedFriendship`/`cancelInvitesForDeclinedFriendship`
-// in routes/friends.js): accepting moves it to RESOLVED and, if `groupId`
-// was set, creates the GroupMembership at that moment; declining moves it
-// to CANCELLED and grants nothing. See routes/auth.js and routes/friends.js.
+// Invites someone by phone number — either because they aren't a Home Eats
+// user yet, or (as of Phase 5) because they already are one, possibly
+// already an accepted friend of the inviter, but haven't yet agreed to
+// THIS SPECIFIC thing (a plain friend request, or joining a particular
+// group). `groupId` is null for a plain "become my friend" invite, or set
+// for "join my group" (routes/groups.js's POST /groups/:groupId/invite).
+//
+// Two different resolution paths exist, because a phone number's Invites
+// can only ever be looked up by that phone number, and a not-yet-a-user
+// phone number has no other identity to hang a "pending things" screen off
+// of:
+//
+// 1. **Not a user yet.** When the phone number eventually verifies
+//    (POST /auth/verify-code), every PENDING Invite for it gets its inviter
+//    turned into an ordinary PENDING Friendship (an incoming request the
+//    new user sees and can accept/decline like any other — see
+//    `GET /friends`'s `incomingRequests`) — deliberately NOT
+//    auto-accepted, and NOT auto-joined to `groupId`'s Group yet even if
+//    set. The Invite row itself is left PENDING at signup and only
+//    resolves once that Friendship is actually accepted or declined (see
+//    `resolveInvitesForAcceptedFriendship`/
+//    `cancelInvitesForDeclinedFriendship` in routes/friends.js): accepting
+//    moves it to RESOLVED and, if `groupId` was set, creates the
+//    GroupMembership at that moment; declining moves it to CANCELLED and
+//    grants nothing.
+//
+// 2. **Already a user (Phase 5).** This is the case a plain "resolve on
+//    friendship-accepted" hook can't cover: there is no new Friendship
+//    event to hook into for someone who is already an accepted friend
+//    (or who becomes one some other way after this Invite was created) —
+//    nothing ever fires `resolveInvitesForAcceptedFriendship` for them
+//    again. Such a person instead sees this row directly via
+//    `GET /invites` (matched by `invitedPhoneNumber`, since an Invite
+//    deliberately has no `userId` column — see routes/invites.js) and
+//    responds with `POST /invites/:inviteId/accept` or
+//    `/decline`, which resolve it the same way (RESOLVED + membership, or
+//    DECLINED + nothing) without touching any Friendship row at all — a
+//    group Invite to an existing accepted friend was never standing in for
+//    a friend request in the first place, so there's nothing friendship-
+//    shaped to update.
+//
+// **Every path that would add someone to a Group now goes through this
+// table — there is no other way to create a GroupMembership than via one
+// of these two resolutions.** Before Phase 5, an accepted friend (by
+// `userId` or by a `phoneNumber` that matched one) was added to
+// `GroupMembership` immediately, with no consent step; see
+// backend/README.md's "Invites and consent" section for why that changed.
+// See routes/auth.js,
+// routes/friends.js, and routes/groups.js/routes/invites.js.
 model Invite {
   id                 String       @id @default(uuid())
   invitingUserId     String

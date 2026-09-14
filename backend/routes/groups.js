@@ -4,17 +4,34 @@
 // GroupMembership model) assumes a user has only one group. Every route
 // requires auth (mounted behind requireAuth in index.js).
 //
-// Roles (Phase 3): every GroupMembership now carries a `role` — MANAGER or
-// PARTICIPANT (see the GroupRole/GroupMembership doc comments in
-// prisma/schema.prisma for the full reasoning and the migration that
-// backfilled existing rows). The group's creator starts MANAGER; anyone
-// added afterwards — via `memberUserIds` at creation, or via
-// POST /:groupId/invite, direct or by-phone — starts PARTICIPANT. That
-// split only tightens group-*management* routes here (invite, and
-// removing someone else): the meal-plan/grocery-list routes in
+// Roles (Phase 3, extended Phase 5): every GroupMembership carries a
+// `role` — MANAGER or PARTICIPANT (see the GroupRole/GroupMembership doc
+// comments in prisma/schema.prisma for the full reasoning and the
+// migration that backfilled existing rows). The group's creator starts
+// MANAGER; anyone added afterwards — via `memberUserIds` at creation, or
+// once their invite is accepted (see the `POST /:groupId/invite` doc
+// comment below) — starts PARTICIPANT. That split tightens
+// group-*management* routes here (invite, promote/demote, and removing
+// someone else): the meal-plan/grocery-list routes in
 // routes/groupMealPlan.js and routes/groupGrocery.js have their own,
-// separate MANAGER/PARTICIPANT rules. There's deliberately no promote/
-// demote-role endpoint yet — out of scope for this phase.
+// separate MANAGER/PARTICIPANT rules. Phase 5 adds promote/demote
+// (`POST .../members/:userId/promote`/`demote` below) — any current
+// MANAGER can create more MANAGERs, so "multiple managers" was already
+// fully supported by this schema and these checks before Phase 5; only the
+// ability to actually change someone's role after the fact was missing.
+//
+// Consent (Phase 5): every path that grows a group's membership — by
+// `userId` or by `phoneNumber`, whether or not the target is already an
+// accepted friend of the caller — now creates/reuses a PENDING `Invite`
+// instead of ever creating a `GroupMembership` directly from this route.
+// See the `POST /:groupId/invite` doc comment below and
+// backend/README.md's "Invites and consent" section for the full
+// reasoning (short version: before Phase 5, an accepted friend could be
+// added to a group with no chance to decline — this closes that gap).
+// Membership is only ever actually created in routes/invites.js's
+// `POST /invites/:inviteId/accept`, or — for someone who wasn't a user yet
+// when invited — in `resolveInvitesForAcceptedFriendship` in
+// routes/friends.js.
 "use strict";
 
 const express = require("express");
@@ -58,6 +75,33 @@ function membershipFor(groupId, userId) {
   return prisma.groupMembership.findUnique({
     where: { userId_groupId: { userId, groupId } },
   });
+}
+
+// Shared by the leave/remove route and the demote route (Phase 5): would
+// losing `targetMembership` — either by demotion to PARTICIPANT, or by
+// being removed from the group entirely — leave the group with zero
+// MANAGERs while other members remain? "Other members remain" is the
+// important qualifier: a lone remaining member demoting themselves or
+// leaving is always allowed (nobody is left to be stranded — the group
+// either becomes memberless or has one ungoverned participant, neither of
+// which is the "stuck, unfixable" scenario this guards against), it's only
+// blocked when there'd be participants left behind with literally nobody
+// who can invite new members, decide anything, or promote one of them back.
+//
+// Deliberately a no-op (returns false without querying anything) for a
+// PARTICIPANT target — losing a PARTICIPANT can never change the group's
+// MANAGER count, so both call sites can call this unconditionally instead
+// of separately special-casing "target is already a PARTICIPANT" as a
+// harmless no-op themselves.
+async function wouldStrandGroup(groupId, targetMembership) {
+  if (targetMembership.role !== "MANAGER") return false;
+  const [managerCount, totalCount] = await Promise.all([
+    prisma.groupMembership.count({ where: { groupId, role: "MANAGER" } }),
+    prisma.groupMembership.count({ where: { groupId } }),
+  ]);
+  const otherMembersWouldRemain = totalCount - 1 > 0;
+  const zeroManagersWouldRemain = managerCount - 1 <= 0;
+  return zeroManagersWouldRemain && otherMembersWouldRemain;
 }
 
 // 100 is a generous ceiling for a household/friend-group app (a big
@@ -185,38 +229,76 @@ router.get("/:groupId", asyncHandler(async (req, res) => {
 // action. A caller who is a member but not a MANAGER gets a 403, same as a
 // non-member.
 //
-// `userId` must be one of the caller's accepted friends — same restriction
-// as group creation — and, if so, is added as a member directly. Since the
-// caller supplied this id themselves (e.g. from their own friends list),
-// there's no new information for a 400 here to leak.
+// **Phase 5: no path here ever creates a GroupMembership directly anymore
+// — every addition, including an already-accepted friend, goes through a
+// PENDING Invite the target has to actually accept.** Before this phase,
+// `userId` (always an accepted friend) and a `phoneNumber` that happened to
+// match one of the caller's own accepted friends were both added
+// instantly, with zero chance to decline — reasonable when this route only
+// grew a group's membership among people who'd already agreed to be your
+// friend, but "we're friends" and "I consent to being in this specific
+// group with whoever else is in it" are genuinely different things to agree
+// to (see backend/README.md's "Invites and consent" section). Now both
+// paths are unified into one flow: resolve whatever was given (`userId` or
+// `phoneNumber`) down to a phone number and, if it's a known user, that
+// user's row — then create/reuse a PENDING Invite for that phone number +
+// this `groupId`, exactly like the `phoneNumber`-to-a-stranger path always
+// has. The one thing that still differs between the two input shapes is
+// *validation*, not the consent step itself:
 //
-// `phoneNumber` is different: if it happens to match one of the caller's
-// *own* accepted friends, they're added directly, same as the `userId`
-// path (again no leak — the caller already knows their own friend's phone
-// number). Anything else a `phoneNumber` could resolve to — a user who
-// isn't yet an accepted friend, or no user at all — queues the exact same
-// kind of standing Invite with this `groupId`, and reports back with the
-// exact same response shape/status either way. Treating "real user, not
-// yet a friend" and "not a user at all" identically (instead of the former
-// 400ing with "must be an accepted friend") is deliberate: a caller could
-// otherwise send phone numbers here purely to learn which ones belong to
-// registered Home Eats users, with no actual relationship to the caller
-// required — see backend/README.md's note on this. The Invite queued
-// either way resolves into real GroupMembership only once the caller and
-// that phone number's eventual account become mutual, ACCEPTED friends
-// with the caller as the friendship's requester (see
-// `resolveInvitesForAcceptedFriendship` in routes/friends.js) — i.e. it's
-// exactly as if the caller had also sent that person a friend request, they
-// just have to actually accept it before anything is granted.
+// - `userId` must still be one of the caller's accepted friends — same
+//   restriction as group creation and as before this phase (`400`
+//   otherwise). Since the caller supplied this id themselves (e.g. from
+//   their own friends list), there's no new information for that `400` to
+//   leak.
+// - `phoneNumber` has no such restriction — it can name an accepted
+//   friend, a user who isn't yet a friend, or no user at all, and every one
+//   of those now takes the identical Invite path. Treating "real user, not
+//   yet a friend" and "not a user at all" identically (rather than 400ing
+//   the former with "must be an accepted friend") is deliberate and
+//   pre-existing: a caller could otherwise send phone numbers here purely
+//   to learn which ones belong to registered Home Eats users, with no
+//   actual relationship to the caller required — see backend/README.md's
+//   note on this. A `phoneNumber` that happens to match one of the
+//   caller's own accepted friends leaks nothing new by getting the same
+//   treatment (the caller already knows their own friend's number), so
+//   there was never a reason to special-case it — Phase 5 removes that
+//   special case entirely rather than keeping a second, only-sometimes-used
+//   consent-free branch alongside the real one.
+//
+// Every branch reports back through the identical `invitedResponse` shape
+// (`201`, `{ "status": "invited" }`) — same "no distinguishable outcomes to
+// leak" reasoning as `POST /friends/request`. The Invite queued either way
+// only ever turns into real GroupMembership once the recipient explicitly
+// agrees: via `POST /invites/:inviteId/accept` (routes/invites.js) for
+// someone who's already a user (an existing friend or not), or via
+// `resolveInvitesForAcceptedFriendship` (routes/friends.js) once someone
+// who wasn't yet a user signs up and then separately accepts the friend
+// request that invite also queued for them.
+//
+// **Resend after a decline.** The "already invited" check just below only
+// ever blocks on a PENDING row for this phone number + group — a prior
+// invite that's since gone CANCELLED or DECLINED (see the InviteStatus doc
+// comment in prisma/schema.prisma for the difference) doesn't block a fresh
+// one. That means calling this route again after
+// `POST /invites/:inviteId/decline` already works with no code changes
+// needed beyond the check that was already here — there's deliberately no
+// separate `POST /invites/:inviteId/resend` endpoint. Who may trigger a
+// resend: this route stays MANAGER-only, not "only the original sender" —
+// consistent with Phase 5's own multi-manager model just above (any current
+// MANAGER already has equal standing to invite in the first place, so
+// there's no reason one specific MANAGER would need to be the one to retry
+// it) and with the fact that `invitingUserId` on the fresh Invite row is
+// simply whichever MANAGER happens to call this a second time, same as the
+// first.
 const InviteSchema = z.union([
   z.object({ userId: z.string().uuid() }),
   z.object({ phoneNumber: phoneNumberField }),
 ]);
 
-// The one success shape for "I sent something to this phone number" (the
-// `phoneNumber`-and-not-an-accepted-friend branch below) — see the route's
-// own doc comment above for why this must be identical whether the number
-// belongs to a not-yet-friend user or no user at all.
+// The one success shape for "I sent/queued an Invite" — see the route's own
+// doc comment above for why every branch (userId or phoneNumber, friend or
+// stranger) must report back identically.
 function invitedResponse(res) {
   return res.status(201).json({ status: "invited" });
 }
@@ -239,41 +321,46 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Provide either userId or phoneNumber." });
   }
 
+  // Resolve either input shape down to the one thing an Invite is actually
+  // keyed by (invitedPhoneNumber), plus that phone number's User row if it
+  // has one yet — see the route's doc comment above for why `userId` keeps
+  // its own accepted-friend check here while `phoneNumber` doesn't.
+  let phoneNumber;
+  let existingUser;
   if ("userId" in parsed.data) {
     const targetUserId = parsed.data.userId;
     if (!(await isAcceptedFriend(req.userId, targetUserId))) {
       return res.status(400).json({ error: "You can only add your accepted friends to a group." });
     }
-    const existingMembership = await membershipFor(req.params.groupId, targetUserId);
-    if (existingMembership) {
-      return res.status(409).json({ error: "That person is already a member of this group." });
+    existingUser = await prisma.user.findUnique({ where: { id: targetUserId } });
+    if (!existingUser) {
+      // Can't actually happen — isAcceptedFriend above only returns true
+      // for a real Friendship row, which FKs to a real User — but stay
+      // defensive rather than let a null existingUser reach the phone
+      // number access below.
+      return res.status(404).json({ error: "User not found." });
     }
-    const newMembership = await prisma.groupMembership.create({
-      data: { userId: targetUserId, groupId: req.params.groupId, role: "PARTICIPANT" },
-      include: { user: true },
-    });
-    return res.status(201).json({ member: publicMember(newMembership) });
+    phoneNumber = existingUser.phoneNumber;
+  } else {
+    phoneNumber = parsed.data.phoneNumber;
+    existingUser = await prisma.user.findUnique({ where: { phoneNumber } });
   }
 
-  const phoneNumber = parsed.data.phoneNumber;
-  const existingUser = await prisma.user.findUnique({ where: { phoneNumber } });
-
-  if (existingUser && (await isAcceptedFriend(req.userId, existingUser.id))) {
+  // Already a member? Genuinely different from "already invited" below —
+  // both are things the caller has a legitimate reason to be told
+  // distinctly (see "Phone-number privacy" in backend/README.md) — and only
+  // checkable at all when the phone number resolves to a known user.
+  if (existingUser) {
     const existingMembership = await membershipFor(req.params.groupId, existingUser.id);
     if (existingMembership) {
       return res.status(409).json({ error: "That person is already a member of this group." });
     }
-    const newMembership = await prisma.groupMembership.create({
-      data: { userId: existingUser.id, groupId: req.params.groupId, role: "PARTICIPANT" },
-      include: { user: true },
-    });
-    return res.status(201).json({ member: publicMember(newMembership) });
   }
 
-  // Either not a Home Eats user yet, or one who isn't yet an accepted
-  // friend of the caller — both queue the same standing Invite (see the
-  // route's own doc comment above for why these two must not be
-  // distinguishable from the response).
+  // The one standing-Invite path every branch now shares (see the route's
+  // doc comment above). PENDING-only, on purpose — see the doc comment's
+  // "Resend after a decline" paragraph for why this is also what makes a
+  // fresh invite work again after a decline with no separate endpoint.
   const existingInvite = await prisma.invite.findFirst({
     where: { invitedPhoneNumber: phoneNumber, groupId: req.params.groupId, status: "PENDING" },
   });
@@ -286,19 +373,23 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
       data: { invitingUserId: req.userId, invitedPhoneNumber: phoneNumber, groupId: req.params.groupId },
     });
 
-    // The Invite above only ever turns into GroupMembership once there's a
-    // Friendship between the caller and that phone number's account, ACCEPTED
-    // with the caller as its requester (see
-    // `resolveInvitesForAcceptedFriendship` in routes/friends.js) — so if
-    // that phone number already belongs to a user and there's no Friendship
-    // row between them at all yet, send that ordinary friend request right
-    // now, same as routes/friends.js's own POST /request would. An existing
-    // Friendship in some other state (already PENDING either direction, or
-    // DECLINED) is deliberately left untouched — this only ever creates a
-    // *fresh* request; the queued Invite still stands either way, it just
-    // won't auto-resolve into membership unless/until that separate
-    // friend-request situation is itself resolved with the caller ending up
-    // as the accepted friendship's requester.
+    // If this phone number already belongs to a user with no Friendship row
+    // to the caller at all yet, send that ordinary friend request right
+    // now too, same as routes/friends.js's own POST /request would — this
+    // is unchanged from before Phase 5. When the two are already accepted
+    // friends (the common Phase-5-motivating case: `userId`, or a
+    // `phoneNumber` matching an existing friend), `existingFriendship` is
+    // found here and nothing further happens to it — this block's only job
+    // is to cover the "not yet any relationship at all" case, never to
+    // touch an existing one. An existing Friendship in some other state
+    // (already PENDING either direction, or DECLINED) is likewise left
+    // untouched — this only ever creates a *fresh* request; the queued
+    // Invite still stands either way, it just won't auto-resolve into
+    // membership through the friendship-acceptance path unless/until that
+    // separate friend-request situation is itself resolved with the caller
+    // ending up as the accepted friendship's requester (irrelevant for an
+    // already-accepted friend, who instead resolves this Invite directly
+    // via routes/invites.js).
     if (existingUser) {
       const existingFriendship = await tx.friendship.findFirst({
         where: {
@@ -319,11 +410,95 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
   return invitedResponse(res);
 }));
 
+// POST /groups/:groupId/members/:userId/promote — MANAGER only. Sets the
+// target membership's role to MANAGER. A target already MANAGER is a
+// harmless no-op (`200`, same response shape as an actual change) rather
+// than an error — promoting is idempotent from the caller's point of view,
+// and there's no "wrong precondition" here worth a 409 over (unlike demote
+// below, promoting can never strand anything). No accepted-friend or
+// consent check here, unlike POST /:groupId/invite above — the target is
+// already a member of this same group (checked below), so there's nothing
+// further to consent to; becoming a MANAGER of a group you're already in is
+// not a new relationship, just an existing one gaining more capability.
+router.post("/:groupId/members/:userId/promote", asyncHandler(async (req, res) => {
+  const callerMembership = await membershipFor(req.params.groupId, req.userId);
+  if (!callerMembership) {
+    return res.status(403).json({ error: "You're not a member of this group." });
+  }
+  if (callerMembership.role !== "MANAGER") {
+    return res.status(403).json({ error: "Only a group manager can promote another member." });
+  }
+  const targetMembership = await membershipFor(req.params.groupId, req.params.userId);
+  if (!targetMembership) {
+    return res.status(404).json({ error: "That user is not a member of this group." });
+  }
+  const updated = await prisma.groupMembership.update({
+    where: { id: targetMembership.id },
+    data: { role: "MANAGER" },
+    include: { user: true },
+  });
+  res.json({ member: publicMember(updated) });
+}));
+
+// POST /groups/:groupId/members/:userId/demote — MANAGER only. Sets the
+// target membership's role to PARTICIPANT, EXCEPT blocked (`409`) by
+// `wouldStrandGroup` above when the target is the sole remaining MANAGER
+// and other members would be left behind with nobody who can invite,
+// decide, or promote one of them back — the same guard
+// DELETE /:groupId/members/:userId below needs for the identical reason
+// (see that route's own doc comment). A target already PARTICIPANT is a
+// harmless no-op (`200`) for the same reason promote's no-op case is —
+// `wouldStrandGroup` itself already returns `false` immediately for a
+// non-MANAGER target, so this needs no separate no-op branch at all.
+// Demoting yourself is allowed as long as it doesn't trip the same guard —
+// nothing here treats "self" specially, same as promote above.
+router.post("/:groupId/members/:userId/demote", asyncHandler(async (req, res) => {
+  const callerMembership = await membershipFor(req.params.groupId, req.userId);
+  if (!callerMembership) {
+    return res.status(403).json({ error: "You're not a member of this group." });
+  }
+  if (callerMembership.role !== "MANAGER") {
+    return res.status(403).json({ error: "Only a group manager can demote another member." });
+  }
+  const targetMembership = await membershipFor(req.params.groupId, req.params.userId);
+  if (!targetMembership) {
+    return res.status(404).json({ error: "That user is not a member of this group." });
+  }
+  if (await wouldStrandGroup(req.params.groupId, targetMembership)) {
+    return res.status(409).json({
+      error: "That's the only manager left in a group with other members — promote someone else first.",
+    });
+  }
+  const updated = await prisma.groupMembership.update({
+    where: { id: targetMembership.id },
+    data: { role: "PARTICIPANT" },
+    include: { user: true },
+  });
+  res.json({ member: publicMember(updated) });
+}));
+
 // DELETE /groups/:groupId/members/:userId — leave (pass your own id) or
 // remove another member. Leaving is always self-service regardless of role
 // (a PARTICIPANT can always remove themselves); removing someone ELSE is
 // MANAGER only (tightened in Phase 3 — see the GroupRole doc comment in
 // prisma/schema.prisma). A caller who isn't a member themselves gets a 403.
+//
+// Phase 5: also guarded by `wouldStrandGroup` above — a self-leave or a
+// manager-removing-another-member is blocked (`409`) when the target is
+// the group's sole remaining MANAGER and other members would be left
+// behind with nobody who can invite new members, decide anything, or
+// promote one of them back. This was a known, previously-unfixable gap:
+// before Phase 5 added promote/demote, there was no way for a stuck group
+// to recover from losing its last manager (nobody left who could grant
+// anyone the MANAGER role), so blocking the removal outright was the only
+// real option anyway and would have just relocated the problem — "you
+// can't leave/remove them, and you also can't fix it" is not much better
+// than "you can leave/remove them, and now nobody can fix it". Now that
+// `POST .../promote` exists, the fix is real (promote someone else first),
+// so this guard is worth adding. Removing/leaving as a PARTICIPANT, or as a
+// MANAGER when at least one other MANAGER remains, or as the group's last
+// member overall (nobody would be left to strand — see `wouldStrandGroup`'s
+// own doc comment), are all still unaffected.
 router.delete("/:groupId/members/:userId", asyncHandler(async (req, res) => {
   const callerMembership = await membershipFor(req.params.groupId, req.userId);
   if (!callerMembership) {
@@ -336,6 +511,11 @@ router.delete("/:groupId/members/:userId", asyncHandler(async (req, res) => {
   const targetMembership = isSelf ? callerMembership : await membershipFor(req.params.groupId, req.params.userId);
   if (!targetMembership) {
     return res.status(404).json({ error: "That user is not a member of this group." });
+  }
+  if (await wouldStrandGroup(req.params.groupId, targetMembership)) {
+    return res.status(409).json({
+      error: "That's the only manager left in a group with other members — promote someone else first.",
+    });
   }
   await prisma.groupMembership.delete({ where: { id: targetMembership.id } });
   res.status(204).end();

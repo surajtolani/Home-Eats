@@ -23,6 +23,8 @@ const authRouter = require("./routes/auth");
 const meRouter = require("./routes/me");
 const friendsRouter = require("./routes/friends");
 const groupsRouter = require("./routes/groups");
+const invitesRouter = require("./routes/invites");
+const notificationsRouter = require("./routes/notifications");
 const recipeLibraryRouter = require("./routes/recipeLibrary");
 const groupMealPlanRouter = require("./routes/groupMealPlan");
 const groupGroceryRouter = require("./routes/groupGrocery");
@@ -109,6 +111,12 @@ app.use("/auth", authRouter);
 app.use("/me", requireAuth, meRouter);
 app.use("/friends", requireAuth, friendsRouter);
 app.use("/groups", requireAuth, groupsRouter);
+// Phase 5: responding to a pending group Invite directly (routes/invites.js
+// — see its own header comment for why this needs to exist alongside
+// POST /groups/:groupId/invite), and a combined "what's pending for me"
+// feed built on top of both this and /friends (routes/notifications.js).
+app.use("/invites", requireAuth, invitesRouter);
+app.use("/notifications", requireAuth, notificationsRouter);
 
 // --- Group meal planning / grocery list (Phase 3) ----------------------
 // A group's single shared meal plan and shared grocery list — see

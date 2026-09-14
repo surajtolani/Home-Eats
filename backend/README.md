@@ -9,7 +9,10 @@ backend for accounts, friends, and groups: phone number + SMS sign-in, a
 friends list, and Splitwise-style groups, backed by Postgres — and, new as
 of Phase 2a, recipe sharing on top of that same layer. Phase 3 adds a
 MANAGER/PARTICIPANT role to group membership, plus a group's single shared
-meal plan and shared grocery list built on top of it. See "Accounts,
+meal plan and shared grocery list built on top of it. Phase 5 makes every
+group addition require the recipient's actual consent (no more instantly
+adding an accepted friend), adds promote/demote so a group can have several
+MANAGERs, and adds a combined `GET /notifications` feed. See "Accounts,
 friends, and groups", "Recipe sharing", "Group meal planning", and "Group
 grocery list" below.
 
@@ -219,52 +222,152 @@ full data model and the reasoning behind each table. As of Phase 3
 screens for it — see `HomeEats/Services/AccountsAPIClient.swift` for the
 full client.
 
-**Invites and consent.** An `Invite` (someone added by phone number who
-either isn't a Home Eats user yet, or is one but not yet an accepted friend
-of the inviter) never grants anything by itself. It resolves into an
-ordinary incoming friend request — the same `PENDING` `Friendship` row, and
-the same `GET /friends`'s `incomingRequests` entry, as a friend request sent
-directly — that the invited person has to explicitly accept via
-`POST /friends/:friendshipId/accept` like any other. An invite that also
-named a `groupId` (from `POST /groups/:groupId/invite`) only grants that
-`GroupMembership` at the moment that specific friend request is accepted,
-never before — see the `Invite` model's doc comment in
-`prisma/schema.prisma` and `resolveInvitesForAcceptedFriendship` in
-`routes/friends.js` for exactly how that resolution works, including its one
-known limitation (it only fires when the original inviter also ends up as
-that friendship's requester — see that function's own doc comment).
-Declining the friend request cancels any tied invite(s) instead
-(`cancelInvitesForDeclinedFriendship`) rather than leaving them `PENDING`
-forever.
+**Invites and consent.** An `Invite` (someone added by phone number, or by
+`userId`, to a group or as a friend) never grants anything by itself — it's
+a standing, revisitable request the invited person has to actually agree
+to. Two different things can happen to it depending on whether it named a
+`groupId`:
 
-**Group roles (Phase 3).** Every `GroupMembership` now carries a `role`:
-`MANAGER` or `PARTICIPANT` — a two-tier permission model, not the
-free-for-all every-member-is-equal v1 group membership had before this
-phase. A group's creator starts `MANAGER`; anyone added afterwards — via
-`memberUserIds` on `POST /groups`, or via `POST /groups/:groupId/invite`
-(direct or by-phone) — starts `PARTICIPANT`. Existing groups from before
-this phase were backfilled the same way: the membership row matching
-`group.createdByUserId` became `MANAGER`, every other membership became
-`PARTICIPANT` — and since `createdByUserId` is nullable (see the note on it
-further down), a group whose creator's account was already deleted by the
-time of the backfill has no way to know who to promote, so every one of its
-memberships was simply left `PARTICIPANT`. See the `GroupRole`/
-`GroupMembership` doc comments in `prisma/schema.prisma` for the full
-reasoning, and its migration
+- **No `groupId` (a plain "become my friend" invite)** resolves into an
+  ordinary incoming friend request — the same `PENDING` `Friendship` row,
+  and the same `GET /friends`'s `incomingRequests` entry, as a friend
+  request sent directly — once the invited phone number signs up (if it
+  wasn't already a user) via `POST /auth/verify-code`. From there it's
+  accepted/declined exactly like any other friend request, via
+  `POST /friends/:friendshipId/accept`/`decline`. **This path is completely
+  unchanged by Phase 5** — see `resolveInvitesForAcceptedFriendship`/
+  `cancelInvitesForDeclinedFriendship` in `routes/friends.js`.
+- **`groupId` set (from `POST /groups/:groupId/invite`)** is where Phase 5
+  changes things — see below.
+
+**Phase 5: every group addition requires the recipient's consent, with no
+exceptions — including someone who is already an accepted friend of the
+inviter.** Before this phase, `POST /groups/:groupId/invite`'s `userId`
+path (always an accepted friend) and its `phoneNumber` path when that
+number matched an accepted friend both created the `GroupMembership`
+instantly, with zero chance to decline — a real gap, since "we're friends"
+and "I consent to being in this specific group with whoever else is in it"
+are genuinely different things to agree to. **No path in this route creates
+a `GroupMembership` directly anymore.** Every addition — `userId` or
+`phoneNumber`, friend or stranger — now creates/reuses a PENDING `Invite`
+for that phone number + this `groupId`, unifying what used to be two
+separate near-duplicate flows into one (see the route's own doc comment in
+`routes/groups.js` for the full before/after reasoning). `userId` still
+requires an accepted friend (`400` otherwise, same as before and as group
+creation); `phoneNumber` still has no such restriction, for the same
+anti-enumeration reason described under "Phone-number privacy" below.
+
+That Invite resolves into real `GroupMembership` one of two ways, matching
+the two bullets above: through `resolveInvitesForAcceptedFriendship` if the
+invited phone number wasn't a user yet and later accepts the friend request
+that invite also queued for them, or — the case that motivated Phase 5,
+since there's no *new* friendship event to hook into for someone who's
+already an accepted friend — directly, via the new endpoints in
+`routes/invites.js`:
+
+- `GET /invites` — the caller's own pending group Invites (matched by
+  their own phone number; see the endpoint table below).
+- `POST /invites/:inviteId/accept` — recipient only; creates the
+  `GroupMembership` (as `PARTICIPANT`) and marks the Invite `RESOLVED`.
+- `POST /invites/:inviteId/decline` — recipient only; marks the Invite
+  `DECLINED` (a new, distinct `InviteStatus` value — see below) and grants
+  nothing.
+
+**`DECLINED` vs. `CANCELLED`.** `InviteStatus` gained a `DECLINED` value in
+Phase 5, kept deliberately distinct from the pre-existing `CANCELLED`:
+`CANCELLED` means this Invite's story ended because something *else*
+happened (its tied friend request was declined — nobody actually answered
+*this* Invite), while `DECLINED` means the recipient looked at this
+specific group Invite and said no, via the endpoint above. See the
+`InviteStatus` doc comment in `prisma/schema.prisma` for the full
+reasoning.
+
+**Resend after a decline — no new endpoint needed.** The "already invited"
+`409` check in `POST /groups/:groupId/invite` only ever blocks on a
+`PENDING` row for that phone number + group; a `DECLINED` (or `CANCELLED`)
+one doesn't block a fresh invite. So calling that same route again after a
+decline already works, with no separate `POST /invites/:inviteId/resend`
+endpoint required — confirmed by testing it directly (see "What was
+verified" further down). Who may trigger it: any current `MANAGER` of the
+group, not specifically the original sender — the route was already
+`MANAGER`-only, not sender-restricted, and Phase 5's multi-manager model
+(below) means every current `MANAGER` already has equal standing to invite
+in the first place.
+
+**Group roles (Phase 3, extended Phase 5).** Every `GroupMembership` now
+carries a `role`: `MANAGER` or `PARTICIPANT` — a two-tier permission model,
+not the free-for-all every-member-is-equal v1 group membership had before
+Phase 3. A group's creator starts `MANAGER`; anyone added afterwards — via
+`memberUserIds` on `POST /groups`, or once their `POST /groups/:groupId/invite`-
+queued `Invite` is accepted (see above) — starts `PARTICIPANT`. Existing
+groups from before Phase 3 were backfilled the same way: the membership row
+matching `group.createdByUserId` became `MANAGER`, every other membership
+became `PARTICIPANT` — and since `createdByUserId` is nullable (see the
+note on it further down), a group whose creator's account was already
+deleted by the time of the backfill has no way to know who to promote, so
+every one of its memberships was simply left `PARTICIPANT`. See the
+`GroupRole`/`GroupMembership` doc comments in `prisma/schema.prisma` for the
+full reasoning, and its migration
 (`prisma/migrations/20260913020000_group_roles_meal_plan_grocery`) for the
 exact backfill.
 
 Roles tighten group-*management* itself: `POST /groups/:groupId/invite` is
-now `MANAGER`-only (a `PARTICIPANT` gets `403`), and
-`DELETE /groups/:groupId/members/:userId` removing someone else is now
+`MANAGER`-only (a `PARTICIPANT` gets `403`), and
+`DELETE /groups/:groupId/members/:userId` removing someone else is
 `MANAGER`-only too — but removing *yourself* (leaving) still works
-regardless of role, at any time, for anyone. `GET /groups/:groupId`'s
-member list includes each member's `role` so a client can show/gate on it
-without a second request. There's deliberately no promote/demote-role
-endpoint yet — a reasonable follow-up once real usage shows it's needed,
-out of scope for this phase. Roles also gate the group meal-plan and
-grocery-list routes below, with their own (different, more field-grained in
-grocery's case) rules — see "Group meal planning" and "Group grocery list".
+regardless of role, at any time, for anyone (subject to the last-manager
+guard below). `GET /groups/:groupId`'s member list includes each member's
+`role` so a client can show/gate on it without a second request.
+
+**Multiple managers, with promote/demote (Phase 5).** A group having
+several `MANAGER`s at once was already fully supported before Phase 5 —
+nothing in the schema or the existing authorization checks ever assumed
+exactly one; what was missing was any way to actually change someone's role
+after the fact. Phase 5 adds that:
+
+- `POST /groups/:groupId/members/:userId/promote` — `MANAGER`-only (`403`
+  for a `PARTICIPANT` or a non-member). Sets the target's role to
+  `MANAGER`. A target already `MANAGER` is a harmless no-op (`200`), not an
+  error. Once someone is promoted, they have exactly the same standing as
+  any other `MANAGER` — including being able to promote or demote others,
+  or invite new members — nothing tracks who promoted whom or treats one
+  `MANAGER` as senior to another.
+- `POST /groups/:groupId/members/:userId/demote` — `MANAGER`-only. Sets the
+  target's role to `PARTICIPANT`, **except blocked (`409`) when it would
+  leave the group with zero `MANAGER`s while other members remain** — see
+  the last-manager guard below. A target already `PARTICIPANT` is a
+  harmless no-op (`200`). Demoting yourself is allowed as long as it
+  doesn't trip that same guard.
+
+Both return `{ member: publicMember(updatedMembership) }` — the identical
+shape `GET /groups/:groupId`'s member list and `POST /groups/:groupId/invite`'s
+old (pre-Phase-5) direct-add response used, for consistency.
+
+**The last-manager guard, and the pre-existing gap it closes.** Demoting or
+removing/leaving is blocked (`409`, with a message suggesting "promote
+someone else first") whenever the target is the group's **sole remaining
+MANAGER and other members would be left behind** — i.e. a group can never
+be left with participants stuck in it and nobody who can invite new
+members, decide anything, or promote one of them back. It is **not**
+blocked when the target is a `PARTICIPANT` (removing/demoting a participant
+never changes the manager count), when at least one other `MANAGER` would
+remain, or when the target is the group's *only* member overall (leaving/
+demoting then can't strand anyone else — the group either becomes
+memberless or has one ungoverned participant, neither of which is the
+"stuck, unfixable" scenario this guards against). This same guard now
+applies to both `POST .../demote` and `DELETE /groups/:groupId/members/:userId`
+(leave/remove) — the latter was a known, previously-flagged gap: before
+Phase 5 added promote/demote, there was no way for a stuck group to recover
+from losing its last manager at all, so blocking the removal would have
+just relocated the same problem ("can't leave/remove them, and also can't
+fix it" isn't much better than "can leave/remove them, and now nobody can
+fix it"). Now that promoting someone else first is a real fix, guarding the
+removal is worth doing. See `wouldStrandGroup` in `routes/groups.js` for the
+shared implementation both routes call.
+
+Roles also gate the group meal-plan and grocery-list routes below, with
+their own (different, more field-grained in grocery's case) rules — see
+"Group meal planning" and "Group grocery list".
 
 **Phone-number privacy.** `POST /friends/request` and
 `POST /groups/:groupId/invite` both report success back the same way
@@ -295,8 +398,14 @@ response has the shape `{ "error": "..." }`.
 | POST | `/groups` | required | `{ name, memberUserIds?: string[] }` | Creates a group with the caller as a member (their own membership starts `MANAGER`), plus any `memberUserIds` (each starts `PARTICIPANT`) — each must already be an accepted friend of the caller (`400` otherwise, so you can't add a stranger's id). `memberUserIds` is capped at 100 entries (`400` if exceeded). Returns `{ group }` including the member list with roles. |
 | GET | `/groups` | required | — | `{ groups: [...] }` — every group the caller belongs to (a lightweight list; use the next route for members/roles). |
 | GET | `/groups/:groupId` | required | — | `{ group }` with the full member list (each entry includes `role`), phone numbers included (safe here — everyone returned is a fellow member of this same group). `403` if the caller isn't a member. |
-| POST | `/groups/:groupId/invite` | **MANAGER only** | `{ userId }` **or** `{ phoneNumber }` | A member who isn't a `MANAGER` gets `403` (see "Group roles" above); a non-member also gets `403`. `userId`, or a `phoneNumber` that matches one of the caller's own accepted friends, is added as a member directly, starting `PARTICIPANT` (`201`, `{ member }`). Any other `phoneNumber` — a Home Eats user who isn't yet an accepted friend of the caller, or not a user at all — queues an `Invite` with this `groupId` (and, if that phone number is already a user with no prior relationship to the caller, also sends them an ordinary friend request) and reports back identically either way (`201`, `{ "status": "invited" }`) — see "Phone-number privacy" above. `409` if already a member / already invited. |
-| DELETE | `/groups/:groupId/members/:userId` | required (self always allowed; **MANAGER** for anyone else) | — | Leave (pass your own id) — always allowed for any member, regardless of role. Removing someone ELSE's membership is `MANAGER`-only (`403` for a `PARTICIPANT` trying to remove another member). `403` if the caller isn't a member at all, `404` if the target isn't a member. |
+| POST | `/groups/:groupId/invite` | **MANAGER only** | `{ userId }` **or** `{ phoneNumber }` | A member who isn't a `MANAGER` gets `403` (see "Group roles" above); a non-member also gets `403`. **Phase 5: never creates a `GroupMembership` directly** — `userId` (must be one of the caller's accepted friends, `400` otherwise) or `phoneNumber` (any number at all, friend or stranger — see "Phone-number privacy" below) always queues/reuses a PENDING `Invite` with this `groupId` instead, reporting back identically either way (`201`, `{ "status": "invited" }`). If the phone number is already a user with no prior relationship to the caller, also sends them an ordinary friend request. `409` if already a member, or if that phone number already has a `PENDING` invite to this group (calling this again after a `DECLINED`/`CANCELLED` one succeeds — see "Resend after a decline" above). See "Invites and consent" above for the full flow and how the queued `Invite` is actually accepted/declined. |
+| GET | `/invites` | required | — | `{ invites: [{ id, group: { id, name }, invitedBy: { id, displayName, phoneNumber }, createdAt }] }` — the caller's own pending **group** Invites (matched by their own phone number), newest first. A bare "become my friend" Invite (no `groupId`) never appears here — see "Invites and consent" above. |
+| POST | `/invites/:inviteId/accept` | required (recipient only) | — | `403` if the caller's phone number doesn't match the Invite's `invitedPhoneNumber`; `400` if the Invite has no `groupId` (use `POST /friends/:friendshipId/accept` instead); `409` if not `PENDING`; `404` if it doesn't exist. Creates the `GroupMembership` (`PARTICIPANT`) and marks the Invite `RESOLVED`, in one transaction. Returns `{ invite }`. |
+| POST | `/invites/:inviteId/decline` | required (recipient only) | — | Same checks as accept. Marks the Invite `DECLINED` (distinct from `CANCELLED` — see "Invites and consent" above) and grants nothing. Returns `{ invite }`. |
+| POST | `/groups/:groupId/members/:userId/promote` | **MANAGER only** | — | `403` for a `PARTICIPANT` or non-member; `404` if the target isn't a member. Sets the target's role to `MANAGER`; a no-op (`200`) if already `MANAGER`. Returns `{ member }` (same shape as `GET /groups/:groupId`'s member list). |
+| POST | `/groups/:groupId/members/:userId/demote` | **MANAGER only** | — | Same auth/404 as promote. Sets the target's role to `PARTICIPANT`; a no-op (`200`) if already `PARTICIPANT`. `409` if the target is the group's sole remaining `MANAGER` and other members would be left behind — see "The last-manager guard" above. Returns `{ member }`. |
+| DELETE | `/groups/:groupId/members/:userId` | required (self always allowed; **MANAGER** for anyone else) | — | Leave (pass your own id) — always allowed for any member, regardless of role. Removing someone ELSE's membership is `MANAGER`-only (`403` for a `PARTICIPANT` trying to remove another member). `403` if the caller isn't a member at all, `404` if the target isn't a member. **Phase 5**: `409` if the target is the group's sole remaining `MANAGER` and other members would be left behind — same guard as demote, see "The last-manager guard" above. |
+| GET | `/notifications` | required | — | `{ count, friendRequests: [...], groupInvites: [...] }` — a combined "things waiting on my response" feed. `friendRequests` is byte-for-byte the same shape as `GET /friends`'s `incomingRequests`; `groupInvites` is byte-for-byte the same shape as `GET /invites`'s `invites`. `count` is just the sum of both lists' lengths. See "Notifications" below. |
 | POST | `/recipe-library` | required | `{ title, summary?, ingredients: [{ name, quantity?, unit? }], instructions: string[], servings?, prepMinutes?, cookMinutes?, photoBase64? }` | Creates a recipe owned by the caller, starting `PRIVATE`. `ingredients`/`instructions` are each capped at 200 entries (`400` if exceeded). `photoBase64` is the recipe's photo, base64-encoded, decoded-size-capped at 5MB (`400` if exceeded, or if it's not valid base64) — see "Recipe sharing" below. Returns `{ recipe }` including its ingredients. |
 | GET | `/recipe-library/mine` | required | — | `{ recipes: [...] }` — every recipe the caller owns, any visibility. |
 | GET | `/recipe-library/shared-with-me` | required | — | `{ recipes: [...] }` — every recipe shared directly with the caller, or via any group they belong to. One entry per share (a recipe shared with you two ways appears twice); each entry carries a `share: { sharedAt, sharedBy, sharedWithGroup }` so the UI can show who shared it / via which group. |
@@ -608,6 +717,54 @@ iOS canonicalizer's pluralization-aware `canonicalKey` — good enough to
 stop the same typed name (modulo case/whitespace) from creating two rows,
 without porting that algorithm server-side.
 
+## 9. Notifications
+
+Phase 5, Part 3: `GET /notifications` is a single "what's waiting on my
+response" feed for a notification-bell badge/screen, built entirely on the
+two sources that already exist elsewhere rather than a new table or a third
+notion of "notification":
+
+```json
+{
+  "count": 2,
+  "friendRequests": [
+    { "friendshipId": "...", "from": { "id": "...", "displayName": "...", "phoneNumber": "+1..." } }
+  ],
+  "groupInvites": [
+    {
+      "id": "...",
+      "group": { "id": "...", "name": "..." },
+      "invitedBy": { "id": "...", "displayName": "...", "phoneNumber": "+1..." },
+      "createdAt": "2026-09-13T23:54:11.485Z"
+    }
+  ]
+}
+```
+
+- **`friendRequests`** is exactly `GET /friends`'s `incomingRequests` —
+  same query (`loadFriendshipsFor` in `routes/friends.js`, exported for
+  reuse rather than duplicated), same shape, same `{ friendshipId, from }`
+  entries. Respond to one via the existing
+  `POST /friends/:friendshipId/accept`/`decline` — this endpoint is
+  read-only and doesn't add a new way to answer these.
+- **`groupInvites`** is exactly `GET /invites`'s `invites` — same query
+  (`listPendingGroupInvitesFor` in `routes/invites.js`, likewise exported
+  for reuse), same shape, same `{ id, group, invitedBy, createdAt }`
+  entries. Respond to one via `POST /invites/:inviteId/accept`/`decline`.
+  Deliberately excludes a bare "become my friend" `Invite` (`groupId`
+  null) — see "Invites and consent" above for why: that already surfaces
+  as an ordinary `friendRequests` entry once it resolves into a
+  `Friendship`, so including the underlying `Invite` row too would show
+  the same pending thing twice under two different labels.
+- **`count`** is just `friendRequests.length + groupInvites.length` — a
+  client rendering a badge doesn't need to distinguish the two kinds of
+  pending thing, only that something is pending.
+
+A client that already knows how to render `GET /friends`'s
+`incomingRequests` or `GET /invites`'s `invites` needs no new parsing logic
+to also render this combined feed — it's the same two shapes, just fetched
+together and counted.
+
 ## Notes
 
 - New routes here (`/recipe-library`) are mounted separately from the
@@ -666,6 +823,5 @@ without porting that algorithm server-side.
   unaffected.
 - There's no delete-account or remove-phone-number route yet. There IS a
   group role system as of Phase 3 (`GroupRole`: `MANAGER`/`PARTICIPANT` —
-  see "Group roles" above), but deliberately no promote/demote-role
-  endpoint — a reasonable thing to add once real usage shows it's needed,
-  out of scope for this phase.
+  see "Group roles" above), including promote/demote and multiple managers
+  per group as of Phase 5.

@@ -293,13 +293,19 @@ router.post("/:friendshipId/decline", asyncHandler(async (req, res) => {
   res.json({ friendship: updated });
 }));
 
-// GET /friends — accepted friends, plus separate pending incoming/outgoing
-// request lists (mirrors Splitwise's contacts screen: "people you're
-// friends with" is distinct from "requests waiting on you" and "requests
-// you're waiting on").
-router.get("/", asyncHandler(async (req, res) => {
+// Shared by GET /friends below and GET /notifications
+// (routes/notifications.js, Phase 5) — one query over every Friendship row
+// touching this user, bucketed into the three lists GET /friends has always
+// returned. GET /notifications only actually needs `incomingRequests` (the
+// "friend requests waiting on me" half of its combined feed — see that
+// route's own doc comment for the other half, group Invites), but it reuses
+// this whole function rather than a separately-maintained
+// incoming-requests-only query: there is exactly one query in this codebase
+// for "every Friendship row involving me", and both callers read whichever
+// parts of its result they need from it.
+async function loadFriendshipsFor(userId) {
   const rows = await prisma.friendship.findMany({
-    where: { OR: [{ requesterId: req.userId }, { recipientId: req.userId }] },
+    where: { OR: [{ requesterId: userId }, { recipientId: userId }] },
     include: { requester: true, recipient: true },
   });
 
@@ -308,12 +314,12 @@ router.get("/", asyncHandler(async (req, res) => {
   const outgoingRequests = [];
 
   for (const row of rows) {
-    const other = row.requesterId === req.userId ? row.recipient : row.requester;
+    const other = row.requesterId === userId ? row.recipient : row.requester;
     if (row.status === "ACCEPTED") {
       friends.push(publicUser(other));
-    } else if (row.status === "PENDING" && row.recipientId === req.userId) {
+    } else if (row.status === "PENDING" && row.recipientId === userId) {
       incomingRequests.push({ friendshipId: row.id, from: publicUser(other) });
-    } else if (row.status === "PENDING" && row.requesterId === req.userId) {
+    } else if (row.status === "PENDING" && row.requesterId === userId) {
       outgoingRequests.push({ friendshipId: row.id, to: publicUser(other) });
     }
     // DECLINED rows are omitted entirely — they're not surfaced back to
@@ -321,7 +327,21 @@ router.get("/", asyncHandler(async (req, res) => {
     // lets the original requester try again, per the branch above).
   }
 
-  res.json({ friends, incomingRequests, outgoingRequests });
+  return { friends, incomingRequests, outgoingRequests };
+}
+
+// GET /friends — accepted friends, plus separate pending incoming/outgoing
+// request lists (mirrors Splitwise's contacts screen: "people you're
+// friends with" is distinct from "requests waiting on you" and "requests
+// you're waiting on").
+router.get("/", asyncHandler(async (req, res) => {
+  res.json(await loadFriendshipsFor(req.userId));
 }));
 
 module.exports = router;
+// Attached directly to the already-exported router object (rather than
+// switching this file's export to `{ router, loadFriendshipsFor }`, which
+// would ripple into every existing `require("./routes/friends")` call site,
+// starting with index.js's `app.use("/friends", requireAuth, friendsRouter)`)
+// — see routes/notifications.js for the one other place this is called.
+module.exports.loadFriendshipsFor = loadFriendshipsFor;
