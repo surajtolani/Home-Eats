@@ -59,15 +59,11 @@ struct GroupRecipePreviewView: View {
     private func content(for recipe: RemoteRecipe) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if let photoData = recipe.photoData, let uiImage = UIImage(data: photoData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(height: 200)
-                        .frame(maxWidth: .infinity)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
+                photo(for: recipe)
+                    .frame(height: 200)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
 
                 Text(recipe.title).font(.brandTitle2.bold())
 
@@ -111,6 +107,12 @@ struct GroupRecipePreviewView: View {
                         Text("No steps added yet.").foregroundStyle(.secondary)
                     }
                 }
+
+                if let sourceURL = recipe.sourceURL, let url = URL(string: sourceURL) {
+                    Link(destination: url) {
+                        Label("View Original Recipe", systemImage: "arrow.up.right.square")
+                    }
+                }
             }
             .padding()
         }
@@ -123,6 +125,47 @@ struct GroupRecipePreviewView: View {
                     Button("Save to My Recipes") { save(recipe) }
                 }
             }
+        }
+    }
+
+    /// Same priority order as the local `RecipeThumbnail` — a user-picked
+    /// photo, then a remote image URL (an imported recipe's page-supplied
+    /// photo), then a bundled asset (a `.library` recipe's own art), then a
+    /// plain placeholder — duplicated rather than reused directly since
+    /// `RecipeThumbnail` takes a local `Recipe`, not a `RemoteRecipe`, and
+    /// building a throwaway local model just to satisfy that type isn't
+    /// worth it for one small, easily-mirrored branch. Direct fix for a
+    /// real user report ("I thought we fixed the recipes so that the
+    /// pictures correctly show up") — before `RemoteRecipe.imageName`
+    /// existed at all, this view had nothing to fall back to but
+    /// `photoData`, so any recipe whose photo lived in `imageName` (every
+    /// imported or bundled-library recipe, as opposed to one with a
+    /// directly user-captured photo) showed nothing here.
+    @ViewBuilder
+    private func photo(for recipe: RemoteRecipe) -> some View {
+        if let photoData = recipe.photoData, let uiImage = UIImage(data: photoData) {
+            Image(uiImage: uiImage).resizable().scaledToFill()
+        } else if let imageName = recipe.imageName, imageName.lowercased().hasPrefix("http"), let url = URL(string: imageName) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    recipePlaceholder
+                }
+            }
+        } else if let imageName = recipe.imageName, UIImage(named: imageName) != nil {
+            Image(imageName).resizable().scaledToFill()
+        } else {
+            recipePlaceholder
+        }
+    }
+
+    private var recipePlaceholder: some View {
+        ZStack {
+            Color.brandSage.opacity(0.15)
+            Image(systemName: "fork.knife")
+                .foregroundStyle(Color.brandSage)
+                .font(.brandTitle)
         }
     }
 

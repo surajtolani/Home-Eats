@@ -71,6 +71,13 @@ function serializeRecipe(recipe) {
     // user-picked photo at all, or a `.library` recipe's bundled asset,
     // which never had bytes to send in the first place).
     photoBase64: recipe.photoBase64,
+    // The recipe's origin page link, and a photo reference that's either a
+    // bundled built-in asset name or a remote image URL — see the
+    // `sourceUrl`/`imageName` columns' own doc comment in
+    // prisma/schema.prisma for why both exist and what dropping them used
+    // to silently lose.
+    sourceUrl: recipe.sourceUrl,
+    imageName: recipe.imageName,
     createdAt: recipe.createdAt,
     updatedAt: recipe.updatedAt,
     ingredients: (recipe.ingredients || []).map((ingredient) => ({
@@ -166,6 +173,11 @@ const instructionsField = z
 const servingsField = z.number().int().positive().nullable();
 const prepMinutesField = z.number().int().nonnegative().nullable();
 const cookMinutesField = z.number().int().nonnegative().nullable();
+// Generous ceiling for either a page URL or a long image URL — same
+// "bound the request body, not the realistic use case" reasoning as every
+// other max() here.
+const sourceUrlField = z.string().trim().max(2000).nullable();
+const imageNameField = z.string().trim().max(2000).nullable();
 
 const CreateRecipeSchema = z.object({
   title: titleField,
@@ -179,6 +191,8 @@ const CreateRecipeSchema = z.object({
   // recipes (especially anything created before this field existed) have no
   // photo at all. See `photoBase64Field`'s own doc comment for the size cap.
   photoBase64: photoBase64Field.optional(),
+  sourceUrl: sourceUrlField.optional(),
+  imageName: imageNameField.optional(),
 });
 
 // PATCH accepts the same fields but every one is optional with NO default:
@@ -199,6 +213,8 @@ const UpdateRecipeSchema = z.object({
   // "omitted vs. explicit null" distinction `summary`/`servings`/etc. above
   // already rely on (see the PATCH handler's `data.X !== undefined` checks).
   photoBase64: photoBase64Field.optional(),
+  sourceUrl: sourceUrlField.optional(),
+  imageName: imageNameField.optional(),
 });
 
 // POST /recipe-library
@@ -211,7 +227,10 @@ router.post("/", asyncHandler(async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
   }
-  const { title, summary, ingredients, instructions, servings, prepMinutes, cookMinutes, photoBase64 } = parsed.data;
+  const {
+    title, summary, ingredients, instructions, servings, prepMinutes, cookMinutes, photoBase64,
+    sourceUrl, imageName,
+  } = parsed.data;
 
   const recipe = await prisma.recipe.create({
     data: {
@@ -223,6 +242,8 @@ router.post("/", asyncHandler(async (req, res) => {
       prepMinutes: prepMinutes ?? null,
       cookMinutes: cookMinutes ?? null,
       photoBase64: photoBase64 ?? null,
+      sourceUrl: sourceUrl ?? null,
+      imageName: imageName ?? null,
       ingredients: {
         create: ingredients.map((ingredient, index) => ({
           name: ingredient.name,
@@ -361,6 +382,8 @@ router.patch("/:recipeId", asyncHandler(async (req, res) => {
   if (data.prepMinutes !== undefined) scalarUpdates.prepMinutes = data.prepMinutes;
   if (data.cookMinutes !== undefined) scalarUpdates.cookMinutes = data.cookMinutes;
   if (data.photoBase64 !== undefined) scalarUpdates.photoBase64 = data.photoBase64;
+  if (data.sourceUrl !== undefined) scalarUpdates.sourceUrl = data.sourceUrl;
+  if (data.imageName !== undefined) scalarUpdates.imageName = data.imageName;
 
   // Ingredients are replaced wholesale — delete every existing
   // RecipeIngredient row for this recipe and recreate from the incoming

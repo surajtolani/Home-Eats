@@ -322,9 +322,15 @@ struct RecipesHomeView: View {
     /// present. `nil` when the shared recipe had no photo at all, same as
     /// every other recipe source.
     private func saveSharedRecipe(_ entry: SharedRecipeEntry) {
+        // `sourceURL`/`imageName` here fix a real gap: same bug class
+        // `photoData`/`entry.photoBase64` had before that field existed —
+        // an imported recipe's source-page link and photo never made it
+        // across the wire at all until `SharedRecipeEntry.sourceURL`/
+        // `.imageName` did.
         let recipe = Recipe(
             title: entry.title,
             source: .shared,
+            sourceURL: entry.sourceURL,
             summary: entry.summary,
             instructions: entry.instructions,
             ingredients: entry.ingredients.map {
@@ -334,6 +340,7 @@ struct RecipesHomeView: View {
             prepMinutes: entry.prepMinutes ?? 0,
             cookMinutes: entry.cookMinutes ?? 0,
             tags: ["Shared"],
+            imageName: entry.imageName,
             photoData: entry.photoData,
             backendRecipeID: entry.recipeID
         )

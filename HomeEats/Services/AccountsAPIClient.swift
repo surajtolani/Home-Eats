@@ -1055,6 +1055,13 @@ struct RecipeLibraryPayload {
     /// on that distinction). Built by `init(recipe:)` below, never set
     /// directly, so it's always already downsized — see that init for why.
     var photoBase64: String?
+    /// The recipe's origin page link, and a photo reference that's either a
+    /// bundled built-in asset name or a remote image URL — see
+    /// `RemoteRecipe.sourceURL`/`.imageName`'s own doc comment for the real
+    /// bug this fixes (both used to be silently dropped the moment a
+    /// recipe round-tripped through the backend at all).
+    var sourceURL: String?
+    var imageName: String?
 
     /// Builds the create/update body straight from a local, on-device
     /// `Recipe` — this is what `RecipeSharePickerSheet` calls the moment a
@@ -1093,6 +1100,8 @@ struct RecipeLibraryPayload {
         } else {
             photoBase64 = nil
         }
+        sourceURL = recipe.sourceURL
+        imageName = recipe.imageName
     }
 
     /// `[String: Any]` for `JSONSerialization`, matching how
@@ -1118,6 +1127,8 @@ struct RecipeLibraryPayload {
         object["prepMinutes"] = prepMinutes
         object["cookMinutes"] = cookMinutes
         object["photoBase64"] = photoBase64
+        object["sourceUrl"] = sourceURL
+        object["imageName"] = imageName
         return object
     }
 }
@@ -1181,6 +1192,14 @@ struct RecipeLibraryUpdatePayload {
     /// it's included for the same "complete against the documented API"
     /// reasoning `getMyRecipes()`'s own doc comment gives.
     var photoBase64: FieldUpdate<String> = .unchanged
+    /// Same `FieldUpdate` treatment as `photoBase64` above, for the same
+    /// reason — see `RemoteRecipe.sourceURL`/`.imageName`'s doc comment for
+    /// what dropping these silently lost. `PersonalLibrarySyncService`
+    /// always sends `.set(...)` for both, not `.unchanged` — see that
+    /// type's own doc comment on why it always pushes a recipe's full
+    /// current state rather than tracking what actually changed.
+    var sourceURL: FieldUpdate<String> = .unchanged
+    var imageName: FieldUpdate<String> = .unchanged
 
     func asJSONObject() -> [String: Any] {
         var object: [String: Any] = [:]
@@ -1191,6 +1210,8 @@ struct RecipeLibraryUpdatePayload {
         object.setFieldUpdate(servings, forKey: "servings")
         object.setFieldUpdate(prepMinutes, forKey: "prepMinutes")
         object.setFieldUpdate(cookMinutes, forKey: "cookMinutes")
+        object.setFieldUpdate(sourceURL, forKey: "sourceUrl")
+        object.setFieldUpdate(imageName, forKey: "imageName")
         object.setFieldUpdate(photoBase64, forKey: "photoBase64")
         return object
     }

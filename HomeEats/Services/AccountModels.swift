@@ -398,6 +398,20 @@ struct RemoteRecipe: Codable, Identifiable {
     /// to turn `Data` into an `Image` for a local `Recipe.photoData`; this
     /// gives the same bytes for a remote one.
     let photoBase64: String?
+    /// The recipe's origin page link, and a photo reference that's either a
+    /// bundled built-in asset name or a remote image URL — exactly the
+    /// local `Recipe.sourceURL`/`.imageName`. Both were missing from this
+    /// struct (and the backend column behind them) entirely until a real
+    /// user report ("I thought we fixed the recipes so that the pictures
+    /// correctly show up... it doesn't have the link to the original
+    /// recipe at the bottom anymore") traced back to exactly this gap: an
+    /// imported recipe's photo/source link silently vanished the moment it
+    /// ever round-tripped through the backend (shared, previewed via
+    /// `GroupRecipePreviewView`, or recovered by `PersonalLibrarySyncService`'s
+    /// pull) — see `photoBase64`'s own doc comment just above for why
+    /// `photoData`/a user-picked photo was already covered and this wasn't.
+    let sourceURL: String?
+    let imageName: String?
     let createdAt: Date
     let updatedAt: Date
     let ingredients: [RemoteIngredient]
@@ -405,6 +419,8 @@ struct RemoteRecipe: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id, title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, photoBase64, createdAt, updatedAt, ingredients
         case ownerID = "ownerId"
+        case sourceURL = "sourceUrl"
+        case imageName
     }
 
     /// `photoBase64` decoded to raw bytes, ready for `UIImage(data:)` —
@@ -460,6 +476,11 @@ struct SharedRecipeEntry: Codable, Identifiable {
     /// doesn't show the photo"), specifically for the "Shared" section this
     /// type powers (`RecipesHomeView`/`saveSharedRecipe(_:)`).
     let photoBase64: String?
+    /// Same fields, same reasoning, as `RemoteRecipe.sourceURL`/`.imageName`
+    /// — see that property's doc comment. Missing from here too until the
+    /// same real user report this pulled in for `RemoteRecipe`.
+    let sourceURL: String?
+    let imageName: String?
     let createdAt: Date
     let updatedAt: Date
     let ingredients: [RemoteIngredient]
@@ -490,6 +511,8 @@ struct SharedRecipeEntry: Codable, Identifiable {
         case recipeID = "id"
         case title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, photoBase64, createdAt, updatedAt, ingredients, share
         case ownerID = "ownerId"
+        case sourceURL = "sourceUrl"
+        case imageName
     }
 
     /// `photoBase64` decoded to raw bytes — see `RemoteRecipe.photoData`'s

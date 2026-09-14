@@ -138,7 +138,9 @@ enum PersonalLibrarySyncService {
                         servings: .set(recipe.servings),
                         prepMinutes: .set(recipe.prepMinutes),
                         cookMinutes: .set(recipe.cookMinutes),
-                        photoBase64: .set(photoBase64)
+                        photoBase64: .set(photoBase64),
+                        sourceURL: .set(recipe.sourceURL),
+                        imageName: .set(recipe.imageName)
                     )
                     _ = try await AccountsAPIClient.updateRecipe(id: backendID, payload)
                 } else {
@@ -196,6 +198,7 @@ extension RemoteRecipe {
         Recipe(
             title: title,
             source: .manual,
+            sourceURL: sourceURL,
             summary: summary,
             instructions: instructions,
             ingredients: ingredients.map { RecipeIngredientEntry(name: $0.name, quantity: $0.quantity, unit: $0.unit) },
@@ -203,6 +206,7 @@ extension RemoteRecipe {
             prepMinutes: prepMinutes ?? 0,
             cookMinutes: cookMinutes ?? 0,
             isSavedToCollection: true,
+            imageName: imageName,
             photoData: photoData,
             createdAt: createdAt,
             backendRecipeID: id

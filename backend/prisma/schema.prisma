@@ -352,6 +352,21 @@ model Recipe {
   servings     Int?
   prepMinutes  Int?
   cookMinutes  Int?
+  // Added after this model already had real rows — both nullable, so no
+  // migration-default hazard (see `GroupSharedGroceryItem.quantityCount`'s
+  // own doc comment for why that specifically matters in this codebase).
+  // Mirrors the iOS `Recipe.sourceURL`/`.imageName` exactly. Missing from
+  // this model originally is what silently dropped both an imported
+  // recipe's "View Original Recipe" link and its photo the moment that
+  // recipe ever round-tripped through the backend (shared, previewed via
+  // `GroupRecipePreviewView`, or recovered by `PersonalLibrarySyncService`'s
+  // pull) — see those two iOS fields' own doc comments for the fuller story.
+  // `imageName` covers BOTH a bundled built-in asset name (a `.library`
+  // recipe) and a remote image URL an imported recipe's page supplied — the
+  // iOS `RecipeThumbnail`/`GroupRecipePreviewView` already know how to tell
+  // those apart and render either, so this column doesn't need to.
+  sourceUrl    String?
+  imageName    String?
   visibility   RecipeVisibility @default(PRIVATE)
   // The iOS `Recipe.photoData`'s bytes, base64-encoded — stored as plain
   // text rather than a Postgres `bytea` column so `serializeRecipe(...)` in
