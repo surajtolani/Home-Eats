@@ -187,64 +187,24 @@ struct GroupSharedMealPlanView: View {
             .padding(.horizontal)
             .padding(.top, 8)
 
-            // Wrapped in a `ZStack` (rather than the sync banner being a
-            // sibling `if`-row directly in the outer `VStack`, which is what
-            // this looked like before) specifically so the banner below can
-            // be a true floating overlay — see its own comment for why that
-            // matters.
-            ZStack(alignment: .top) {
-                switch viewMode {
-                case .calendar:
-                    calendarWithAgenda
-                case .thisWeek:
-                    thisWeekAgenda
-                }
-
-                // A floating overlay, not a row inserted into/removed from
-                // the layout — this is the fix for a real, reported bug:
-                // voting is local-first (see `GroupMealSuggestion
-                // .voteLocally`'s doc comment) and briefly sets `syncState =
-                // .pendingUpdate` for the voted-on row the instant you tap,
-                // the same way any other local write does, until the
-                // immediate follow-up sync it triggers (`vote(_:direction:)`
-                // calls `onLocalWrite`, which runs `runSync()` right away —
-                // this isn't waiting for the ~25s periodic loop) pushes it
-                // and flips it back, typically well under a second later.
-                // That's correct and intentional — but this used to be a
-                // conditionally-included row at the top of the outer
-                // `VStack`, so its appearing/disappearing shifted every
-                // sibling below it down and back up on nearly every single
-                // vote — a real, literal "the whole screen moves up and
-                // down" bug (disabling the implicit insertion animation
-                // wasn't enough: even an instant, unanimated layout change
-                // still visibly *jumps* content by exactly the banner's
-                // height for that ~1 second). An `.overlay`-style floating
-                // banner can never do that — it's composited on top of
-                // `calendarWithAgenda`/`thisWeekAgenda` without occupying
-                // any space those views' own layout accounts for, so
-                // nothing below it — or above it, the Picker/"This Week"
-                // row is a sibling of this whole `ZStack`, untouched either
-                // way — ever moves because of it. Since it can no longer
-                // shift anything, a real fade animation here (unlike the
-                // `.animation(nil, ...)` this replaced) is both safe and an
-                // improvement: a vote's brief pending flicker now reads as a
-                // quick fade rather than a hard on/off flash.
-                if hasPendingChanges || isKnownOffline {
-                    Label(statusMessage, systemImage: "wifi.slash")
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
-                        .padding(.vertical, 6)
-                        .background(.bar)
-                        .transition(.opacity)
-                        // Purely informational — never intercepts taps meant
-                        // for whatever it's momentarily floating over.
-                        .allowsHitTesting(false)
-                }
+            // `.syncStatusOverlay` (see `SyncStatusBanner.swift`) floats
+            // this at the BOTTOM of the switch content — a true overlay,
+            // not a row inserted into/removed from the layout, so it can
+            // never shift `calendarWithAgenda`/`thisWeekAgenda` or the
+            // Picker/"This Week" row above them, no matter how often
+            // voting flickers `hasPendingChanges` (see that shared type's
+            // own doc comment for the full "screen jumps on every vote"
+            // bug this fixes). Bottom rather than top — direct follow-up
+            // user request, moved here from where it first landed, so it
+            // stays out of the way of whatever's actually being glanced at.
+            switch viewMode {
+            case .calendar:
+                calendarWithAgenda
+            case .thisWeek:
+                thisWeekAgenda
             }
-            .animation(.easeInOut(duration: 0.2), value: hasPendingChanges)
         }
+        .syncStatusOverlay(isVisible: hasPendingChanges || isKnownOffline, message: statusMessage)
         .navigationTitle(group?.name ?? groupName)
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -1020,38 +980,60 @@ private struct GroupSuggestionRow: View {
             // matching the backend's own `upvoteCount`/`downvoteCount` split
             // (see `serializeSuggestion(...)`'s doc comment in
             // routes/groupMealPlan.js for why that split, not a net number,
-            // is what the API returns in the first place). `.mini` control
-            // size (down from `.small`, per direct user request — "make the
-            // thumbs up, thumbs down and use it icons smaller so the recipe
-            // or restaurant length extends further to the right") keeps
-            // this whole trailing cluster as compact as it can be while
-            // still tappable, leaving `suggestion.displayTitle` above the
-            // most room it can get in an already-dense row.
+            // is what the API returns in the first place).
+            //
+            // Explicit, fixed-size capsule buttons — direct user request to
+            // make these smaller ("make the thumbs up, thumbs down and use
+            // it icons smaller so the recipe or restaurant length extends
+            // further to the right"), and to keep them small when a later
+            // report said they'd "become larger again." That second report
+            // is why this isn't `.buttonStyle(.bordered) + .controlSize
+            // (.mini)` (what this row used before): `.mini` is a *hint*, not
+            // a guaranteed pixel size — iOS bordered buttons keep a fairly
+            // generous minimum rendered size across control sizes for
+            // tappability, so a system font-size bump (Dynamic Type, or
+            // just a build where the system rendered it a notch larger)
+            // could make a `.mini` bordered button read as "large again"
+            // despite nothing in this file changing. A hand-rolled capsule
+            // with an explicit `.brandCaption2` font and fixed padding has
+            // no such wiggle room: what's specified here is what renders,
+            // every time.
             Button {
                 onVote(.up)
             } label: {
-                Label("\(suggestion.upvoteCount)", systemImage: suggestion.myVote == .up ? "hand.thumbsup.fill" : "hand.thumbsup")
+                voteCapsule(
+                    count: suggestion.upvoteCount,
+                    systemImage: suggestion.myVote == .up ? "hand.thumbsup.fill" : "hand.thumbsup",
+                    tint: .brandForest, isActive: suggestion.myVote == .up
+                )
             }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .tint(suggestion.myVote == .up ? .brandForest : nil)
+            .buttonStyle(.plain)
 
             Button {
                 onVote(.down)
             } label: {
-                Label("\(suggestion.downvoteCount)", systemImage: suggestion.myVote == .down ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                voteCapsule(
+                    count: suggestion.downvoteCount,
+                    systemImage: suggestion.myVote == .down ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                    tint: .brandTerracotta, isActive: suggestion.myVote == .down
+                )
             }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .tint(suggestion.myVote == .down ? .brandTerracotta : nil)
+            .buttonStyle(.plain)
             // MANAGER only — mirrors `POST .../suggestions/:id/adopt`
             // exactly. Disabled while offline or still a not-yet-synced
             // placeholder row (the server doesn't know its real id yet).
             if isManager {
-                Button("Use This", action: onAdopt)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                    .disabled(isKnownOffline || suggestion.isLocalPlaceholderID)
+                let isDisabled = isKnownOffline || suggestion.isLocalPlaceholderID
+                Button(action: onAdopt) {
+                    Text("Use This")
+                        .font(.brandCaption2.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .foregroundStyle(.white)
+                        .background(Capsule().fill(isDisabled ? Color.secondary : Color.brandForest))
+                }
+                .buttonStyle(.plain)
+                .disabled(isDisabled)
             }
         }
         .swipeActions(edge: .trailing) {
@@ -1063,6 +1045,25 @@ private struct GroupSuggestionRow: View {
                 }
             }
         }
+    }
+
+    /// The vote buttons' shared visual — an icon + count in a small
+    /// capsule, filled/tinted when this is the caller's own vote and
+    /// outlined/secondary otherwise. Purely presentational (this is
+    /// `Button`'s `label:`, never tappable on its own).
+    private func voteCapsule(count: Int, systemImage: String, tint: Color, isActive: Bool) -> some View {
+        Label("\(count)", systemImage: systemImage)
+            .font(.brandCaption2)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .foregroundStyle(isActive ? tint : Color.secondary)
+            .background(
+                Capsule()
+                    .fill(isActive ? tint.opacity(0.15) : Color.secondary.opacity(0.1))
+            )
+            .overlay(
+                Capsule().strokeBorder(isActive ? tint.opacity(0.4) : Color.secondary.opacity(0.25))
+            )
     }
 }
 

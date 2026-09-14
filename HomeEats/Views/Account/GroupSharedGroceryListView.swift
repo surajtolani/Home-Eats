@@ -268,14 +268,6 @@ struct GroupSharedGroceryListView: View {
                     .listRowSeparator(.hidden)
             }
 
-            if hasPendingChanges || isKnownOffline {
-                Section {
-                    Label(statusMessage, systemImage: "wifi.slash")
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             if viewMode == .byCategory {
                 byCategorySections
             } else {
@@ -286,6 +278,17 @@ struct GroupSharedGroceryListView: View {
 
             pastGroceriesSection
         }
+        // `.syncStatusOverlay` (see `SyncStatusBanner.swift`) floats this at
+        // the BOTTOM of the `List`, as a true overlay rather than a `Section`
+        // inserted into/removed from the list's own content — this used to
+        // be a `Section` right here, and a quantity bump, checkbox tap, or
+        // vote briefly flipping `hasPendingChanges` on and off (usually well
+        // under a second, until the immediate follow-up sync clears it)
+        // shifted every row below it, the same "screen skips/jumps" bug
+        // `GroupSharedMealPlanView` had — see that shared type's own doc
+        // comment for the full reasoning, including why bottom rather than
+        // top.
+        .syncStatusOverlay(isVisible: hasPendingChanges || isKnownOffline, message: statusMessage)
         .environment(\.editMode, $editMode)
         .navigationTitle(group?.name ?? groupName)
         .navigationBarTitleDisplayMode(.inline)
