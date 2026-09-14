@@ -156,11 +156,21 @@ struct GroupDetailView: View {
     // they are, not the number tied to their account" reasoning as
     // `FriendsListView.friendRow`; see its own doc comment.
     //
-    // **Promote/demote (Phase 5)** live in a `.contextMenu` (long-press)
-    // rather than another always-visible button — this row is already
-    // fairly packed (role badge, name, Leave/Remove), and promote/demote is
-    // a rarer action than either of those; see `roleChangeMenuItems`'s own
-    // doc comment for exactly who sees which action.
+    // **Promote/demote (Phase 5)** used to live in `.contextMenu` (long-press)
+    // ONLY, on the reasoning that this row was already fairly packed and
+    // promote/demote a rarer action than Leave/Remove — but a real user
+    // report ("I don't see the option to do this right now") confirmed
+    // long-press-only isn't actually discoverable here, the same lesson
+    // this app already learned the hard way on the grocery list's own
+    // "Move to Aisle" menu (see `GroupSharedGroceryListView`'s doc comment:
+    // "shown as its own always-tappable button rather than relying solely
+    // on `.contextMenu`"). Now also an explicit `Menu` (an ellipsis icon,
+    // shown only when there's actually something to change — a MANAGER
+    // looking at someone other than themselves) built from the exact same
+    // `roleChangeMenuItems(for:)`, right in the row; `.contextMenu` stays
+    // too as a bonus for anyone who already knows to long-press, same
+    // "not redundant, different habits" reasoning that row's swipe actions
+    // and always-visible icon coexist for.
     private func memberRow(_ member: GroupMember) -> some View {
         HStack {
             HStack(spacing: 6) {
@@ -199,6 +209,15 @@ struct GroupDetailView: View {
                     Task { await remove(member.id) }
                 }
                 .buttonStyle(.borderless)
+            }
+            if isManager && !isSelf {
+                Menu {
+                    roleChangeMenuItems(for: member)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
             }
         }
         .contextMenu {

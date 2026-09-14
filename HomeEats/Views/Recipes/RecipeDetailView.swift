@@ -37,8 +37,22 @@ struct RecipeDetailView: View {
                     Text("Ingredients").font(.brandTitle3.bold())
                     ForEach(recipe.ingredients) { ingredient in
                         HStack(alignment: .top) {
-                            Image(systemName: ingredient.category.symbolName)
-                                .foregroundStyle(.secondary)
+                            // A plain bullet, not `ingredient.category
+                            // .symbolName` (what this used to show) — direct
+                            // user report: one icon per broad category
+                            // (produce, meat & seafood, ...) reads as a
+                            // specific claim about THIS ingredient, and
+                            // `GroceryCategory.guess(fromIngredientName:)`'s
+                            // one-symbol-per-bucket icons don't hold up to
+                            // that ("a carrot icon for garlic," "a fish icon
+                            // for chicken" — both correctly categorized as
+                            // Produce/Meat & Seafood, but the specific icon
+                            // reads as flat wrong). A bullet carries no
+                            // implied specificity to be wrong about.
+                            Circle()
+                                .fill(Color.secondary)
+                                .frame(width: 5, height: 5)
+                                .padding(.top, 7)
                                 .frame(width: 20)
                             Text(ingredient.displayText)
                         }
