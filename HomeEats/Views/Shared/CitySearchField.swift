@@ -49,17 +49,49 @@ struct CitySearchField: View {
     var onCityDetails: (GooglePlacesService.CityDetails) -> Void
 
     @StateObject private var model = CitySearchModel()
+    /// Set right before `select(_:)` programmatically assigns `text` to a
+    /// tapped suggestion's own name, and checked (then reset) at the very
+    /// top of `.onChange(of: text)` below — without this, that assignment
+    /// looks identical to the user having typed it, since `.onChange`
+    /// fires for a `@Binding` mutation regardless of where it came from.
+    /// Left unguarded, tapping a suggestion set off a *second* search for
+    /// the name just selected, which ~300ms later (the debounce) reopened
+    /// the dropdown right after it had just been dismissed — a real,
+    /// confusing "it closes and immediately pops back open" bug found by
+    /// tracing through this exact sequence, not reported from a device.
+    @State private var isProgrammaticTextChange = false
+    /// The dropdown only ever renders while this field actually has
+    /// keyboard focus — belt-and-suspenders alongside
+    /// `isProgrammaticTextChange` above, and the one guard that also covers
+    /// a case that flag can't: both call sites pre-fill `text` from an
+    /// already-saved profile in their own `.onAppear` (`loadCurrentValues`
+    /// setting `cityInput = user.city ?? ""`), which is exactly as
+    /// "programmatic" a change as a tapped suggestion is, but happens
+    /// somewhere else entirely (a sibling/parent view's `.onAppear`, not
+    /// this type's own `select(_:)`) — nothing here can reliably know that
+    /// mutation is about to happen ahead of time, or prove it always runs
+    /// before or after this view's own first render. Gating strictly on
+    /// focus sidesteps the whole ordering question: whatever set `text`
+    /// before the user ever tapped into this field, a `model.search(...)`
+    /// firing for it in the background is harmless as long as its results
+    /// never actually get shown before real typing puts them there.
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         Group {
             TextField("City", text: $text)
                 .textContentType(.addressCity)
+                .focused($isFocused)
                 .onChange(of: text) { _, newValue in
+                    if isProgrammaticTextChange {
+                        isProgrammaticTextChange = false
+                        return
+                    }
                     guard GooglePlacesService.isConfigured else { return }
                     model.search(newValue)
                 }
 
-            if GooglePlacesService.isConfigured {
+            if GooglePlacesService.isConfigured && isFocused {
                 if model.isSearching {
                     HStack {
                         Spacer()
@@ -88,6 +120,19 @@ struct CitySearchField: View {
     }
 
     private func select(_ suggestion: GooglePlacesService.CitySuggestion) {
+        // Drop focus too, not just the flag below — belt-and-suspenders
+        // with the `isFocused`-gated dropdown visibility above: this alone
+        // already hides the dropdown and dismisses the keyboard the moment
+        // a row is tapped, and it's what keeps a late-arriving (already-
+        // cancelled, but never say never) search response from ever
+        // rendering after a selection, on top of `isProgrammaticTextChange`
+        // preventing that response from being fetched again in the first
+        // place.
+        isFocused = false
+        // `isProgrammaticTextChange = true` BEFORE the assignment below —
+        // see that property's own doc comment for exactly what this
+        // prevents (a reopened dropdown right after tapping a suggestion).
+        isProgrammaticTextChange = true
         // Set first, synchronously — see this type's own doc comment on why
         // the text field's fill is driven from the suggestion's own text,
         // not from whatever Details comes back with (or doesn't).
