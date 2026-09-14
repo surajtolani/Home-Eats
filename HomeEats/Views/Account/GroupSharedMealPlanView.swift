@@ -801,6 +801,20 @@ struct GroupDaySlotsView: View {
     @ViewBuilder
     private func slotSection(_ slot: MealSlot) -> some View {
         let isEmpty = meals(for: slot).isEmpty && suggestions(for: slot).isEmpty
+        // Whether ANY row in this slot is still mid-sync — drives a single
+        // pending icon on the slot's own header instead of one per row (see
+        // the `header:` below). Direct user report: a per-row icon that
+        // appears/disappears as a vote goes out (usually well under a
+        // second) shifted that row's own content enough to wrap its title
+        // onto a different line. A slot only ever has a handful of rows, so
+        // one shared indicator for the whole slot loses no real information
+        // — "something in Breakfast hasn't synced yet" is just as useful as
+        // "this specific row hasn't" for what this icon is for — while
+        // moving it somewhere (the header) that was never part of any row's
+        // own text layout to begin with means it can never distort one
+        // again, regardless of how often it flickers.
+        let hasPendingInSlot = meals(for: slot).contains { $0.syncState != .synced }
+            || suggestions(for: slot).contains { $0.syncState != .synced }
 
         Section {
             ForEach(meals(for: slot)) { meal in
@@ -863,7 +877,15 @@ struct GroupDaySlotsView: View {
             .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 0, leading: 16, bottom: 12, trailing: 16))
             .listRowSeparator(.hidden)
         } header: {
-            Label(slot.displayName, systemImage: slot.symbolName)
+            HStack(spacing: 4) {
+                Label(slot.displayName, systemImage: slot.symbolName)
+                if hasPendingInSlot {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.brandCaption2)
+                        .foregroundStyle(.secondary)
+                        .help("Not synced yet")
+                }
+            }
         }
     }
 
@@ -1078,13 +1100,17 @@ private struct GroupPlannedMealRow: View {
                     Image(systemName: iconName).foregroundStyle(iconColor)
                     Text(meal.displayTitle)
                 }
-                .font(.brandHeadline)
+                // `.brandSubheadline`, not `.brandHeadline` — direct user
+                // request to match `GroupSuggestionRow`'s own title size
+                // (the "ones that go into a vote"), so a decided meal and a
+                // suggestion read at the same scale rather than the decided
+                // one looking visibly larger.
+                .font(.brandSubheadline)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(iconColor.opacity(0.12), in: Capsule())
 
                 Spacer()
-                if meal.syncState != .synced { pendingIndicator }
                 Text("by \(memberName)")
                     .font(.brandCaption2)
                     .foregroundStyle(.secondary)
@@ -1149,7 +1175,6 @@ private struct GroupSuggestionRow: View {
                 }
             }
             Spacer()
-            if suggestion.syncState != .synced { pendingIndicator }
             // Voting is open to every member, regardless of role — mirrors
             // `POST .../suggestions/:id/vote`, which has no role gate at
             // all (see routes/groupMealPlan.js). Two separate small
@@ -1230,27 +1255,34 @@ private struct GroupSuggestionRow: View {
     /// capsule, filled/tinted when this is the caller's own vote and
     /// outlined/secondary otherwise. Purely presentational (this is
     /// `Button`'s `label:`, never tappable on its own).
+    ///
+    /// A hand-built `HStack(spacing: 2)`, not `Label(_:systemImage:)` (what
+    /// this used before) — `Label`'s own icon-to-text spacing is a larger,
+    /// fixed value this initializer gives no way to tighten, which is
+    /// exactly what a direct user report called out: sitting next to "Use
+    /// This" in the same row, that built-in gap made this pill read as
+    /// stretched to roughly "Use This"'s own width even though a one-digit
+    /// count needs nowhere near that much room. `spacing: 2` closes the gap
+    /// between the icon and the number to what the request asked for; the
+    /// capsule's height is untouched (same font, same vertical padding) —
+    /// only the width shrinks, to fit the now-tighter content.
     private func voteCapsule(count: Int, systemImage: String, tint: Color, isActive: Bool) -> some View {
-        Label("\(count)", systemImage: systemImage)
-            .font(.brandCaption2)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .foregroundStyle(isActive ? tint : Color.secondary)
-            .background(
-                Capsule()
-                    .fill(isActive ? tint.opacity(0.15) : Color.secondary.opacity(0.1))
-            )
-            .overlay(
-                Capsule().strokeBorder(isActive ? tint.opacity(0.4) : Color.secondary.opacity(0.25))
-            )
-    }
-}
-
-private var pendingIndicator: some View {
-    Image(systemName: "arrow.triangle.2.circlepath")
+        HStack(spacing: 2) {
+            Image(systemName: systemImage)
+            Text("\(count)")
+        }
         .font(.brandCaption2)
-        .foregroundStyle(.secondary)
-        .help("Not synced yet")
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .foregroundStyle(isActive ? tint : Color.secondary)
+        .background(
+            Capsule()
+                .fill(isActive ? tint.opacity(0.15) : Color.secondary.opacity(0.1))
+        )
+        .overlay(
+            Capsule().strokeBorder(isActive ? tint.opacity(0.4) : Color.secondary.opacity(0.25))
+        )
+    }
 }
 
 /// One of the three single-tap "decide now" buttons in a slot section — same
