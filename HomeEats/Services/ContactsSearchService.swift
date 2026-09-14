@@ -137,21 +137,27 @@ final class ContactsSearchService: ObservableObject {
     /// the UI on a large address book, then hop back for the `@Published`
     /// write in `loadIfNeeded`.
     private func fetchContacts() async -> [DeviceContact] {
-        // Explicit `[CNKeyDescriptor]` annotation on the array itself, not a
-        // trailing `as [CNKeyDescriptor]` cast — with the cast, the compiler
-        // infers a homogeneous `[String]` from the first three (plain
-        // `String`) keys before ever looking at the cast, then fails to
-        // unify that against `CNContactFormatter.descriptorForRequiredKeys`'s
-        // `CNKeyDescriptor` return type below ("Cannot convert value of type
-        // 'any CNKeyDescriptor' to expected element type 'String'" — a real
-        // compile error hit on this exact line). Annotating the declaration
-        // itself tells the compiler every element needs to satisfy
-        // `CNKeyDescriptor` from the start (a plain `String` already
-        // conforms to it), so both key shapes type-check together.
+        // Explicit `as CNKeyDescriptor` on each plain-`String` key constant —
+        // two different real compile errors were hit getting here. First
+        // attempt: a trailing `as [CNKeyDescriptor]` cast on the whole array
+        // literal, which let the compiler lock in a homogeneous `[String]`
+        // from these three keys before it ever considered the cast, then
+        // fail to unify that against `descriptorForRequiredKeys`'s
+        // `CNKeyDescriptor` return type below. Second attempt: annotating
+        // the `let` itself as `[CNKeyDescriptor]`, which flipped the
+        // failure instead of fixing it — a plain `String` does NOT
+        // implicitly satisfy `any CNKeyDescriptor` as an array-literal
+        // element (that protocol requires `NSCopying`/`NSSecureCoding`,
+        // which the `NSString` class it bridges to satisfies, but the
+        // `String` struct doesn't automatically forward without an
+        // explicit bridge). Casting each key individually is what actually
+        // works: it's the explicit `String` → `NSString` → `CNKeyDescriptor`
+        // bridge Swift needs, applied per-element instead of relying on
+        // either whole-array cast direction to infer it.
         let keys: [CNKeyDescriptor] = [
-            CNContactGivenNameKey,
-            CNContactFamilyNameKey,
-            CNContactPhoneNumbersKey,
+            CNContactGivenNameKey as CNKeyDescriptor,
+            CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactPhoneNumbersKey as CNKeyDescriptor,
             // Required alongside the three keys above whenever fetched
             // contacts are formatted with `CNContactFormatter` (see
             // `CNContactFormatter.string(from:style:)` below) — the real,
