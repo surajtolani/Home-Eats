@@ -244,6 +244,112 @@ struct GroupDetail: Codable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Invites, promote/demote, and notifications (Phase 5 — routes/invites.js, routes/notifications.js, and the promote/demote additions to routes/groups.js)
+
+/// The minimal group reference nested in `GroupInvite.group` — just enough
+/// to render "Join <name>" without a second request, exactly mirroring
+/// `serializeGroupInvite`'s own doc comment in routes/invites.js on why
+/// this is deliberately NOT a full `GroupDetail`/`GroupSummary` (the
+/// recipient isn't a member yet, so most of either of those wouldn't even
+/// be visible to them). Its own tiny type, not `GroupSummary`, since
+/// `GroupSummary` carries `createdByUserID`/`createdAt` fields this
+/// response never sends — decoding into it here would either need those
+/// modeled as optional for no reason or fail outright.
+struct GroupInviteGroupRef: Codable, Identifiable {
+    let id: String
+    let name: String
+}
+
+/// One row of `GET /invites` — a pending **group** Invite addressed to the
+/// caller, matched by their own phone number (see routes/invites.js's
+/// `listPendingGroupInvitesFor`). Distinct from `IncomingFriendRequest`
+/// above: this is "join this group," not "become my friend" — a bare
+/// "become my friend" Invite never appears in this list at all (see that
+/// route's own doc comment on why `groupId: { not: null }` excludes it).
+///
+/// Also reused byte-for-byte as `GET /notifications`'s `groupInvites`
+/// entries (see `NotificationsFeed` below) — routes/notifications.js's own
+/// doc comment is explicit that this is intentionally the exact same shape,
+/// not a second, subtly-different one invented for the combined feed — so
+/// this one Swift type is the decode target for both endpoints.
+struct GroupInvite: Codable, Identifiable {
+    let id: String
+    let group: GroupInviteGroupRef
+    let invitedBy: PublicUser
+    let createdAt: Date
+}
+
+/// `GET /notifications`'s full response (Phase 5, Part 3) — a combined
+/// "things waiting on my response" feed. `friendRequests` is byte-for-byte
+/// `GET /friends`'s `incomingRequests` (decodes into the exact same
+/// `IncomingFriendRequest` this app already has for `FriendsListView`), and
+/// `groupInvites` is byte-for-byte `GET /invites`'s `invites` (decodes into
+/// `GroupInvite` above) — no separate "notification item" wrapper type
+/// exists anywhere in this app, matching routes/notifications.js's own doc
+/// comment that this route deliberately introduces no third shape. `count`
+/// is the server's own `friendRequests.length + groupInvites.length` sum,
+/// decoded as-is rather than recomputed client-side — same "server is the
+/// one source of truth for a derived value" reasoning as
+/// `AccountUser.profileComplete`'s own doc comment — and is what
+/// `NotificationsSession`/the notification bell's badge number reads
+/// directly.
+struct NotificationsFeed: Codable {
+    let count: Int
+    let friendRequests: [IncomingFriendRequest]
+    let groupInvites: [GroupInvite]
+}
+
+/// `GroupSentInvite.status` — deliberately only the two values
+/// `GET /groups/:groupId/invites` can ever actually send: that route
+/// filters to `status: { in: ["PENDING", "DECLINED"] }` server-side before
+/// anything reaches the wire (see its own doc comment in routes/groups.js
+/// on why `RESOLVED`/`CANCELLED` rows are excluded), NOT all four of the
+/// backend's `InviteStatus` enum values (prisma/schema.prisma). Modeled as
+/// a real Swift enum, not a raw `String` — same reasoning as `GroupRole`:
+/// `GroupDetailView`'s "Pending Invites" section genuinely branches UI on
+/// which one this is (only a `.declined` invite offers "Resend"), so a
+/// `String` that could silently fail to match anything would just move a
+/// decoding failure into a harder-to-spot logic bug instead.
+enum GroupInviteStatus: String, Codable {
+    case pending = "PENDING"
+    case declined = "DECLINED"
+}
+
+/// One row of `GET /groups/:groupId/invites` — **not part of Phase 5
+/// itself**; this endpoint was added alongside this iOS-wiring task once it
+/// was clear `GET /groups/:groupId` carries no invite data at all and a
+/// `MANAGER` had no way to see a group's own outstanding invites (see that
+/// route's own doc comment in routes/groups.js, and backend/README.md's
+/// "Invites and consent" section, for the full reasoning). The
+/// `MANAGER`-facing counterpart of `GroupInvite` above: that type is "an
+/// invite addressed to ME," this one is "an invite THIS GROUP sent out" —
+/// same underlying `Invite` row, opposite side of the relationship, which
+/// is why the fields deliberately don't line up with `GroupInvite`'s (no
+/// `group` field here — the caller already knows which group, it's the one
+/// they asked for; `invitedPhoneNumber`/`invitedUser` have no counterpart
+/// on `GroupInvite` at all, since that type never needs to describe a
+/// recipient to themselves).
+struct GroupSentInvite: Codable, Identifiable {
+    let id: String
+    let invitedPhoneNumber: String
+    /// `nil` unless `invitedPhoneNumber` already belongs to a Home Eats
+    /// user — most invited numbers, especially to a stranger, belong to
+    /// nobody yet (see the route's own doc comment on this specific field).
+    let invitedUser: PublicUser?
+    let invitedBy: PublicUser
+    let status: GroupInviteStatus
+    let createdAt: Date
+
+    /// What to show for who this invite named — the invited user's own
+    /// name (falling back to their phone number, same convention as
+    /// `PublicUser.displayNameOrPhoneNumber`) when they're already a Home
+    /// Eats user, otherwise just the raw phone number, since nothing else
+    /// is known about them yet.
+    var displayLabel: String {
+        invitedUser?.displayNameOrPhoneNumber ?? invitedPhoneNumber
+    }
+}
+
 /// One ingredient on a `RemoteRecipe`, as the backend returns it (it always
 /// has an `id`, unlike `RecipeIngredientPayload` — the *outgoing* shape a
 /// request body uses, which never includes one; see

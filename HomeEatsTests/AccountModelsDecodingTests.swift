@@ -248,6 +248,122 @@ final class AccountModelsDecodingTests: XCTestCase {
         XCTAssertNil(response.group.createdByUserID)
     }
 
+    // MARK: - Invites, promote/demote, notifications (Phase 5 — routes/invites.js, routes/notifications.js, routes/groups.js)
+
+    /// Exactly `GET /invites`'s response shape — checked directly against a
+    /// real local backend (mint a JWT, `POST /groups/:groupId/invite`,
+    /// `GET /invites` as the recipient) while writing this fixture, not just
+    /// copied from routes/invites.js's `serializeGroupInvite`.
+    func testGroupInviteListDecodes() throws {
+        struct InvitesResponseFixture: Decodable { let invites: [GroupInvite] }
+        let json = """
+        {
+          "invites": [
+            {
+              "id": "inv1",
+              "group": { "id": "g1", "name": "Trip" },
+              "invitedBy": { "id": "u1", "displayName": "Alice", "phoneNumber": "+15550000001" },
+              "createdAt": "2026-09-14T00:12:49.024Z"
+            }
+          ]
+        }
+        """
+        let response = try decoder.decode(InvitesResponseFixture.self, from: data(json))
+        XCTAssertEqual(response.invites.count, 1)
+        XCTAssertEqual(response.invites[0].group.name, "Trip")
+        XCTAssertEqual(response.invites[0].invitedBy.displayNameOrPhoneNumber, "Alice")
+    }
+
+    /// `GET /notifications`'s combined feed — `friendRequests`/`groupInvites`
+    /// decode into the exact same `IncomingFriendRequest`/`GroupInvite` types
+    /// `GET /friends`/`GET /invites` already use (see `NotificationsFeed`'s
+    /// own doc comment on why there's no third shape), verified here with
+    /// one of each present at once plus a `count` that's their sum — exactly
+    /// what a live `GET /notifications` call returned while writing this
+    /// fixture.
+    func testNotificationsFeedDecodesBothListsAndCount() throws {
+        let json = """
+        {
+          "count": 2,
+          "friendRequests": [
+            { "friendshipId": "f1", "from": { "id": "u3", "displayName": "Sam", "phoneNumber": "+14155550003" } }
+          ],
+          "groupInvites": [
+            {
+              "id": "inv1",
+              "group": { "id": "g1", "name": "Trip" },
+              "invitedBy": { "id": "u1", "displayName": "Alice", "phoneNumber": "+15550000001" },
+              "createdAt": "2026-09-14T00:12:49.024Z"
+            }
+          ]
+        }
+        """
+        let feed = try decoder.decode(NotificationsFeed.self, from: data(json))
+        XCTAssertEqual(feed.count, 2)
+        XCTAssertEqual(feed.friendRequests.count, 1)
+        XCTAssertEqual(feed.friendRequests[0].from.displayNameOrPhoneNumber, "Sam")
+        XCTAssertEqual(feed.groupInvites.count, 1)
+        XCTAssertEqual(feed.groupInvites[0].group.name, "Trip")
+    }
+
+    /// The empty case — no friend requests, no group invites — must decode
+    /// to `count == 0` and two empty arrays, not `nil`/a decoding failure;
+    /// this is what the notification bell should show as "no badge."
+    func testNotificationsFeedDecodesEmpty() throws {
+        let json = """
+        { "count": 0, "friendRequests": [], "groupInvites": [] }
+        """
+        let feed = try decoder.decode(NotificationsFeed.self, from: data(json))
+        XCTAssertEqual(feed.count, 0)
+        XCTAssertTrue(feed.friendRequests.isEmpty)
+        XCTAssertTrue(feed.groupInvites.isEmpty)
+    }
+
+    /// `GET /groups/:groupId/invites` — the new, not-part-of-Phase-5 route
+    /// added for `GroupDetailView`'s "Pending Invites" section (see
+    /// `GroupSentInvite`'s own doc comment). Checked directly against a real
+    /// local backend: one `PENDING` invite where `invitedPhoneNumber`
+    /// already belongs to a user (`invitedUser` non-`nil`), and one
+    /// `DECLINED` invite — the two statuses this app's UI actually branches
+    /// on (`GroupInviteStatus`'s own doc comment).
+    func testGroupSentInvitesDecodePendingAndDeclinedWithAndWithoutInvitedUser() throws {
+        struct SentInvitesResponseFixture: Decodable { let invites: [GroupSentInvite] }
+        let json = """
+        {
+          "invites": [
+            {
+              "id": "inv1",
+              "invitedPhoneNumber": "+15550000003",
+              "invitedUser": { "id": "u3", "displayName": "Carol", "phoneNumber": "+15550000003" },
+              "invitedBy": { "id": "u1", "displayName": "Alice", "phoneNumber": "+15550000001" },
+              "status": "PENDING",
+              "createdAt": "2026-09-14T00:13:30.957Z"
+            },
+            {
+              "id": "inv2",
+              "invitedPhoneNumber": "+15550000009",
+              "invitedUser": null,
+              "invitedBy": { "id": "u1", "displayName": "Alice", "phoneNumber": "+15550000001" },
+              "status": "DECLINED",
+              "createdAt": "2026-09-14T00:13:21.206Z"
+            }
+          ]
+        }
+        """
+        let response = try decoder.decode(SentInvitesResponseFixture.self, from: data(json))
+        XCTAssertEqual(response.invites.count, 2)
+
+        let pending = response.invites[0]
+        XCTAssertEqual(pending.status, .pending)
+        XCTAssertEqual(pending.invitedUser?.displayNameOrPhoneNumber, "Carol")
+        XCTAssertEqual(pending.displayLabel, "Carol") // known user -> name, not raw number
+
+        let declined = response.invites[1]
+        XCTAssertEqual(declined.status, .declined)
+        XCTAssertNil(declined.invitedUser)
+        XCTAssertEqual(declined.displayLabel, "+15550000009") // unknown -> falls back to the raw number
+    }
+
     // MARK: - Recipe sharing (routes/recipeLibrary.js)
 
     func testSharedRecipeEntryUsesShareIdNotRecipeIdAsItsIdentity() throws {

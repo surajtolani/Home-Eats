@@ -325,9 +325,91 @@ extension AccountsAPIClient {
     }
 }
 
+// MARK: - Invites (Phase 5 — GET/POST /invites/*)
+//
+// Mounted at `/invites` — confirmed directly against backend/index.js's
+// `app.use("/invites", requireAuth, invitesRouter)`. See `GroupInvite`'s own
+// doc comment in AccountModels.swift for what these actually name: a
+// **group** Invite addressed to the caller (the "join this group" flow that
+// no longer happens instantly even for an already-accepted friend — see
+// `inviteToGroup`'s own doc comment below and backend/README.md's "Invites
+// and consent" section).
+
+extension AccountsAPIClient {
+    /// The caller's own pending group Invites — see `GroupInvite`'s doc
+    /// comment. `NotificationsView` gets this same data through
+    /// `getNotifications()` instead (its `groupInvites` field is
+    /// byte-for-byte this same list per routes/notifications.js's own doc
+    /// comment) rather than calling both for one screen; this standalone
+    /// method exists for API completeness/symmetry with `getFriends()`, and
+    /// is available to any future screen that wants group invites alone
+    /// without the friend-request half of the combined feed.
+    static func getInvites() async throws -> [GroupInvite] {
+        struct Response: Decodable { let invites: [GroupInvite] }
+        let response: Response = try await send("GET", path: "invites")
+        return response.invites
+    }
+
+    /// Recipient only (`403` for anyone else, `409` if not `PENDING`,
+    /// `400` for a bare, non-group Invite — see
+    /// `loadPendingGroupInviteAsRecipient` in routes/invites.js). Creates
+    /// the `GroupMembership` (as `PARTICIPANT`) and marks the Invite
+    /// `RESOLVED` server-side, in one transaction. This app doesn't inspect
+    /// the `{ invite }` response body (nothing here shows an Invite's raw
+    /// status after responding to it), so this is `sendNoContent` rather
+    /// than a typed decode, same as `acceptFriendRequest`. Callers must
+    /// separately call `ActiveGroupSession.refreshGroups()` afterward if the
+    /// newly-joined group needs to show up in the group switcher right away
+    /// (see `NotificationsView.respondToGroupInvite`) — this method has no
+    /// way to reach that object itself.
+    static func acceptInvite(id inviteID: String) async throws {
+        try await sendNoContent("POST", path: "invites/\(inviteID)/accept")
+    }
+
+    /// Same recipient-only check as accept. Marks the Invite `DECLINED`
+    /// (distinct from `CANCELLED` — see the `InviteStatus` doc comment in
+    /// prisma/schema.prisma) and grants nothing. A `MANAGER` of the group
+    /// can queue a fresh Invite to the same phone number afterward by
+    /// calling `inviteToGroup` again — see that method's own "Resend after a
+    /// decline" note.
+    static func declineInvite(id inviteID: String) async throws {
+        try await sendNoContent("POST", path: "invites/\(inviteID)/decline")
+    }
+}
+
+// MARK: - Notifications (Phase 5, Part 3 — GET /notifications)
+
+extension AccountsAPIClient {
+    /// `{ count, friendRequests, groupInvites }` — see `NotificationsFeed`'s
+    /// own doc comment for why both lists decode straight into types this
+    /// app already has (`IncomingFriendRequest`/`GroupInvite`), with no
+    /// separate "notification item" wrapper. `NotificationsSession` is the
+    /// one place in this app that calls this method — everything else
+    /// (the bell's badge, `NotificationsView`'s list) reads through that
+    /// shared object instead of calling this directly, so there's exactly
+    /// one in-flight fetch backing both at once rather than two
+    /// independently-timed copies of the same feed.
+    static func getNotifications() async throws -> NotificationsFeed {
+        try await send("GET", path: "notifications")
+    }
+}
+
 // MARK: - Groups (POST/GET/DELETE /groups/*)
 
 extension AccountsAPIClient {
+    /// **Note this is NOT touched by Phase 5's invite-consent change.**
+    /// `memberUserIds` here still creates real `GroupMembership` rows
+    /// instantly, in the same transaction as the group itself — verified
+    /// directly against routes/groups.js's `POST /` handler (a plain
+    /// `prisma.group.create` with a nested `memberships: { create: [...] }`)
+    /// and against a real running backend, not just assumed from Phase 5's
+    /// own framing. Only `POST /:groupId/invite` (used by `inviteToGroup`
+    /// below, for a group that already exists) requires the recipient's
+    /// consent now — a friend picked here, at creation time, is a genuinely
+    /// different action from being invited to a group after the fact, and
+    /// the backend treats them differently on purpose. `CreateGroupView`'s
+    /// own copy reflects this distinction explicitly rather than describing
+    /// both paths as equivalent.
     static func createGroup(name: String, memberUserIDs: [String] = []) async throws -> GroupDetail {
         struct Response: Decodable { let group: GroupDetail }
         let response: Response = try await send(
@@ -352,22 +434,36 @@ extension AccountsAPIClient {
         return response.group
     }
 
-    /// Adds an existing friend to the group directly. (There's a second
-    /// overload just below for the by-phone-number path — see its own doc
-    /// comment for why these are kept as two overloads rather than one
-    /// method taking an enum.)
+    /// Invites an existing friend to the group — **Phase 5: this no longer
+    /// adds them directly.** Before Phase 5, `userId` here always created
+    /// the `GroupMembership` instantly (an accepted friend had zero chance
+    /// to decline); now it always queues/reuses a PENDING `Invite` instead,
+    /// exactly like the `phoneNumber` overload just below always has — see
+    /// routes/groups.js's own doc comment on `POST /:groupId/invite` for the
+    /// full before/after reasoning. This app's response to that change is
+    /// entirely UI copy (`InviteToGroupView`'s "From Your Friends" section
+    /// now explains it sends an invite, not an instant add) — this method
+    /// itself needed no change at all, since it never inspected the
+    /// response body either way. (There's a second overload just below for
+    /// the by-phone-number path — see its own doc comment for why these are
+    /// kept as two overloads rather than one method taking an enum.)
     static func inviteToGroup(groupID: String, userID: String) async throws {
         try await sendNoContent("POST", path: "groups/\(groupID)/invite", body: ["userId": userID])
     }
 
-    /// Invites someone by phone number — one of the caller's own accepted
-    /// friends is added directly; anyone else (a Home Eats user who isn't
-    /// yet a friend, or not a user at all) is queued as a standing
-    /// `Invite` instead, same idea as `sendFriendRequest`. The backend
-    /// deliberately reports both of those non-friend outcomes back
+    /// Invites someone by phone number — queues/reuses a standing `Invite`
+    /// for this `groupId` regardless of who the number belongs to (one of
+    /// the caller's own accepted friends, a Home Eats user who isn't yet a
+    /// friend, or not a user at all), same idea as `sendFriendRequest`. The
+    /// backend deliberately reports every one of those outcomes back
     /// identically (see routes/groups.js's own doc comment on
     /// `POST /:groupId/invite`) — this app has no need to tell them apart
     /// either, since it doesn't inspect this call's response body at all.
+    /// **Also what a "Resend" action calls** (`GroupDetailView`'s "Pending
+    /// Invites" section) for a `DECLINED` invite — see that route's own
+    /// "Resend after a decline" doc comment: the "already invited" check
+    /// only ever blocks on a still-`PENDING` row, so calling this again
+    /// after a decline already works with no separate resend method needed.
     /// Two overloads (`userID:`/`phoneNumber:`) rather than one method
     /// taking `Either<String, String>` or an enum — this mirrors the
     /// backend's own `InviteSchema`, a Zod union of `{ userId }` OR
@@ -375,6 +471,52 @@ extension AccountsAPIClient {
     /// each call site than an enum wrapper would.
     static func inviteToGroup(groupID: String, phoneNumber: String) async throws {
         try await sendNoContent("POST", path: "groups/\(groupID)/invite", body: ["phoneNumber": phoneNumber])
+    }
+
+    /// `MANAGER`-only server-side; a `PARTICIPANT`/non-member calling this
+    /// gets a `403` (see routes/groups.js's own doc comment on this route).
+    /// No-op-safe if the target is already `MANAGER` — this app's UI
+    /// (`GroupDetailView.memberRow`) only ever offers "Promote" for a
+    /// `PARTICIPANT` anyway, so that no-op is never actually exercised from
+    /// here, but the backend guarantees it regardless. Returns the updated
+    /// `GroupMember` — same `publicMember` shape `GET /groups/:groupId`'s
+    /// own member list already uses.
+    static func promoteMember(groupID: String, userID: String) async throws -> GroupMember {
+        struct Response: Decodable { let member: GroupMember }
+        let response: Response = try await send("POST", path: "groups/\(groupID)/members/\(userID)/promote")
+        return response.member
+    }
+
+    /// `MANAGER`-only server-side, same as promote. `409` (surfaced as
+    /// `AccountsAPIError.server(...)`) if the target is the group's sole
+    /// remaining `MANAGER` and other members would be left behind — the
+    /// same `wouldStrandGroup` guard `removeGroupMember` below can also hit
+    /// (see routes/groups.js's own doc comment). This app's UI can't
+    /// pre-check that client-side without duplicating the backend's own
+    /// manager-count query, so `GroupDetailView` just surfaces that `409`'s
+    /// message directly through its existing `actionFailure` alert rather
+    /// than trying to predict it.
+    static func demoteMember(groupID: String, userID: String) async throws -> GroupMember {
+        struct Response: Decodable { let member: GroupMember }
+        let response: Response = try await send("POST", path: "groups/\(groupID)/members/\(userID)/demote")
+        return response.member
+    }
+
+    /// `GET /groups/:groupId/invites` — **not part of Phase 5 itself**;
+    /// added alongside this iOS-wiring task once it was clear
+    /// `getGroup(id:)` carries no invite data at all and a `MANAGER` had no
+    /// way to see a group's own outstanding invites for `GroupDetailView`'s
+    /// "Pending Invites" section (see `GroupSentInvite`'s own doc comment in
+    /// AccountModels.swift, and routes/groups.js's doc comment on this
+    /// route, for the full reasoning). `MANAGER`-only server-side; `403` for
+    /// a `PARTICIPANT` or non-member. Resending a `DECLINED` invite is just
+    /// calling `inviteToGroup(groupID:phoneNumber:)` again with the same
+    /// `invitedPhoneNumber` — see that method's own "Resend after a
+    /// decline" note; there's no dedicated resend method here either.
+    static func getGroupInvites(groupID: String) async throws -> [GroupSentInvite] {
+        struct Response: Decodable { let invites: [GroupSentInvite] }
+        let response: Response = try await send("GET", path: "groups/\(groupID)/invites")
+        return response.invites
     }
 
     /// Leave (pass your own id) or remove another member. Self-removal is
