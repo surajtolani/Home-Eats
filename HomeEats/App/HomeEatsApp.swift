@@ -21,6 +21,12 @@ struct HomeEatsApp: App {
     /// reasoning). Injected the same way as the two session objects above
     /// so any view under `RootView` can read it with `@EnvironmentObject`.
     @StateObject private var activeGroupSession = ActiveGroupSession()
+    /// The signed-in caller's own "things waiting on my response" feed
+    /// (Phase 5, Part 3 — see its own doc comment) — backs the notification
+    /// bell's badge (`GroupTopBar`) and `NotificationsView`'s list.
+    /// Injected the same way as the three session objects above so either
+    /// can read it with `@EnvironmentObject`.
+    @StateObject private var notificationsSession = NotificationsSession()
 
     init() {
         // Nav bar / tab bar chrome is drawn by UIKit, which SwiftUI's
@@ -123,6 +129,7 @@ struct HomeEatsApp: App {
                 .environmentObject(activeUserSession)
                 .environmentObject(accountSession)
                 .environmentObject(activeGroupSession)
+                .environmentObject(notificationsSession)
                 .task {
                     reminderRouter.install()
                     await scheduleReminderIfConfigured()
