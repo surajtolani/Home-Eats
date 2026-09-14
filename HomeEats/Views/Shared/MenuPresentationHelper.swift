@@ -20,6 +20,16 @@ import Foundation
 /// `.sheet`/`.fullScreenCover`/`.sheet(item:)` — plain (non-Menu) buttons
 /// don't need it.
 @MainActor
-func presentAfterMenuDismiss(_ present: @escaping () -> Void) {
+func presentAfterMenuDismiss(_ present: @escaping @Sendable () -> Void) {
+    // `DispatchQueue.main.asyncAfter(deadline:execute:)`'s `execute` is
+    // `@Sendable` (GCD's own concurrency-safety requirement, unrelated to
+    // this function's own `@MainActor` isolation) — `present` has to match
+    // that or the compiler rejects passing it straight through. Every real
+    // call site hands this a closure that only touches `@State`/`Binding`
+    // values on the calling View, which is exactly what `@Sendable` is
+    // meant to allow here: the closure still only ever actually runs on the
+    // main queue (`.main.asyncAfter`), so this doesn't change when or where
+    // `present` executes, just satisfies the type-checker about what it's
+    // safe to hand across that boundary.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: present)
 }
