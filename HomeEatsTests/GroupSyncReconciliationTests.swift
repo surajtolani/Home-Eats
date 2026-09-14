@@ -154,81 +154,178 @@ final class GroupSyncReconciliationTests: XCTestCase {
     }
 }
 
-/// Unit tests for the local vote-toggle bookkeeping on `GroupMealSuggestion`
-/// — the logic `GroupSyncService.pushSuggestions` relies on to know whether
-/// a suggestion's vote genuinely needs a `POST .../vote` call, including the
-/// "toggled twice while offline, nets out to nothing" case its own doc
-/// comment calls out.
-final class GroupMealSuggestionVoteToggleTests: XCTestCase {
+/// Unit tests for the local vote bookkeeping on `GroupMealSuggestion` —
+/// the logic `GroupSyncService.pushSuggestions` relies on to know whether a
+/// suggestion's vote genuinely needs a `POST .../vote` call, including the
+/// "changed direction twice while offline, nets out to nothing" case its own
+/// doc comment calls out. Thumbs-up/thumbs-down, not just up-only: every
+/// test here exercises a real direction (`.up`/`.down`), not a bare on/off
+/// toggle.
+final class GroupMealSuggestionVoteTests: XCTestCase {
 
-    private func makeSuggestion(votedByMe: Bool, voteCount: Int) -> GroupMealSuggestion {
+    private func makeSuggestion(myVote: VoteDirection?, upvoteCount: Int, downvoteCount: Int) -> GroupMealSuggestion {
         GroupMealSuggestion(
             id: "s1", groupID: "g1", date: .now, slot: .dinner,
             restaurantName: "Diner", proposedByUserID: "u1",
-            votedByMe: votedByMe, voteCount: voteCount
+            myVote: myVote, upvoteCount: upvoteCount, downvoteCount: downvoteCount
         )
     }
 
-    func testTogglingOnceMarksPendingUpdate() {
-        let suggestion = makeSuggestion(votedByMe: false, voteCount: 3)
-        suggestion.toggleVoteLocally()
-        XCTAssertTrue(suggestion.votedByMe)
-        XCTAssertEqual(suggestion.voteCount, 4)
+    func testVotingUpFromNoVoteMarksPendingUpdate() {
+        let suggestion = makeSuggestion(myVote: nil, upvoteCount: 3, downvoteCount: 0)
+        suggestion.voteLocally(.up)
+        XCTAssertEqual(suggestion.myVote, .up)
+        XCTAssertEqual(suggestion.upvoteCount, 4)
+        XCTAssertEqual(suggestion.downvoteCount, 0)
         XCTAssertEqual(suggestion.syncState, .pendingUpdate)
     }
 
-    func testTogglingTwiceReturnsToSyncedWithNoNetChange() {
-        // Vote, then un-vote again, both before ever syncing — should net
-        // out to "nothing to push," not two vote-endpoint calls (which
-        // would incorrectly flip the caller's real server-side vote state
-        // an extra time — see `GroupMealSuggestion.lastKnownServerVotedByMe`'s
+    func testVotingDownFromNoVoteMarksPendingUpdate() {
+        let suggestion = makeSuggestion(myVote: nil, upvoteCount: 3, downvoteCount: 1)
+        suggestion.voteLocally(.down)
+        XCTAssertEqual(suggestion.myVote, .down)
+        XCTAssertEqual(suggestion.upvoteCount, 3)
+        XCTAssertEqual(suggestion.downvoteCount, 2)
+        XCTAssertEqual(suggestion.syncState, .pendingUpdate)
+    }
+
+    func testTappingTheSameDirectionTwiceReturnsToSyncedWithNoNetChange() {
+        // Vote up, then tap thumbs-up again, both before ever syncing —
+        // should net out to "nothing to push," not two vote-endpoint calls
+        // (which would incorrectly flip the caller's real server-side vote
+        // state an extra time — see `GroupMealSuggestion.lastKnownServerVote`'s
         // own doc comment on exactly this scenario).
-        let suggestion = makeSuggestion(votedByMe: false, voteCount: 3)
-        suggestion.toggleVoteLocally()
-        suggestion.toggleVoteLocally()
-        XCTAssertFalse(suggestion.votedByMe)
-        XCTAssertEqual(suggestion.voteCount, 3)
+        let suggestion = makeSuggestion(myVote: nil, upvoteCount: 3, downvoteCount: 0)
+        suggestion.voteLocally(.up)
+        suggestion.voteLocally(.up)
+        XCTAssertNil(suggestion.myVote)
+        XCTAssertEqual(suggestion.upvoteCount, 3)
+        XCTAssertEqual(suggestion.downvoteCount, 0)
         XCTAssertEqual(suggestion.syncState, .synced)
     }
 
-    func testUnvotingAnAlreadyVotedSuggestionDecrementsCount() {
-        let suggestion = makeSuggestion(votedByMe: true, voteCount: 5)
-        suggestion.toggleVoteLocally()
-        XCTAssertFalse(suggestion.votedByMe)
-        XCTAssertEqual(suggestion.voteCount, 4)
+    func testRetractingAnAlreadyUpvotedSuggestionDecrementsUpvoteCount() {
+        let suggestion = makeSuggestion(myVote: .up, upvoteCount: 5, downvoteCount: 0)
+        suggestion.voteLocally(.up)
+        XCTAssertNil(suggestion.myVote)
+        XCTAssertEqual(suggestion.upvoteCount, 4)
+        XCTAssertEqual(suggestion.downvoteCount, 0)
+        XCTAssertEqual(suggestion.syncState, .pendingUpdate)
+    }
+
+    /// The behavior that's actually new here: tapping the *other* thumb
+    /// switches the vote in one step, moving the suggestion's count from one
+    /// bucket to the other rather than just adding to a second one.
+    func testSwitchingFromUpvoteToDownvoteMovesTheCountBetweenBuckets() {
+        let suggestion = makeSuggestion(myVote: .up, upvoteCount: 4, downvoteCount: 1)
+        suggestion.voteLocally(.down)
+        XCTAssertEqual(suggestion.myVote, .down)
+        XCTAssertEqual(suggestion.upvoteCount, 3)
+        XCTAssertEqual(suggestion.downvoteCount, 2)
+        XCTAssertEqual(suggestion.syncState, .pendingUpdate)
+    }
+
+    func testSwitchingFromDownvoteToUpvoteMovesTheCountBetweenBuckets() {
+        let suggestion = makeSuggestion(myVote: .down, upvoteCount: 2, downvoteCount: 3)
+        suggestion.voteLocally(.up)
+        XCTAssertEqual(suggestion.myVote, .up)
+        XCTAssertEqual(suggestion.upvoteCount, 3)
+        XCTAssertEqual(suggestion.downvoteCount, 2)
+        XCTAssertEqual(suggestion.syncState, .pendingUpdate)
+    }
+
+    /// Three changes in a row while offline (up -> down -> retract) should
+    /// still collapse to exactly the right end state, same "no net change
+    /// still means no push" guarantee as the simpler two-tap case above, now
+    /// exercised across a switch as well as a plain toggle.
+    func testSwitchingThenRetractingReturnsToSyncedWhenBackAtTheServerValue() {
+        let suggestion = makeSuggestion(myVote: .up, upvoteCount: 4, downvoteCount: 1)
+        suggestion.voteLocally(.down) // switch to down: pendingUpdate
+        suggestion.voteLocally(.down) // retract the down: back to no vote at all
+        XCTAssertNil(suggestion.myVote)
+        XCTAssertEqual(suggestion.upvoteCount, 3)
+        XCTAssertEqual(suggestion.downvoteCount, 1)
+        // Net local state (no vote) still doesn't match the server's last-
+        // known value for this caller (an upvote) -> still pending, one
+        // `POST .../vote` call away from correct.
         XCTAssertEqual(suggestion.syncState, .pendingUpdate)
     }
 
     /// Regression guard for the bug this design note calls out on
-    /// `toggleVoteLocally` itself: toggling the vote on a suggestion that
+    /// `voteLocally(_:)` itself: changing the vote on a suggestion that
     /// hasn't even been pushed yet (`.pendingCreate`, still keyed by a local
     /// placeholder id) must NOT be promoted to `.pendingUpdate` — doing so
     /// would make the next sync try to `POST .../vote` against an id the
     /// server has never heard of, which can only fail and would permanently
     /// strand the row (never even attempting the create it still needs).
-    func testTogglingVoteOnAPendingCreateSuggestionNeverBecomesPendingUpdate() {
+    func testChangingVoteOnAPendingCreateSuggestionNeverBecomesPendingUpdate() {
         let suggestion = GroupMealSuggestion(
             id: GroupMealSuggestion.newLocalPlaceholderID(), groupID: "g1", date: .now, slot: .dinner,
-            restaurantName: "Diner", proposedByUserID: "u1", votedByMe: true, voteCount: 1,
+            restaurantName: "Diner", proposedByUserID: "u1", myVote: .up, upvoteCount: 1, downvoteCount: 0,
             syncState: .pendingCreate
         )
-        suggestion.toggleVoteLocally()
-        XCTAssertFalse(suggestion.votedByMe)
-        XCTAssertEqual(suggestion.voteCount, 0)
+        suggestion.voteLocally(.down)
+        XCTAssertEqual(suggestion.myVote, .down)
+        XCTAssertEqual(suggestion.upvoteCount, 0)
+        XCTAssertEqual(suggestion.downvoteCount, 1)
         // Still `.pendingCreate` — the row's very first push (the create
-        // itself) is still what's needed next, not a vote-toggle push.
+        // itself) is still what's needed next, not a vote-change push.
         XCTAssertEqual(suggestion.syncState, .pendingCreate)
         XCTAssertTrue(suggestion.isLocalPlaceholderID)
     }
 
     /// Same guard, for `.pendingDelete`: a suggestion queued for deletion
     /// (but not yet acknowledged) must not have its sync state clobbered by
-    /// a stray vote toggle either — the pending delete must win.
-    func testTogglingVoteOnAPendingDeleteSuggestionStaysPendingDelete() {
-        let suggestion = makeSuggestion(votedByMe: false, voteCount: 2)
+    /// a stray vote change either — the pending delete must win.
+    func testChangingVoteOnAPendingDeleteSuggestionStaysPendingDelete() {
+        let suggestion = makeSuggestion(myVote: nil, upvoteCount: 2, downvoteCount: 0)
         suggestion.syncState = .pendingDelete
-        suggestion.toggleVoteLocally()
+        suggestion.voteLocally(.up)
         XCTAssertEqual(suggestion.syncState, .pendingDelete)
+    }
+}
+
+/// Unit tests for `SuggestionVoteReconciliation.directionToPush` — the pure
+/// "which direction do we actually send?" decision `GroupSyncService
+/// .pushSuggestions`'s `.pendingUpdate` case relies on. See that type's own
+/// doc comment in GroupSyncService.swift for the full reasoning; these tests
+/// cover every combination the type system allows, same "table-driven, pure
+/// function" discipline `GroupSyncReconciliationTests` above applies to
+/// `ReconciliationAction.decide`.
+final class SuggestionVoteReconciliationTests: XCTestCase {
+
+    func testNoLocalVoteAndNoKnownServerVote_pushesNothing() {
+        XCTAssertNil(SuggestionVoteReconciliation.directionToPush(myVote: nil, lastKnownServerVote: nil))
+    }
+
+    func testLocalUpvoteWithNoKnownServerVote_pushesUp() {
+        // Adds a fresh upvote server-side.
+        XCTAssertEqual(SuggestionVoteReconciliation.directionToPush(myVote: .up, lastKnownServerVote: nil), .up)
+    }
+
+    func testLocalDownvoteWithNoKnownServerVote_pushesDown() {
+        XCTAssertEqual(SuggestionVoteReconciliation.directionToPush(myVote: .down, lastKnownServerVote: nil), .down)
+    }
+
+    func testLocalUpvoteOverAKnownServerDownvote_pushesUp() {
+        // The backend's own toggle-or-switch semantics turn "send UP while
+        // the server has DOWN" into a switch, landing exactly on `.up`.
+        XCTAssertEqual(SuggestionVoteReconciliation.directionToPush(myVote: .up, lastKnownServerVote: .down), .up)
+    }
+
+    func testLocalDownvoteOverAKnownServerUpvote_pushesDown() {
+        XCTAssertEqual(SuggestionVoteReconciliation.directionToPush(myVote: .down, lastKnownServerVote: .up), .down)
+    }
+
+    func testNoLocalVoteWithAKnownServerUpvote_pushesUpToRetractIt() {
+        // The caller's local changes net out to "no vote" — the only way to
+        // reach that server-side is to send the SAME direction the server
+        // already has, which retracts it.
+        XCTAssertEqual(SuggestionVoteReconciliation.directionToPush(myVote: nil, lastKnownServerVote: .up), .up)
+    }
+
+    func testNoLocalVoteWithAKnownServerDownvote_pushesDownToRetractIt() {
+        XCTAssertEqual(SuggestionVoteReconciliation.directionToPush(myVote: nil, lastKnownServerVote: .down), .down)
     }
 }
 
@@ -274,12 +371,13 @@ final class GroupLocalPlaceholderIDTests: XCTestCase {
 /// used to miss the "already set before dispatch" half of this entirely).
 ///
 /// Split the same way `GroupSyncReconciliationTests`/
-/// `GroupMealSuggestionVoteToggleTests` are: first the pure decision
-/// function (no `ModelContext`, no network), then the actual model mutation
-/// (`GroupSyncService.applyRemote`, exercised directly against a
-/// `GroupSharedGroceryItem` constructed in-memory, no `ModelContext`
-/// needed — same as `GroupMealSuggestionVoteToggleTests` constructing a
-/// `GroupMealSuggestion` directly). The one piece this can't exercise
+/// `GroupMealSuggestionVoteTests`/`SuggestionVoteReconciliationTests` are:
+/// first the pure decision function (no `ModelContext`, no network), then
+/// the actual model mutation (`GroupSyncService.applyRemote`, exercised
+/// directly against a `GroupSharedGroceryItem` constructed in-memory, no
+/// `ModelContext` needed — same as `GroupMealSuggestionVoteTests`
+/// constructing a `GroupMealSuggestion` directly). The one piece this can't
+/// exercise
 /// end-to-end without a live network layer — actually dispatching
 /// `AccountsAPIClient.createGroupGroceryItem` and having a concurrent
 /// `Task` mutate the row mid-`await` — is covered by hand-tracing

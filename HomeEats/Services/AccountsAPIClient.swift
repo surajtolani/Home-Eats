@@ -472,12 +472,18 @@ extension AccountsAPIClient {
         return response.suggestion
     }
 
-    /// Toggles the caller's own vote on/off — any member. Returns the
-    /// updated suggestion (fresh `voteCount`/`votedByMe`), same as the
-    /// backend route itself.
-    static func toggleGroupMealSuggestionVote(groupID: String, suggestionID: String) async throws -> RemoteMealSuggestion {
+    /// Thumbs up/down on a suggestion — any member. Behaves like any real
+    /// thumbs-up/down control (see the backend route's own doc comment in
+    /// routes/groupMealPlan.js): sending the same `direction` the caller
+    /// already voted retracts it; sending the opposite direction switches
+    /// it. Returns the updated suggestion (fresh `upvoteCount`/
+    /// `downvoteCount`/`myVote`), same as the backend route itself.
+    static func voteOnGroupMealSuggestion(groupID: String, suggestionID: String, direction: VoteDirection) async throws -> RemoteMealSuggestion {
         struct Response: Decodable { let suggestion: RemoteMealSuggestion }
-        let response: Response = try await send("POST", path: "groups/\(groupID)/meal-plan/suggestions/\(suggestionID)/vote")
+        let response: Response = try await send(
+            "POST", path: "groups/\(groupID)/meal-plan/suggestions/\(suggestionID)/vote",
+            body: ["direction": direction.rawValue]
+        )
         return response.suggestion
     }
 

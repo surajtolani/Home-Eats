@@ -57,7 +57,7 @@ enum ReconciliationAction: Equatable {
             // this state once the create actually lands.
             return .keepLocal
         case (.pendingUpdate, _):
-            // A local edit (or, for a suggestion, a vote toggle) is still
+            // A local edit (or, for a suggestion, a vote change) is still
             // waiting to be pushed -> don't let the pull stomp it, whether
             // or not the server's own copy of this row still exists at all.
             return .keepLocal
@@ -114,6 +114,54 @@ enum GroceryCreateReconciliation {
     }
 }
 
+/// The "which direction do we actually send?" decision for a
+/// `GroupMealSuggestion` sitting in `.pendingUpdate` (a local vote change
+/// still waiting to be pushed — see that model's `syncState` doc comment).
+/// Exposed standalone as a pure function, same reasoning as
+/// `ReconciliationAction`/`GroceryCreateReconciliation` above: this is the
+/// one piece of the vote-push path that's actually a judgment call (not just
+/// "call the API with the obvious value"), and past bugs in this exact sync
+/// engine have come from exactly this kind of decision living inline and
+/// untested inside an `async` method instead (see this file's own "Known
+/// limitations" note, and the create-race-condition history
+/// `GroupGroceryItemCreateRaceTests` covers).
+///
+/// `POST .../vote` toggles-or-switches unconditionally rather than "set my
+/// vote to X" (see that route's own doc comment in
+/// routes/groupMealPlan.js): sending the same direction the server already
+/// has for this caller retracts it, sending the other direction switches it.
+/// That asymmetry is what makes a single, uniform rule possible here even
+/// though any number of local vote changes (up, down, retract, up again, ...)
+/// may have happened offline before this push ever runs:
+///
+/// - If `myVote` is non-nil, it's the caller's actual current target —
+///   sending it always lands correctly, whether the server currently has no
+///   vote from this caller (adds it) or the opposite one (switches it) —
+///   the server's current state is EITHER of those, never already
+///   `myVote` itself, since this is only ever called when
+///   `myVote != lastKnownServerVote`.
+/// - If `myVote` is `nil` (the caller's local changes net out to "no vote at
+///   all"), there's nothing to "set" — the only way to reach that state is
+///   to retract whatever the server currently has, i.e. send
+///   `lastKnownServerVote` right back at it (same-direction-retracts).
+///
+/// So `myVote ?? lastKnownServerVote` is correct in both cases — no need to
+/// separately track *which* directions were tapped along the way, only
+/// where the caller's local state ended up versus what the server last
+/// confirmed.
+enum SuggestionVoteReconciliation {
+    /// - Returns: the direction to send to `POST .../vote`, or `nil` if
+    ///   there's genuinely nothing to push (`myVote == lastKnownServerVote`
+    ///   — both `nil`, both `.up`, or both `.down`). Callers only ever
+    ///   invoke this for a row already in `.pendingUpdate`, which guarantees
+    ///   the two differ and this never actually returns `nil` in practice —
+    ///   it's still handled explicitly (never force-unwrapped) so a future
+    ///   change to that invariant fails safe instead of crashing.
+    static func directionToPush(myVote: VoteDirection?, lastKnownServerVote: VoteDirection?) -> VoteDirection? {
+        myVote ?? lastKnownServerVote
+    }
+}
+
 /// Pushes local pending group meal-plan/grocery-list edits to the backend,
 /// then pulls the server's current state back down and reconciles it into
 /// the local SwiftData store — the offline-capable sync engine behind
@@ -141,31 +189,34 @@ enum GroceryCreateReconciliation {
 ///   having no version/`If-Match` field to detect the collision with in the
 ///   first place (see `GroupSyncState`'s doc comment) — a real fix would
 ///   need a backend schema change, out of scope for this iOS-only task.
-/// - **A suggestion's vote toggle can still race a fellow member's vote.**
-///   `POST .../vote` toggles unconditionally rather than "set my vote to
-///   X" — this client compensates for *its own* double-toggle case (see
-///   `GroupMealSuggestion.lastKnownServerVotedByMe`'s doc comment), but if
-///   the caller's own pending toggle sits queued for a while (offline) and,
+/// - **A suggestion's vote can still race a fellow member's vote.**
+///   `POST .../vote` toggles/switches unconditionally rather than
+///   "set my vote to X, whatever it currently is" — this client compensates
+///   for *its own* multiple-changes-while-offline case by always deriving
+///   the direction it sends from `myVote ?? lastKnownServerVote` (see
+///   `GroupMealSuggestion.lastKnownServerVote`'s doc comment), but if the
+///   caller's own pending vote change sits queued for a while (offline) and,
 ///   in the meantime, a push from a *different* device changes that same
-///   suggestion's vote count, this device's eventual toggle still lands
-///   correctly for the caller's own vote (toggling is per-user, keyed by
+///   suggestion's counts, this device's eventual push still lands correctly
+///   for the caller's own vote (voting is per-user, keyed by
 ///   `@@unique([suggestionId, userId])` — see that model's doc comment in
 ///   prisma/schema.prisma) — so this particular case is actually fine; it's
-///   called out here only because it's the one place a "toggle" endpoint
+///   called out here only because it's the one place a toggle-style endpoint
 ///   could plausibly have been a problem, and it's worth being explicit
 ///   that it isn't.
-/// - **Un-voting your own suggestion before it's ever synced is a no-op
-///   until the sync happens.** `GroupMealSuggestion.toggleVoteLocally()`
+/// - **Changing your vote on your own suggestion before it's ever synced is
+///   a no-op until the sync happens.** `GroupMealSuggestion.voteLocally(_:)`
 ///   deliberately never promotes a still-`.pendingCreate` row to
 ///   `.pendingUpdate` (see that method's own doc comment for the stuck-row
 ///   bug that would otherwise cause) — the practical effect is that
-///   proposing a suggestion and immediately un-voting your own default
-///   vote, all before the next sync, has that vote silently reappear once
-///   the create succeeds (the backend always auto-votes the proposer on
-///   creation). One extra tap after syncing fixes it; a real fix would mean
-///   queuing a separate "vote intent" ahead of a still-unconfirmed create,
-///   which isn't worth the complexity for what's a narrow, low-stakes edge
-///   case.
+///   proposing a suggestion and immediately changing your own default
+///   upvote (retracting it, or switching it to a downvote), all before the
+///   next sync, has that vote silently reset back to the auto-applied
+///   upvote once the create succeeds (the backend always auto-votes the
+///   proposer up on creation). One extra tap after syncing fixes it; a real
+///   fix would mean queuing a separate "vote intent" ahead of a still-
+///   unconfirmed create, which isn't worth the complexity for what's a
+///   narrow, low-stakes edge case.
 /// - **`adopt`/`accept` are immediate/online-only, not queued.** Turning a
 ///   suggestion into a decided meal, or a suggested grocery item into a
 ///   real one, is a compound server-side transaction with no sensible
@@ -329,27 +380,47 @@ enum GroupSyncService {
                     }
                     row.id = created.id
                     row.createdAt = created.createdAt
-                    row.votedByMe = created.votedByMe
-                    row.lastKnownServerVotedByMe = created.votedByMe
-                    row.voteCount = created.voteCount
+                    row.myVote = created.myVote
+                    row.lastKnownServerVote = created.myVote
+                    row.upvoteCount = created.upvoteCount
+                    row.downvoteCount = created.downvoteCount
                     row.syncState = .synced
                 } catch {
                     allOK = false
                 }
             case .pendingUpdate:
-                // Only a vote toggle can ever put a suggestion in this
+                // Only a vote change can ever put a suggestion in this
                 // state (see `GroupMealSuggestion.syncState`'s doc comment)
                 // — a brand-new, not-yet-pushed suggestion stays
                 // `.pendingCreate` until its first push succeeds, never
                 // also `.pendingUpdate` at the same time, so `row.id` here
                 // is always a real server id already.
+                //
+                // The direction actually sent is derived, not just `myVote`
+                // — see `SuggestionVoteReconciliation.directionToPush`'s own
+                // doc comment (above, in this file) for why that derivation
+                // is correct regardless of how many local vote changes
+                // (switch, retract, switch again, ...) led up to this one
+                // push.
+                guard let direction = SuggestionVoteReconciliation.directionToPush(
+                    myVote: row.myVote, lastKnownServerVote: row.lastKnownServerVote
+                ) else {
+                    // Can't happen given `.pendingUpdate`'s invariant (this
+                    // state means `myVote != lastKnownServerVote`, so at
+                    // least one must be non-nil), but fail loudly-but-safely
+                    // (skip, don't crash) rather than force-unwrapping if
+                    // that invariant is ever violated by a future change.
+                    allOK = false
+                    continue
+                }
                 do {
-                    let updated = try await AccountsAPIClient.toggleGroupMealSuggestionVote(
-                        groupID: groupID, suggestionID: row.id
+                    let updated = try await AccountsAPIClient.voteOnGroupMealSuggestion(
+                        groupID: groupID, suggestionID: row.id, direction: direction
                     )
-                    row.votedByMe = updated.votedByMe
-                    row.lastKnownServerVotedByMe = updated.votedByMe
-                    row.voteCount = updated.voteCount
+                    row.myVote = updated.myVote
+                    row.lastKnownServerVote = updated.myVote
+                    row.upvoteCount = updated.upvoteCount
+                    row.downvoteCount = updated.downvoteCount
                     row.syncState = .synced
                 } catch {
                     allOK = false
@@ -647,17 +718,19 @@ enum GroupSyncService {
                 existing.isOrderIn = remoteSuggestion.isOrderIn
                 existing.proposedByUserID = remoteSuggestion.proposedByUserID
                 existing.createdAt = remoteSuggestion.createdAt
-                existing.votedByMe = remoteSuggestion.votedByMe
-                existing.lastKnownServerVotedByMe = remoteSuggestion.votedByMe
-                existing.voteCount = remoteSuggestion.voteCount
+                existing.myVote = remoteSuggestion.myVote
+                existing.lastKnownServerVote = remoteSuggestion.myVote
+                existing.upvoteCount = remoteSuggestion.upvoteCount
+                existing.downvoteCount = remoteSuggestion.downvoteCount
                 existing.syncState = .synced
             } else {
                 modelContext.insert(GroupMealSuggestion(
                     id: remoteSuggestion.id, groupID: groupID, date: remoteSuggestion.date, slot: remoteSuggestion.slot.localSlot,
                     recipeID: remoteSuggestion.recipeID, cachedRecipeTitle: title, restaurantName: remoteSuggestion.restaurantName,
                     isOrderIn: remoteSuggestion.isOrderIn, proposedByUserID: remoteSuggestion.proposedByUserID,
-                    createdAt: remoteSuggestion.createdAt, votedByMe: remoteSuggestion.votedByMe, voteCount: remoteSuggestion.voteCount,
-                    lastKnownServerVotedByMe: remoteSuggestion.votedByMe, syncState: .synced
+                    createdAt: remoteSuggestion.createdAt, myVote: remoteSuggestion.myVote,
+                    upvoteCount: remoteSuggestion.upvoteCount, downvoteCount: remoteSuggestion.downvoteCount,
+                    lastKnownServerVote: remoteSuggestion.myVote, syncState: .synced
                 ))
             }
         }

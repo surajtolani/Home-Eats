@@ -42,7 +42,7 @@ final class GroupSharedPlanDecodingTests: XCTestCase {
               "id": "s1", "groupId": "g1", "date": "2024-06-12T00:00:00.000Z", "slot": "BREAKFAST",
               "recipeId": null, "restaurantName": "Diner", "isOrderIn": false,
               "proposedByUserId": "u2", "createdAt": "2024-06-03T09:00:00.000Z",
-              "voteCount": 2, "votedByMe": true
+              "upvoteCount": 2, "downvoteCount": 1, "myVote": "UP"
             }
           ]
         }
@@ -67,9 +67,34 @@ final class GroupSharedPlanDecodingTests: XCTestCase {
         XCTAssertEqual(response.suggestions.count, 1)
         let suggestion = response.suggestions[0]
         XCTAssertEqual(suggestion.slot, .breakfast)
-        XCTAssertEqual(suggestion.voteCount, 2)
-        XCTAssertTrue(suggestion.votedByMe)
+        XCTAssertEqual(suggestion.upvoteCount, 2)
+        XCTAssertEqual(suggestion.downvoteCount, 1)
+        XCTAssertEqual(suggestion.myVote, .up)
         XCTAssertEqual(suggestion.proposedByUserID, "u2")
+    }
+
+    /// Regression guard for the caller-having-no-vote case: `myVote` is
+    /// `null` (not just absent), and `downvoteCount` can be nonzero on its
+    /// own with `upvoteCount` at zero — both must decode cleanly, matching
+    /// `serializeSuggestion(...)`'s actual shape in routes/groupMealPlan.js
+    /// (it always sends both counts plus `myVote`, `null` when the caller
+    /// hasn't voted at all).
+    func testRemoteMealSuggestionDecodesWithNoCallerVoteAndOnlyDownvotes() throws {
+        struct Fixture: Decodable { let suggestion: RemoteMealSuggestion }
+        let json = """
+        {
+          "suggestion": {
+            "id": "s2", "groupId": "g1", "date": "2024-06-13T00:00:00.000Z", "slot": "DINNER",
+            "recipeId": null, "restaurantName": "Pizza Place", "isOrderIn": true,
+            "proposedByUserId": "u3", "createdAt": "2024-06-04T09:00:00.000Z",
+            "upvoteCount": 0, "downvoteCount": 3, "myVote": null
+          }
+        }
+        """
+        let response = try decoder.decode(Fixture.self, from: data(json))
+        XCTAssertEqual(response.suggestion.upvoteCount, 0)
+        XCTAssertEqual(response.suggestion.downvoteCount, 3)
+        XCTAssertNil(response.suggestion.myVote)
     }
 
     /// Regression guard for the one case routes/groupMealPlan.js's own doc

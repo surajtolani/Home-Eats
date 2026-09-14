@@ -721,7 +721,11 @@ struct GroupDaySlotsView: View {
     private func suggestions(for slot: MealSlot) -> [GroupMealSuggestion] {
         allSuggestions
             .filter { $0.syncState != .pendingDelete && $0.date.isSameDay(as: normalizedDate) && $0.slot == slot }
-            .sorted { $0.voteCount > $1.voteCount }
+            // Net score (upvotes minus downvotes), highest first — same
+            // "most popular suggestion floats to the top" ordering the old
+            // upvote-only `voteCount` sort gave, generalized now that a
+            // suggestion can also collect downvotes.
+            .sorted { $0.upvoteCount - $0.downvoteCount > $1.upvoteCount - $1.downvoteCount }
     }
 
     private func memberName(_ userID: String) -> String {
@@ -752,7 +756,7 @@ struct GroupDaySlotsView: View {
                     isManager: isManager,
                     canRemove: isManager || suggestion.proposedByUserID == currentUserID,
                     isKnownOffline: isKnownOffline,
-                    onVote: { toggleVote(suggestion) },
+                    onVote: { direction in vote(suggestion, direction: direction) },
                     onAdopt: { Task { await adopt(suggestion) } },
                     onRemove: { withdrawSuggestion(suggestion) }
                 )
@@ -804,8 +808,8 @@ struct GroupDaySlotsView: View {
 
     // MARK: - Actions
 
-    private func toggleVote(_ suggestion: GroupMealSuggestion) {
-        suggestion.toggleVoteLocally()
+    private func vote(_ suggestion: GroupMealSuggestion, direction: VoteDirection) {
+        suggestion.voteLocally(direction)
         try? modelContext.save()
         onLocalWrite()
     }
@@ -898,7 +902,7 @@ private struct GroupSuggestionRow: View {
     let isManager: Bool
     let canRemove: Bool
     let isKnownOffline: Bool
-    let onVote: () -> Void
+    let onVote: (VoteDirection) -> Void
     let onAdopt: () -> Void
     let onRemove: () -> Void
 
@@ -929,13 +933,33 @@ private struct GroupSuggestionRow: View {
             if suggestion.syncState != .synced { pendingIndicator }
             // Voting is open to every member, regardless of role — mirrors
             // `POST .../suggestions/:id/vote`, which has no role gate at
-            // all (see routes/groupMealPlan.js).
+            // all (see routes/groupMealPlan.js). Two separate small
+            // controls, not one toggle, now that a vote has a direction —
+            // each shows its own count (not a single collapsed net score)
+            // so "2 people like this, 1 doesn't" stays legible at a glance,
+            // matching the backend's own `upvoteCount`/`downvoteCount` split
+            // (see `serializeSuggestion(...)`'s doc comment in
+            // routes/groupMealPlan.js for why that split, not a net number,
+            // is what the API returns in the first place). `.small` control
+            // size keeps the pair no wider than the single vote button this
+            // replaces, in a row that's already dense.
             Button {
-                onVote()
+                onVote(.up)
             } label: {
-                Label("\(suggestion.voteCount)", systemImage: suggestion.votedByMe ? "hand.thumbsup.fill" : "hand.thumbsup")
+                Label("\(suggestion.upvoteCount)", systemImage: suggestion.myVote == .up ? "hand.thumbsup.fill" : "hand.thumbsup")
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(suggestion.myVote == .up ? .brandForest : nil)
+
+            Button {
+                onVote(.down)
+            } label: {
+                Label("\(suggestion.downvoteCount)", systemImage: suggestion.myVote == .down ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(suggestion.myVote == .down ? .brandTerracotta : nil)
             // MANAGER only — mirrors `POST .../suggestions/:id/adopt`
             // exactly. Disabled while offline or still a not-yet-synced
             // placeholder row (the server doesn't know its real id yet).
@@ -1089,7 +1113,7 @@ struct GroupMealSheetContent: View {
         let suggestion = GroupMealSuggestion(
             id: GroupMealSuggestion.newLocalPlaceholderID(), groupID: groupID, date: normalizedDate, slot: slot,
             recipeID: recipeID, cachedRecipeTitle: recipeTitle, restaurantName: restaurantName, isOrderIn: isOrderIn,
-            proposedByUserID: currentUserID, votedByMe: true, voteCount: 1, syncState: .pendingCreate
+            proposedByUserID: currentUserID, myVote: .up, upvoteCount: 1, downvoteCount: 0, syncState: .pendingCreate
         )
         modelContext.insert(suggestion)
         try? modelContext.save()

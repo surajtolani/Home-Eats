@@ -471,12 +471,33 @@ struct RemotePlannedMeal: Codable, Identifiable {
     }
 }
 
+/// Mirrors the backend's `VoteDirection` enum exactly (`UP`/`DOWN` — see
+/// prisma/schema.prisma), used both as the wire decode target AND as the
+/// type the local `GroupMealSuggestion.myVote`/`lastKnownServerVote`
+/// actually store — same "no existing local-only enum this parallels, so
+/// one plain wire-spelled enum is simplest" reasoning `GroupGrocerySection`
+/// above already gives for its own, structurally identical situation
+/// (unlike `RemoteMealSlot`/`RemoteGroceryCategory`, there's no separate
+/// *personal*, non-group vote-direction concept to convert to/from — the
+/// personal `MealSuggestion` model is upvote-only, out of this feature's
+/// scope entirely). A real Swift enum (not a raw `String`/`Bool`), same
+/// reasoning as `GroupRole`: the new thumbs-up/thumbs-down suggestion row
+/// genuinely branches UI on which direction (if any) the caller voted, not
+/// just whether some vote exists.
+enum VoteDirection: String, Codable, Equatable {
+    case up = "UP"
+    case down = "DOWN"
+}
+
 /// `GET /groups/:groupId/meal-plan`'s `suggestions` rows, and every
 /// suggestion-mutating route's response — exactly `serializeSuggestion(...)`
-/// in routes/groupMealPlan.js, including the caller-relative `voteCount`/
-/// `votedByMe` pair that route's own doc comment explains (a real vote join
-/// table under the hood, not a plain counter, specifically so the API can
-/// answer "did *I* already vote for this" per suggestion).
+/// in routes/groupMealPlan.js. `upvoteCount`/`downvoteCount` (not a single
+/// collapsed net score) and `myVote: "UP" | "DOWN" | null` (replacing the
+/// old boolean `votedByMe`) — see that function's own doc comment in
+/// routes/groupMealPlan.js for why: a lone net score can't tell "nobody's
+/// voted" apart from "deeply split," and a UI with two distinct thumbs-up/
+/// thumbs-down controls needs to know *which* one (if either) to highlight
+/// for the caller, not just whether they voted at all.
 struct RemoteMealSuggestion: Codable, Identifiable {
     let id: String
     let groupID: String
@@ -487,11 +508,12 @@ struct RemoteMealSuggestion: Codable, Identifiable {
     let isOrderIn: Bool
     let proposedByUserID: String
     let createdAt: Date
-    let voteCount: Int
-    let votedByMe: Bool
+    let upvoteCount: Int
+    let downvoteCount: Int
+    let myVote: VoteDirection?
 
     enum CodingKeys: String, CodingKey {
-        case id, date, slot, restaurantName, isOrderIn, createdAt, voteCount, votedByMe
+        case id, date, slot, restaurantName, isOrderIn, createdAt, upvoteCount, downvoteCount, myVote
         case groupID = "groupId"
         case recipeID = "recipeId"
         case proposedByUserID = "proposedByUserId"

@@ -176,40 +176,46 @@ final class GroupMealSuggestion {
     var isOrderIn: Bool
     var proposedByUserID: String
     var createdAt: Date
-    /// Whether the *signed-in caller* has voted for this suggestion — the
-    /// local mirror of the backend's own per-viewer `votedByMe` (see
-    /// `serializeSuggestion` in routes/groupMealPlan.js). This is the one
-    /// field on this model that's genuinely viewer-relative rather than a
-    /// plain mirror of a database column — fine, since this local store
-    /// only ever represents "what the signed-in user on this device sees,"
-    /// same as the backend response it's built from.
-    var votedByMe: Bool
-    /// The backend's own vote count for this suggestion — mirrored
-    /// directly since displaying it doesn't need the individual voter list
-    /// (see `MealSuggestionVote`'s own doc comment on why the API itself
-    /// only ever exposes a count plus `votedByMe`, never the full voter
-    /// list).
-    var voteCount: Int
-    /// The last `votedByMe` value this device actually confirmed with the
+    /// The *signed-in caller's* own vote on this suggestion — `nil` (no
+    /// vote), `.up`, or `.down` — the local mirror of the backend's own
+    /// per-viewer `myVote` (see `serializeSuggestion` in
+    /// routes/groupMealPlan.js). This is the one field on this model that's
+    /// genuinely viewer-relative rather than a plain mirror of a database
+    /// column — fine, since this local store only ever represents "what the
+    /// signed-in user on this device sees," same as the backend response
+    /// it's built from.
+    var myVote: VoteDirection?
+    /// The backend's own upvote/downvote counts for this suggestion —
+    /// mirrored directly since displaying them doesn't need the individual
+    /// voter list (see `MealSuggestionVote`'s own doc comment on why the API
+    /// itself only ever exposes counts plus `myVote`, never the full voter
+    /// list). Two separate counts, not one net score, for the same reason
+    /// `serializeSuggestion(...)`'s own doc comment gives: a lone net score
+    /// can't tell "nobody's voted" apart from "deeply split."
+    var upvoteCount: Int
+    var downvoteCount: Int
+    /// The last `myVote` value this device actually confirmed with the
     /// server (set on both a successful push and a pull's upsert) — kept
-    /// separately from `votedByMe` itself so a local vote toggle can be
-    /// detected as "needs pushing" (`votedByMe != lastKnownServerVotedByMe`)
-    /// without needing a full field-diff mechanism, and so two toggles
-    /// in a row while offline (vote, then un-vote again before ever
-    /// syncing) correctly cancel back out to "nothing to push" instead of
-    /// firing the toggle endpoint an extra, unnecessary time — the backend
-    /// route toggles unconditionally on each call, so sending one when
-    /// nothing net changed would silently flip the caller's real vote state
-    /// the wrong way.
-    var lastKnownServerVotedByMe: Bool
+    /// separately from `myVote` itself so a local vote change can be
+    /// detected as "needs pushing" (`myVote != lastKnownServerVote`)
+    /// without needing a full field-diff mechanism, and so several vote
+    /// changes in a row while offline (e.g. vote up, then switch to down,
+    /// then un-vote entirely, all before ever syncing) correctly collapse
+    /// to whatever single `POST .../vote` call actually reaches the
+    /// caller's intended end state, instead of firing the endpoint once per
+    /// tap — see `voteLocally(_:)`'s own doc comment, and
+    /// `GroupSyncService.pushSuggestions`'s `.pendingUpdate` case, for
+    /// exactly how the direction sent to that one call is derived
+    /// (`myVote ?? lastKnownServerVote`) so it's correct regardless of how
+    /// many local changes led up to it.
+    var lastKnownServerVote: VoteDirection?
     /// This row's sync-tracking state. `.pendingUpdate` here specifically
-    /// means "the local `votedByMe` differs from `lastKnownServerVotedByMe`
-    /// and still needs `POST .../vote` sent" — see the field's own doc
-    /// comment above. A suggestion's other fields (date/slot/
-    /// recipe-or-restaurant) never change after creation on the backend
-    /// (there's no `PATCH` route for one at all — only create, vote, adopt,
-    /// delete), so a vote toggle is the only kind of "update" this row can
-    /// ever have pending.
+    /// means "the local `myVote` differs from `lastKnownServerVote` and
+    /// still needs `POST .../vote` sent" — see that field's own doc comment
+    /// above. A suggestion's other fields (date/slot/recipe-or-restaurant)
+    /// never change after creation on the backend (there's no `PATCH` route
+    /// for one at all — only create, vote, adopt, delete), so a vote change
+    /// is the only kind of "update" this row can ever have pending.
     var syncState: GroupSyncState
     var serverUpdatedAt: Date?
 
@@ -224,9 +230,10 @@ final class GroupMealSuggestion {
         isOrderIn: Bool = false,
         proposedByUserID: String,
         createdAt: Date = .now,
-        votedByMe: Bool,
-        voteCount: Int,
-        lastKnownServerVotedByMe: Bool? = nil,
+        myVote: VoteDirection?,
+        upvoteCount: Int,
+        downvoteCount: Int,
+        lastKnownServerVote: VoteDirection? = nil,
         syncState: GroupSyncState = .synced,
         serverUpdatedAt: Date? = nil
     ) {
@@ -240,15 +247,25 @@ final class GroupMealSuggestion {
         self.isOrderIn = isOrderIn
         self.proposedByUserID = proposedByUserID
         self.createdAt = createdAt
-        self.votedByMe = votedByMe
-        self.voteCount = voteCount
-        // Defaults to `votedByMe` itself — the natural "nothing pending
-        // yet" starting point for a freshly-created-locally suggestion
-        // (the proposer is always auto-voted, mirroring the backend's own
-        // `votes: { create: [{ userId: req.userId }] }`), and for a
-        // freshly-pulled one (the server's own value, so nothing looks
-        // pending the moment it's first seen).
-        self.lastKnownServerVotedByMe = lastKnownServerVotedByMe ?? votedByMe
+        self.myVote = myVote
+        self.upvoteCount = upvoteCount
+        self.downvoteCount = downvoteCount
+        // Defaults to `myVote` itself when omitted — the natural "nothing
+        // pending yet" starting point for a freshly-created-locally
+        // suggestion (the proposer is always auto-voted up, mirroring the
+        // backend's own `votes: { create: [{ userId: req.userId, direction:
+        // "UP" }] }`), and for a freshly-pulled one (every call site that
+        // pulls from the server passes this explicitly as the server's own
+        // `myVote` value, so it and `myVote` always agree and nothing looks
+        // pending the moment a row is first seen). No call site ever needs
+        // `lastKnownServerVote` to genuinely differ from `myVote` while also
+        // leaving it unspecified, so a single optional (same defaulting
+        // shape this field's prior Bool-typed incarnation,
+        // `lastKnownServerVotedByMe`, used) is enough — no need for a
+        // doubly-optional parameter just to distinguish "omitted" from
+        // "explicitly nil," since those two cases are never actually
+        // handled differently here.
+        self.lastKnownServerVote = lastKnownServerVote ?? myVote
         self.syncState = syncState
         self.serverUpdatedAt = serverUpdatedAt
     }
@@ -259,11 +276,15 @@ final class GroupMealSuggestion {
         return recipeID != nil ? "Recipe" : "Suggestion"
     }
 
-    /// Flips the local vote and updates `syncState` to match — the one
-    /// mutation this model supports directly (called from
-    /// `GroupSharedMealPlanView`'s vote button), leaving the actual network
+    /// Applies a thumbs-up/thumbs-down tap and updates `syncState` to
+    /// match — the one mutation this model supports directly (called from
+    /// `GroupSharedMealPlanView`'s vote buttons), leaving the actual network
     /// call to `GroupSyncService.push` on the next sync so voting works
-    /// instantly offline too.
+    /// instantly offline too. Mirrors the real thumbs-up/down control
+    /// behavior `POST .../vote` itself implements (see that route's own
+    /// doc comment in routes/groupMealPlan.js): tapping the direction
+    /// that's already this suggestion's `myVote` retracts it (`myVote`
+    /// becomes `nil`); tapping the other direction sets/switches to it.
     ///
     /// Deliberately never *downgrades* a `.pendingCreate`/`.pendingDelete`
     /// row to `.pendingUpdate`: this row's `id` is still a local placeholder
@@ -273,22 +294,38 @@ final class GroupMealSuggestion {
     /// heard of — a call that can only ever fail, permanently stranding the
     /// row (it would never even attempt the *create* call again, since
     /// `.pendingUpdate` — not `.pendingCreate` — is what it would now be
-    /// stuck as). A vote toggle on a still-`.pendingCreate` row instead just
-    /// updates `votedByMe`/`voteCount` locally and leaves the state alone —
-    /// the eventual create call always votes its proposer automatically
+    /// stuck as). A vote change on a still-`.pendingCreate` row instead just
+    /// updates `myVote`/the counts locally and leaves the state alone — the
+    /// eventual create call always votes its proposer up automatically
     /// either way (see `POST .../suggestions` in routes/groupMealPlan.js),
     /// so the common case (propose, don't touch your own vote before syncing)
     /// is unaffected; the one edge case this doesn't perfectly capture —
-    /// un-voting your own suggestion in the same offline stretch it was
-    /// created in — just has the vote silently reappear once the create
-    /// succeeds, correctable with one more tap after that, rather than
-    /// risking the row getting stuck forever.
-    func toggleVoteLocally() {
-        votedByMe.toggle()
-        voteCount += votedByMe ? 1 : -1
+    /// changing your vote on your own suggestion in the same offline stretch
+    /// it was created in — just has the vote silently reset to the
+    /// auto-applied upvote once the create succeeds, correctable with one
+    /// more tap after that, rather than risking the row getting stuck
+    /// forever.
+    func voteLocally(_ direction: VoteDirection) {
+        let previous = myVote
+        let next: VoteDirection? = (previous == direction) ? nil : direction
+        // Undo the previous vote's contribution, then apply the new one —
+        // same two-step shape `serializeSuggestion(...)`'s counts would see
+        // across an equivalent pair of server-side writes, so a row that
+        // never gets ahead of what a real push-then-pull would compute.
+        switch previous {
+        case .up: upvoteCount -= 1
+        case .down: downvoteCount -= 1
+        case nil: break
+        }
+        switch next {
+        case .up: upvoteCount += 1
+        case .down: downvoteCount += 1
+        case nil: break
+        }
+        myVote = next
         switch syncState {
         case .synced, .pendingUpdate:
-            syncState = votedByMe == lastKnownServerVotedByMe ? .synced : .pendingUpdate
+            syncState = myVote == lastKnownServerVote ? .synced : .pendingUpdate
         case .pendingCreate, .pendingDelete:
             break
         }
