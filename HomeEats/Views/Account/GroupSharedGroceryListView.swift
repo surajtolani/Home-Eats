@@ -221,19 +221,6 @@ struct GroupSharedGroceryListView: View {
                 groceryListTitleHeader
             }
 
-            Section {
-                quickAddField
-                    .listRowSeparator(.hidden)
-            }
-
-            if hasPendingChanges || isKnownOffline {
-                Section {
-                    Label(statusMessage, systemImage: "wifi.slash")
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             // The By Category/My Layout toggle AND the "+"/"Manage My
             // Layout" actions together — the "row below" the shared static
             // `GroupTopBar` (see that type's own doc comment for the
@@ -242,7 +229,12 @@ struct GroupSharedGroceryListView: View {
             // — moved here instead, per direct user request that the top
             // bar itself stay static with only the group switcher/
             // notifications/account icons on it, and "all the other things
-            // ... or anything else" go in a row underneath.
+            // ... or anything else" go in a row underneath. Placed directly
+            // under the title — ahead of the quick-add search bar below,
+            // which used to come first — per a later, separate direct user
+            // request: "the 'by category, my layout and the + and ...'
+            // should be above the 'add an item' search bar and closer to
+            // the grocery list title."
             Section {
                 HStack(spacing: 8) {
                     Picker("View", selection: $viewMode) {
@@ -269,6 +261,19 @@ struct GroupSharedGroceryListView: View {
                     .controlSize(.small)
                 }
                 .listRowSeparator(.hidden)
+            }
+
+            Section {
+                quickAddField
+                    .listRowSeparator(.hidden)
+            }
+
+            if hasPendingChanges || isKnownOffline {
+                Section {
+                    Label(statusMessage, systemImage: "wifi.slash")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if viewMode == .byCategory {
@@ -505,10 +510,18 @@ struct GroupSharedGroceryListView: View {
     private var suggestionsSection: some View {
         Section {
             DisclosureGroup(isExpanded: $suggestionsExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
+                // `.center` alignment (was `.leading`) plus explicit
+                // `.multilineTextAlignment(.center)` below — per direct
+                // user request ("the entire text under 'suggested' shoudl
+                // be centered horizontally - right now its tilted to the
+                // right"): left-aligned multi-line text wraps with a
+                // ragged right edge, which read as "tilted" rather than
+                // deliberately left-justified.
+                VStack(alignment: .center, spacing: 12) {
                     Text("Tap the days you want to pull ingredients from — anyone can generate suggestions, but a manager still has to accept them onto the real list.")
                         .font(.brandCaption)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                     suggestionDayStrip
                     HStack {
                         Button("Clear", action: clearSuggestionDates)
@@ -559,7 +572,7 @@ struct GroupSharedGroceryListView: View {
                         .padding(.vertical, 4)
                 }
             } label: {
-                majorHeader("Suggested")
+                majorHeader("Suggested From Your Cooking List")
             }
         } footer: {
             Text(isManager
@@ -618,19 +631,24 @@ struct GroupSharedGroceryListView: View {
             HStack(spacing: 8) {
                 ForEach(suggestionWindowDays, id: \.self) { day in
                     let isSelected = selectedSuggestionDates.contains(day)
+                    // Smaller circles + smaller font, per direct user
+                    // request — was 44x52 with a `.brandHeadline.bold()`
+                    // day number; now a more compact 36x42 with a smaller
+                    // day-number style, so the whole strip reads as a row
+                    // of quick date chips rather than a row of large tiles.
                     Button {
                         toggleSuggestionDate(day)
                     } label: {
-                        VStack(spacing: 2) {
+                        VStack(spacing: 1) {
                             Text(day.formatted(.dateTime.weekday(.abbreviated)))
-                                .font(.brandCaption2)
+                                .font(.system(size: 9))
                             Text(day.formatted(.dateTime.day()))
-                                .font(.brandHeadline.bold())
+                                .font(.brandCallout.bold())
                         }
-                        .frame(width: 44, height: 52)
+                        .frame(width: 36, height: 42)
                         .background(isSelected ? Color.brandForest : Color.secondary.opacity(0.12))
                         .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .clipShape(RoundedRectangle(cornerRadius: 9))
                     }
                     .buttonStyle(.plain)
                 }
@@ -998,9 +1016,21 @@ private struct GroupGroceryItemRow: View {
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.name.titleCasedForDisplay)
-                    .strikethrough(item.isChecked)
-                    .foregroundStyle(item.isChecked ? .secondary : .primary)
+                HStack(spacing: 6) {
+                    Text(item.name.titleCasedForDisplay)
+                        .strikethrough(item.isChecked)
+                        .foregroundStyle(item.isChecked ? .secondary : .primary)
+                    // Category shown right next to the name — direct user
+                    // request ("the categorization can be right next to the
+                    // actual ingredient name") rather than only visible
+                    // after opening the Edit sheet.
+                    Text(item.category.displayName)
+                        .font(.brandCaption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                }
                 if !item.quantityText.isEmpty {
                     Text(item.quantityText)
                         .font(.brandCaption)
@@ -1022,16 +1052,28 @@ private struct GroupGroceryItemRow: View {
                 .labelStyle(.iconOnly)
                 .foregroundStyle(.secondary)
 
-            // Renaming/recategorizing/changing quantity or section is
-            // MANAGER only — mirrors `PATCH .../grocery/:id`'s manager-only
-            // fields exactly.
-            if isManager {
-                Button(action: onEdit) {
-                    Image(systemName: "pencil.circle")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+            // A directly-visible trash icon — not manager-gated, same
+            // permission the swipe-to-delete "Remove" action below already
+            // had (routine maintenance, mirrors `DELETE .../grocery/:id` on
+            // a non-suggested item, open to any member) — per direct user
+            // request ("what happened to the +,- and trash can icon - can
+            // you use that icon instead of the 'edit item'"): the personal
+            // app's own item row always showed a trash affordance directly
+            // rather than only behind a swipe, and this brings that back.
+            // Renaming/recategorizing/changing quantity or section (the old
+            // `onEdit` pencil button this icon replaces in this always-
+            // visible slot) is still reachable — moved into the trailing
+            // swipe actions below, MANAGER-only, unchanged from before —
+            // not into a `.contextMenu`, which this screen's own
+            // `moveToAisleMenu` doc comment already established isn't
+            // reliably reachable here (a permanently-active `EditMode` list
+            // swallows the long-press before it reaches a row's own
+            // `.contextMenu`).
+            Button(action: onDelete) {
+                Image(systemName: "trash")
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
         .swipeActions(edge: .leading) {
             if !item.isChecked {
@@ -1046,9 +1088,17 @@ private struct GroupGroceryItemRow: View {
         .swipeActions(edge: .trailing) {
             // THIS_WEEK/STAPLES: any member may delete — routine
             // maintenance, mirrors `DELETE .../grocery/:id` on a
-            // non-suggested item exactly.
+            // non-suggested item exactly. Kept alongside the always-visible
+            // trash icon above (not redundant — some people reach for the
+            // swipe out of habit, others the icon; both do the same thing).
             Button(role: .destructive, action: onDelete) {
                 Label("Remove", systemImage: "trash")
+            }
+            if isManager {
+                Button(action: onEdit) {
+                    Label("Edit", systemImage: "pencil")
+                }
+                .tint(.brandHoney)
             }
         }
     }

@@ -824,10 +824,11 @@ struct GroupDaySlotsView: View {
             // suggest row — as its own three boxes, matching the MANAGER
             // row's shape exactly rather than a single Menu button, so
             // "here are your three options" reads the same way regardless
-            // of role — just in `.brandTerracotta` instead of
-            // `.brandForest`, so the two rows are still tellable apart at a
-            // glance as "decide" vs. "suggest" (a MANAGER, who sees both
-            // rows stacked, gets that same visual cue).
+            // of role — just in `.brandSage` instead of `.brandForest`, so
+            // the two rows are still tellable apart at a glance as "decide"
+            // vs. "suggest" (a MANAGER, who sees both rows stacked, gets
+            // that same visual cue). Was `.brandTerracotta` — changed per
+            // direct user request.
             VStack(spacing: 4) {
                 if isManager {
                     HStack(spacing: 8) {
@@ -844,13 +845,13 @@ struct GroupDaySlotsView: View {
                 }
 
                 HStack(spacing: 8) {
-                    GroupSlotAddButton(title: "Suggest a Recipe", systemImage: "frying.pan", tint: .brandTerracotta) {
+                    GroupSlotAddButton(title: "Suggest a Recipe", systemImage: "frying.pan", tint: .brandSage) {
                         activeSheet = .suggestRecipe(slot)
                     }
-                    GroupSlotAddButton(title: "Suggest Eat Out", systemImage: "fork.knife", tint: .brandTerracotta) {
+                    GroupSlotAddButton(title: "Suggest Eat Out", systemImage: "fork.knife", tint: .brandSage) {
                         activeSheet = .suggestRestaurant(slot, isOrderIn: false)
                     }
-                    GroupSlotAddButton(title: "Suggest Order In", systemImage: "bag", tint: .brandTerracotta) {
+                    GroupSlotAddButton(title: "Suggest Order In", systemImage: "bag", tint: .brandSage) {
                         activeSheet = .suggestRestaurant(slot, isOrderIn: true)
                     }
                 }
