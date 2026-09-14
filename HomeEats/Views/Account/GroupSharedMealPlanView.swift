@@ -729,6 +729,14 @@ struct GroupDaySlotsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var allPlannedMeals: [GroupPlannedMeal]
     @Query private var allSuggestions: [GroupMealSuggestion]
+    /// Set right after `adopt(_:)` succeeds, only when that slot still has
+    /// other suggestions left over — drives the "Remove all other options?"
+    /// confirmation below. Direct user request: "If I select an item from
+    /// the list of things to vote, it should create a prompt to 'Remove all
+    /// other options?' so the other options for that meal is no longer
+    /// there." `nil` both before any adopt and after the dialog is dismissed
+    /// either way.
+    @State private var pendingSlotCleanup: MealSlot?
 
     init(
         groupID: String, date: Date, isManager: Bool, currentUserID: String?, group: GroupDetail?,
@@ -774,6 +782,19 @@ struct GroupDaySlotsView: View {
     var body: some View {
         ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
             slotSection(slot)
+        }
+        .confirmationDialog(
+            "Remove the other options for this meal?",
+            isPresented: Binding(get: { pendingSlotCleanup != nil }, set: { if !$0 { pendingSlotCleanup = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Other Options", role: .destructive) {
+                if let slot = pendingSlotCleanup { removeOtherSuggestions(for: slot) }
+                pendingSlotCleanup = nil
+            }
+            Button("Keep Them", role: .cancel) { pendingSlotCleanup = nil }
+        } message: {
+            Text("This meal is decided now. The other suggested options for it can be removed so they're no longer up for a vote.")
         }
     }
 
@@ -877,16 +898,153 @@ struct GroupDaySlotsView: View {
     /// MANAGER-only, immediate/online-only — see `GroupSyncService`'s
     /// "Known limitations" note for why adopting a suggestion isn't queued
     /// for offline push the way every other write on this screen is.
+    ///
+    /// Adopting only ever turns THIS ONE suggestion into a decided meal —
+    /// it never touches any other suggestion still sitting in the same
+    /// slot, competing for the same vote. Once this succeeds, `suggestions
+    /// (for: slot)` (re-evaluated fresh here, after the re-pull inside
+    /// `adoptSuggestion` already updated the local store) is checked for
+    /// exactly that leftover case: if anything's still there, this queues
+    /// up the "Remove all other options?" confirmation (`pendingSlotCleanup`)
+    /// rather than silently leaving now-moot suggestions up for a vote —
+    /// direct user request (see that property's own doc comment).
     private func adopt(_ suggestion: GroupMealSuggestion) async {
+        let slot = suggestion.slot
         do {
             try await GroupSyncService.adoptSuggestion(groupID: groupID, suggestionID: suggestion.id, modelContext: modelContext)
+            if !suggestions(for: slot).isEmpty {
+                pendingSlotCleanup = slot
+            }
         } catch {
             onError(error.localizedDescription)
+        }
+    }
+
+    /// Withdraws every remaining suggestion in `slot` (for `date`, this
+    /// view's own scope) — the "Remove Other Options" action on the dialog
+    /// `pendingSlotCleanup` drives. Reuses `withdrawSuggestion` one row at a
+    /// time (the same offline-queued delete a manual swipe-to-remove already
+    /// goes through), rather than a bespoke bulk-delete path — there's no
+    /// dedicated "clear a slot's suggestions" backend endpoint, and this
+    /// list is never more than a handful of rows.
+    private func removeOtherSuggestions(for slot: MealSlot) {
+        for suggestion in suggestions(for: slot) {
+            withdrawSuggestion(suggestion)
         }
     }
 }
 
 // MARK: - Rows
+
+/// Wraps `content` so tapping it navigates to whatever this meal/suggestion
+/// actually refers to — direct user request ("why aren't we able to click
+/// on it to go into the recipe... same issue with restaurant, we should be
+/// able to click in it and it takes us to that restaurant page"). Exactly
+/// one of `recipeID`/`restaurantName` is ever set (mirrors the backend's own
+/// "exactly one of recipeId/restaurantName" rule — see `GroupPlannedMeal
+/// .recipeID`'s own doc comment); this is a no-op passthrough (no
+/// navigation at all) on the — shouldn't-happen-in-practice — case neither
+/// is set.
+///
+/// A hidden `NavigationLink` behind `content`, not `content` itself being
+/// the link's label — same technique, same reasoning, as `RecipesHomeView
+/// .recipeCard`: this can be applied to just part of a row that has real
+/// `Button`s elsewhere (`GroupSuggestionRow`'s vote/"Use This" controls)
+/// without a `Button` nested inside a `NavigationLink`'s label firing both
+/// actions on one tap.
+///
+/// **Recipe destination**: an already-saved local `Recipe` (found by
+/// `backendRecipeID`, the same lookup `GroupSyncService.resolveRecipeTitle`
+/// already does) if there is one — straight to the real, editable
+/// `RecipeDetailView`, not a read-only preview, when the viewer already has
+/// their own copy. Otherwise `GroupRecipePreviewView`, which fetches the
+/// recipe straight from the backend (it may belong to another group member
+/// entirely, not the viewer).
+///
+/// **Restaurant destination**: same idea, but matched by name (free text —
+/// see `GroupPlannedMeal.restaurantName`'s own doc comment, there's no id to
+/// match by) against the viewer's local `Restaurant` library, case-
+/// insensitively. Otherwise `GroupRestaurantPreviewView`, which runs a live
+/// search for that name.
+private struct GroupPlanLinkableRow<RowContent: View>: View {
+    let recipeID: String?
+    let cachedRecipeTitle: String?
+    let restaurantName: String?
+    // Plain, no `@ViewBuilder` here — the builder transform already
+    // happened on the `init` parameter below (the standard place for it on
+    // a stored closure property like this); this is just where the already-
+    // built closure lives.
+    let content: () -> RowContent
+
+    @Query private var matchingRecipes: [Recipe]
+    @Query private var allRestaurants: [Restaurant]
+
+    init(
+        recipeID: String?, cachedRecipeTitle: String?, restaurantName: String?,
+        @ViewBuilder content: @escaping () -> RowContent
+    ) {
+        self.recipeID = recipeID
+        self.cachedRecipeTitle = cachedRecipeTitle
+        self.restaurantName = restaurantName
+        self.content = content
+        // Same captured-local-constant, typed-Optional-comparison
+        // `#Predicate` caution as `GroupSyncService.resolveRecipeTitle` —
+        // see its own comment.
+        let targetRecipeID: String? = recipeID
+        _matchingRecipes = Query(filter: #Predicate<Recipe> { $0.backendRecipeID == targetRecipeID })
+        _allRestaurants = Query()
+    }
+
+    /// Filtered client-side, not via `#Predicate` — a case-insensitive
+    /// string comparison isn't expressible there, and a household's own
+    /// restaurant library is small enough (dozens, not thousands of rows)
+    /// that fetching all of it and filtering in Swift is the same "no
+    /// server-side filtering at household scale" tradeoff this app already
+    /// makes elsewhere (e.g. the group grocery list's own category/section
+    /// grouping).
+    private var matchedRestaurant: Restaurant? {
+        guard let restaurantName else { return nil }
+        return allRestaurants.first { $0.name.caseInsensitiveCompare(restaurantName) == .orderedSame }
+    }
+
+    var body: some View {
+        if recipeID == nil && restaurantName == nil {
+            content()
+        } else {
+            content()
+                .contentShape(Rectangle())
+                .background {
+                    NavigationLink {
+                        destination
+                    } label: {
+                        EmptyView()
+                    }
+                    .opacity(0)
+                    // Without this explicit frame, the link shrinks to fit
+                    // its own empty label — same fix, same reasoning, as
+                    // `RecipesHomeView.recipeCard`'s identical `.background`.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var destination: some View {
+        if let recipeID {
+            if let localRecipe = matchingRecipes.first {
+                RecipeDetailView(recipe: localRecipe)
+            } else {
+                GroupRecipePreviewView(recipeID: recipeID, cachedTitle: cachedRecipeTitle)
+            }
+        } else if let restaurantName {
+            if let matchedRestaurant {
+                RestaurantDetailView(restaurant: matchedRestaurant)
+            } else {
+                GroupRestaurantPreviewView(name: restaurantName)
+            }
+        }
+    }
+}
 
 private struct GroupPlannedMealRow: View {
     let meal: GroupPlannedMeal
@@ -908,21 +1066,29 @@ private struct GroupPlannedMealRow: View {
     }
 
     var body: some View {
-        HStack {
-            HStack(spacing: 6) {
-                Image(systemName: iconName).foregroundStyle(iconColor)
-                Text(meal.displayTitle)
-            }
-            .font(.brandHeadline)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(iconColor.opacity(0.12), in: Capsule())
+        // The whole row, not just the icon/title capsule, is the tappable
+        // area here — unlike `GroupSuggestionRow` below, nothing in this
+        // row's visible content is its own `Button` (the only action,
+        // "Remove," lives behind `.swipeActions`, which never conflicts
+        // with a plain tap), so there's no nested-button-swallows-the-tap
+        // concern to work around.
+        GroupPlanLinkableRow(recipeID: meal.recipeID, cachedRecipeTitle: meal.cachedRecipeTitle, restaurantName: meal.restaurantName) {
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: iconName).foregroundStyle(iconColor)
+                    Text(meal.displayTitle)
+                }
+                .font(.brandHeadline)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(iconColor.opacity(0.12), in: Capsule())
 
-            Spacer()
-            if meal.syncState != .synced { pendingIndicator }
-            Text("by \(memberName)")
-                .font(.brandCaption2)
-                .foregroundStyle(.secondary)
+                Spacer()
+                if meal.syncState != .synced { pendingIndicator }
+                Text("by \(memberName)")
+                    .font(.brandCaption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .swipeActions(edge: .trailing) {
             // MANAGER only — mirrors `DELETE /groups/:groupId/meal-plan/:id`
@@ -962,12 +1128,25 @@ private struct GroupSuggestionRow: View {
 
     var body: some View {
         HStack {
-            Image(systemName: iconName).foregroundStyle(iconColor)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(suggestion.displayTitle).font(.brandSubheadline)
-                Text("Suggested by \(proposerName)")
-                    .font(.brandCaption2)
-                    .foregroundStyle(.secondary)
+            // Wrapped in `GroupPlanLinkableRow` — unlike `GroupPlannedMealRow`,
+            // this row has real `Button`s further along (vote/"Use This"), so
+            // only this leading icon+title cluster gets the tap-to-navigate
+            // treatment, not the whole `HStack` — see that type's own doc
+            // comment for why the whole row can't just be one `NavigationLink`
+            // here the way it can there.
+            GroupPlanLinkableRow(
+                recipeID: suggestion.recipeID, cachedRecipeTitle: suggestion.cachedRecipeTitle,
+                restaurantName: suggestion.restaurantName
+            ) {
+                HStack {
+                    Image(systemName: iconName).foregroundStyle(iconColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(suggestion.displayTitle).font(.brandSubheadline)
+                        Text("Suggested by \(proposerName)")
+                            .font(.brandCaption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             Spacer()
             if suggestion.syncState != .synced { pendingIndicator }
