@@ -137,7 +137,18 @@ final class ContactsSearchService: ObservableObject {
     /// the UI on a large address book, then hop back for the `@Published`
     /// write in `loadIfNeeded`.
     private func fetchContacts() async -> [DeviceContact] {
-        let keys = [
+        // Explicit `[CNKeyDescriptor]` annotation on the array itself, not a
+        // trailing `as [CNKeyDescriptor]` cast — with the cast, the compiler
+        // infers a homogeneous `[String]` from the first three (plain
+        // `String`) keys before ever looking at the cast, then fails to
+        // unify that against `CNContactFormatter.descriptorForRequiredKeys`'s
+        // `CNKeyDescriptor` return type below ("Cannot convert value of type
+        // 'any CNKeyDescriptor' to expected element type 'String'" — a real
+        // compile error hit on this exact line). Annotating the declaration
+        // itself tells the compiler every element needs to satisfy
+        // `CNKeyDescriptor` from the start (a plain `String` already
+        // conforms to it), so both key shapes type-check together.
+        let keys: [CNKeyDescriptor] = [
             CNContactGivenNameKey,
             CNContactFamilyNameKey,
             CNContactPhoneNumbersKey,
@@ -163,7 +174,7 @@ final class ContactsSearchService: ObservableObject {
             // missing from the fetch again, regardless of a given contact's
             // data or the device's locale/name-order settings.
             CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
-        ] as [CNKeyDescriptor]
+        ]
         let request = CNContactFetchRequest(keysToFetch: keys)
 
         return await Task.detached(priority: .userInitiated) { [store] in
