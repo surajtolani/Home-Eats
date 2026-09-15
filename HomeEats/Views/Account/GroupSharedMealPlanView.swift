@@ -694,6 +694,16 @@ private struct GroupAgendaDayRow: View {
                                 Image(systemName: iconName(for: slotMeals[0]))
                                     .font(.brandCaption2)
                                     .foregroundStyle(iconColor(for: slotMeals[0]))
+                                // Direct user request: a label next to the
+                                // meal/restaurant name saying which slot
+                                // it's for — the icon alone only says HOW
+                                // (cooked/dine out/order in), not WHEN.
+                                Text(slot.displayName)
+                                    .font(.brandCaption2.bold())
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.secondary.opacity(0.12)))
                                 Text(slotMeals.map(\.displayTitle).joined(separator: ", "))
                                     .font(.brandSubheadline)
                             }
