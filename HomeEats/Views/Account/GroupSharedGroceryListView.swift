@@ -14,7 +14,8 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// reachable directly from `GroupDetailView`'s "Grocery List" link for a
 /// non-active group.
 ///
-/// **One list, one "Add Groceries" entry point** — a redesign per direct
+/// **One list, one "Prepopulate Groceries" entry point** (named "Add
+/// Groceries" until a later direct request to rename it) — a redesign per direct
 /// user feedback (with a reference screenshot of another app's flow
 /// attached): the previous version of this screen kept three things open
 /// on screen at once — the actual list, an always-expanded "Suggested From
@@ -382,7 +383,7 @@ struct GroupSharedGroceryListView: View {
         Button {
             showAddGroceriesSheet = true
         } label: {
-            Label("Add Groceries", systemImage: "plus.circle.fill")
+            Label("Prepopulate Groceries", systemImage: "plus.circle.fill")
                 .font(.brandSubheadline.bold())
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
@@ -418,7 +419,7 @@ struct GroupSharedGroceryListView: View {
             }
         } else {
             Section {
-                Text("Nothing on your list yet. Type something above, or tap Add Groceries below.")
+                Text("Nothing on your list yet. Type something above, or tap Prepopulate Groceries below.")
                     .foregroundStyle(.secondary)
             }
         }
