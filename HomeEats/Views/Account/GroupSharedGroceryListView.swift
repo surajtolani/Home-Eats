@@ -31,9 +31,13 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// same `HistoricalGroceryItem` table the old "Household Groceries"
 /// section read, tabbed by category here). Pending `.suggested` items (a
 /// PARTICIPANT's own suggestion, or a MANAGER's reviewed cooking-list pick)
-/// still collect in one review queue for a MANAGER to accept/reject — see
-/// `suggestedBanner`'s own doc comment for where that moved to. **Still
-/// unchanged**: the **By Category / My Layout** view-mode toggle and
+/// still collect in one review queue for a MANAGER to accept/reject — this
+/// used to be reachable only via a tap-through banner/sheet
+/// (`SuggestedItemsReviewView`), but direct user feedback after that
+/// shipped ("what does 'X items suggested' mean, where's it populating
+/// from?") led to putting the queue back inline, right in the list itself
+/// — see `suggestedItemsSection`'s own doc comment. **Still unchanged**:
+/// the **By Category / My Layout** view-mode toggle and
 /// drag-to-reorder (`viewMode`/`byCategorySections`/`myLayoutSections`
 /// below, Phase-4-backed by the group-scoped `GroupStoreAisle` model), and
 /// the always-visible name-only `quickAddField` at the very top of the
@@ -84,7 +88,6 @@ struct GroupSharedGroceryListView: View {
     @State private var group: GroupDetail?
     @State private var lastSyncOutcome: GroupSyncService.SyncOutcome?
     @State private var showAddGroceriesSheet = false
-    @State private var showSuggestedReview = false
     @State private var showAislesManager = false
     @State private var editingItem: GroupSharedGroceryItem?
     @State private var actionErrorMessage: String?
@@ -233,20 +236,16 @@ struct GroupSharedGroceryListView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 10)
 
-            if !suggestedItems.isEmpty {
-                suggestedBanner
-                    .padding(.horizontal)
-                    .padding(.bottom, 10)
-            }
-
             // Direct user request: a visible border/card around the actual
             // list of grocery items specifically, distinct from the title/
-            // toggle/search chrome above it and the "Add Groceries" CTA
-            // below — `.clipShape` rounds the `List`'s own row content to
-            // match the `.overlay` stroke drawn on top of it (without it,
-            // the List's square row corners would poke past the rounded
-            // border at each corner).
+            // toggle/search chrome above it and the "Prepopulate Groceries"
+            // CTA below — `.clipShape` rounds the `List`'s own row content
+            // to match the `.overlay` stroke drawn on top of it (without
+            // it, the List's square row corners would poke past the
+            // rounded border at each corner).
             List {
+                suggestedItemsSection
+
                 if viewMode == .byCategory {
                     byCategorySections
                 } else {
@@ -304,12 +303,6 @@ struct GroupSharedGroceryListView: View {
         .sheet(isPresented: $showAddGroceriesSheet) {
             AddGroceriesSheet(groupID: groupID, isManager: isManager, isKnownOffline: isKnownOffline)
         }
-        .sheet(isPresented: $showSuggestedReview) {
-            SuggestedItemsReviewView(
-                groupID: groupID, isManager: isManager, currentUserID: accountSession.currentUser?.id,
-                isKnownOffline: isKnownOffline, onLocalWrite: { Task { await runSync() } }
-            )
-        }
         .sheet(item: $editingItem) { item in
             EditGroupGroceryItemSheet(groupID: groupID, item: item) { errorMessage in
                 actionErrorMessage = errorMessage
@@ -335,43 +328,105 @@ struct GroupSharedGroceryListView: View {
         return "Couldn't reach the server — showing what was last synced."
     }
 
-    // MARK: - Suggested queue + Add Groceries entry point
+    // MARK: - Suggested queue (inline in the list) + Prepopulate Groceries entry point
 
-    /// A slim, tap-to-review row — only shown when there's actually
-    /// something pending, unlike the old, always-expanded "Suggested From
-    /// Your Cooking List" section this replaces. Both a PARTICIPANT's own
-    /// typed suggestion and a MANAGER's reviewed `AddGroceriesSheet` pick
-    /// (see `GroupAddGroceriesFlow.swift`'s `ReviewIngredientsView`) still
-    /// land in this exact same `.suggested` review queue — same
-    /// unification as before, just reachable by tapping through to
-    /// `SuggestedItemsReviewView` instead of always sitting open inline.
-    private var suggestedBanner: some View {
-        Button {
-            showSuggestedReview = true
-        } label: {
-            HStack {
-                Image(systemName: "text.badge.checkmark")
-                    .foregroundStyle(Color.brandSage)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("\(suggestedItems.count) item\(suggestedItems.count == 1 ? "" : "s") suggested — tap to review")
-                        .font(.brandSubheadline)
-                        .foregroundStyle(.primary)
-                    // Direct user question: what this banner even means —
-                    // added a one-line explanation of where it comes from,
-                    // rather than leaving the count to speak for itself.
-                    Text("Waiting on a manager's Accept before it's on the real list.")
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
+    /// Both a PARTICIPANT's own typed suggestion and a MANAGER's reviewed
+    /// `AddGroceriesSheet` pick (see `GroupAddGroceriesFlow.swift`'s
+    /// `ReviewIngredientsView`) land in this exact same `.suggested` review
+    /// queue. This used to be reachable only through a tap-through banner
+    /// opening a separate review sheet — direct user feedback after that
+    /// shipped was that it wasn't obvious what "N items suggested" even
+    /// meant or where it came from, and asked for it back inline in the
+    /// real list instead, each row showing who suggested it with add/
+    /// remove actions right there — closer to how this queue worked before
+    /// the "one list, one Add Groceries button" redesign, just without the
+    /// day-strip/Generate controls that moved into `AddGroceriesSheet`.
+    /// `@ViewBuilder` (not a plain `if` at the `List`'s own call site, the
+    /// way `suggestedBanner` used to be conditioned) so the section itself
+    /// — including its header/footer — simply doesn't render when there's
+    /// nothing pending, rather than rendering an empty section shell.
+    @ViewBuilder
+    private var suggestedItemsSection: some View {
+        if !suggestedItems.isEmpty {
+            Section {
+                ForEach(suggestedItems) { item in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name.titleCasedForDisplay)
+                            HStack(spacing: 4) {
+                                if !item.quantityText.isEmpty {
+                                    Text(item.quantityText)
+                                }
+                                Text("Suggested by \(memberName(item.addedByUserID))")
+                            }
+                            .font(.brandCaption)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if item.syncState != .synced {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.brandCaption2)
+                                .foregroundStyle(.secondary)
+                                .help("Not synced yet")
+                        }
+                        // Reject: a MANAGER can remove any suggestion;
+                        // anyone can remove their own — same role split the
+                        // old review sheet enforced.
+                        if isManager || item.addedByUserID == accountSession.currentUser?.id {
+                            Button {
+                                reject(item)
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                        }
+                        // Accept: MANAGER-only, and only once this row has
+                        // a real server id to accept (never a still-
+                        // `.pendingCreate` placeholder — same guard the old
+                        // review sheet used).
+                        Button {
+                            Task { await accept(item) }
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.brandForest)
+                        .disabled(!isManager || isKnownOffline || item.isLocalPlaceholderID)
+                    }
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.brandCaption)
+            } header: {
+                Text("Suggested Grocery Items")
+            } footer: {
+                Text(isManager
+                    ? "Anyone can suggest an item for you to review — tap + to add it to the real list, or the x to remove it."
+                    : "Suggest an item for a manager to review. You can still remove your own suggestion.")
+                    .font(.brandSubheadline)
                     .foregroundStyle(.secondary)
             }
-            .padding(10)
-            .background(Color.brandSage.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
         }
-        .buttonStyle(.plain)
+    }
+
+    private func memberName(_ userID: String) -> String {
+        group?.members.first(where: { $0.id == userID })?.displayNameOrPhoneNumber ?? "Someone"
+    }
+
+    private func accept(_ item: GroupSharedGroceryItem) async {
+        do {
+            try await GroupSyncService.acceptGroceryItem(groupID: groupID, itemID: item.id, modelContext: modelContext)
+        } catch {
+            actionErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// "Reject" just removes the suggestion outright — same corrected
+    /// semantics as the personal `GroceryListView.reject` and this
+    /// backend's own `GroupGrocerySection` (which has no `REJECTED` case
+    /// at all — see that enum's doc comment in prisma/schema.prisma).
+    /// Reuses `delete(_:)` below — identical local-placeholder-vs-real-row
+    /// handling either way.
+    private func reject(_ item: GroupSharedGroceryItem) {
+        delete(item)
     }
 
     /// The single entry point for every way to add something onto this
@@ -615,8 +670,8 @@ struct GroupSharedGroceryListView: View {
     /// **Same role-gating as the existing sheet-based flow, no exceptions**:
     /// a `MANAGER`'s submission lands directly on the real list
     /// (`section: .thisWeek`); a `PARTICIPANT`'s lands as a `.suggested`
-    /// item requiring a `MANAGER` to adopt it via `suggestedBanner` ->
-    /// `SuggestedItemsReviewView` — the exact same split `AddGroupGroceryItemSheet
+    /// item requiring a `MANAGER` to adopt it via `suggestedItemsSection`
+    /// below — the exact same split `AddGroupGroceryItemSheet
     /// .submit()` already enforces (see that type's own doc comment for
     /// why: the backend's `POST /groups/:groupId/grocery` itself rejects
     /// any other section from a `PARTICIPANT`), just reached by pressing
@@ -745,49 +800,6 @@ struct GroupSharedGroceryListView: View {
 }
 
 // MARK: - Rows
-
-/// One row for `SuggestedItemsReviewView`'s pending-suggestion queue —
-/// matching the personal `GrocerySuggestionRow`'s layout/iconography
-/// (feedback there was that a suggestion row and a real list row should
-/// look related but distinct; the same reasoning applies here).
-private struct GroupGrocerySuggestionRow: View {
-    let name: String
-    let quantityText: String?
-    let isSecondary: Bool
-    let addIsDisabled: Bool
-    let onAdd: () -> Void
-    let onReject: (() -> Void)?
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name.titleCasedForDisplay)
-                    .foregroundStyle(isSecondary ? .secondary : .primary)
-                if let quantityText, !quantityText.isEmpty {
-                    Text(quantityText)
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            if let onReject {
-                Button(action: onReject) {
-                    Label("Reject", systemImage: "xmark.circle")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .padding(.trailing, 4)
-            }
-            Button(action: onAdd) {
-                Image(systemName: addIsDisabled ? "checkmark.circle.fill" : "plus.circle.fill")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.brandForest)
-            .disabled(addIsDisabled)
-        }
-    }
-}
 
 private struct GroupGroceryItemRow: View {
     @Bindable var item: GroupSharedGroceryItem
@@ -938,119 +950,6 @@ private struct GroupQuantityStepper: View {
             .foregroundStyle(Color.brandForest)
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Suggested items review (MANAGER accept/reject queue)
-
-/// A MANAGER's queue of pending suggestions — both a PARTICIPANT's typed
-/// suggestion and a reviewed `AddGroceriesSheet` pick (see
-/// `GroupAddGroceriesFlow.swift`'s `ReviewIngredientsView`) land in this
-/// exact same `.suggested` review queue, same unification as this screen
-/// always had. Pulled out into its own pushed screen, reachable only from
-/// `GroupSharedGroceryListView.suggestedBanner` — see that property's own
-/// doc comment for why this used to sit inline, always expanded, and no
-/// longer does.
-private struct SuggestedItemsReviewView: View {
-    let groupID: String
-    let isManager: Bool
-    let currentUserID: String?
-    let isKnownOffline: Bool
-    /// Fired only after `reject` (a local write with nothing else driving a
-    /// resync) — `accept` goes through `GroupSyncService.acceptGroceryItem`,
-    /// which is already its own immediate, online round trip with nothing
-    /// left for a follow-up sync to do, matching this queue's original
-    /// `accept`/`reject` asymmetry.
-    let onLocalWrite: () -> Void
-
-    @Environment(\.modelContext) private var modelContext
-    @Environment(\.dismiss) private var dismiss
-    @Query private var items: [GroupSharedGroceryItem]
-    @State private var actionErrorMessage: String?
-
-    init(groupID: String, isManager: Bool, currentUserID: String?, isKnownOffline: Bool, onLocalWrite: @escaping () -> Void) {
-        self.groupID = groupID
-        self.isManager = isManager
-        self.currentUserID = currentUserID
-        self.isKnownOffline = isKnownOffline
-        self.onLocalWrite = onLocalWrite
-        let gid = groupID
-        _items = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
-    }
-
-    private var suggestedItems: [GroupSharedGroceryItem] {
-        items.filter { $0.syncState != .pendingDelete && $0.section == .suggested }.sorted { $0.name < $1.name }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                if suggestedItems.isEmpty {
-                    Text("Nothing left to review.").foregroundStyle(.secondary)
-                } else {
-                    if isManager {
-                        Button("Accept All") { acceptAll() }
-                            .font(.brandCallout.bold())
-                            .foregroundStyle(Color.brandForest)
-                            .disabled(isKnownOffline)
-                    }
-                    ForEach(suggestedItems) { item in
-                        GroupGrocerySuggestionRow(
-                            name: item.name,
-                            quantityText: item.quantityText,
-                            isSecondary: false,
-                            addIsDisabled: !isManager || isKnownOffline || item.isLocalPlaceholderID,
-                            onAdd: { Task { await accept(item) } },
-                            onReject: (isManager || item.addedByUserID == currentUserID) ? { reject(item) } : nil
-                        )
-                    }
-                }
-            }
-            .navigationTitle("Suggested Items")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .alert(
-                "Couldn't complete that",
-                isPresented: Binding(get: { actionErrorMessage != nil }, set: { if !$0 { actionErrorMessage = nil } })
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(actionErrorMessage ?? "")
-            }
-        }
-    }
-
-    private func acceptAll() {
-        guard isManager else { return }
-        for item in suggestedItems where !item.isLocalPlaceholderID {
-            Task { await accept(item) }
-        }
-    }
-
-    private func accept(_ item: GroupSharedGroceryItem) async {
-        do {
-            try await GroupSyncService.acceptGroceryItem(groupID: groupID, itemID: item.id, modelContext: modelContext)
-        } catch {
-            actionErrorMessage = error.localizedDescription
-        }
-    }
-
-    /// "Reject" just removes the suggestion outright — same corrected
-    /// semantics as the personal `GroceryListView.reject` and this backend's
-    /// own `GroupGrocerySection` (which has no `REJECTED` case at all — see
-    /// that enum's doc comment in prisma/schema.prisma).
-    private func reject(_ item: GroupSharedGroceryItem) {
-        if item.isLocalPlaceholderID {
-            modelContext.delete(item)
-        } else {
-            item.syncState = .pendingDelete
-        }
-        try? modelContext.save()
-        onLocalWrite()
     }
 }
 
