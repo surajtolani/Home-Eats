@@ -5,9 +5,9 @@ import SwiftData
 /// the group define the aisles of their actual grocery store, in walking
 /// order, so "My Layout" (`GroupSharedGroceryListView`) can lay the shared
 /// shopping list out the same way. Reuses that screen's *visual* language
-/// exactly (add row, tap-to-rename, drag-to-reorder, swipe-to-rename)
-/// against the new `GroupStoreAisle` SwiftData model instead of the local,
-/// personal `StoreAisle` (untouched per this feature's own scope notes).
+/// exactly (add row, tap-to-rename, drag-to-reorder) against the new
+/// `GroupStoreAisle` SwiftData model instead of the local, personal
+/// `StoreAisle` (untouched per this feature's own scope notes).
 ///
 /// **Any member, not MANAGER-only** — see `GroupStoreAisle`'s own doc
 /// comment (and routes/groupGroceryAisles.js's) for the full reasoning: an
@@ -23,9 +23,9 @@ import SwiftData
 /// notepad, not pre-grouped by category — so "No aisles yet" is the normal
 /// first-open state; a group seeded with the old ten category-mirroring
 /// starter aisles before that behavior was removed keeps them until
-/// someone deletes them (one at a time via swipe/drag-to-delete, or all at
-/// once via `removeStarterAisles()` below — a direct fix for exactly that
-/// migration case).
+/// someone deletes them (one at a time via the row's delete control, or all
+/// at once via `removeStarterAisles()` below — a direct fix for exactly
+/// that migration case).
 ///
 /// **Reorder/delete handles are always visible** (`editMode` permanently
 /// `.active`, same "real writable binding, not `.constant`" pattern as
@@ -39,6 +39,11 @@ struct GroupAislesManagerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query private var aisles: [GroupStoreAisle]
+    /// Read only to reset `aisleID`/`aisleManuallySet` on items pointed at an
+    /// aisle this screen is about to delete — see `resetItemsAssigned(to:)`'s
+    /// own doc comment for why deleting an aisle needs to touch this model
+    /// too, not just `GroupStoreAisle` itself.
+    @Query private var groceryItems: [GroupSharedGroceryItem]
 
     @State private var newAisleName = ""
     @State private var renamingAisle: GroupStoreAisle?
@@ -49,6 +54,7 @@ struct GroupAislesManagerView: View {
         self.groupID = groupID
         let gid = groupID
         _aisles = Query(filter: #Predicate<GroupStoreAisle> { $0.groupID == gid })
+        _groceryItems = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
     }
 
     /// `.pendingDelete` rows hidden immediately (optimistic), sorted the
@@ -116,10 +122,6 @@ struct GroupAislesManagerView: View {
                         }
                         .contentShape(Rectangle())
                         .onTapGesture { beginRenaming(aisle) }
-                        .swipeActions(edge: .trailing) {
-                            Button("Rename") { beginRenaming(aisle) }
-                                .tint(.brandForest)
-                        }
                     }
                     .onDelete { offsets in
                         for index in offsets { delete(visibleAisles[index]) }
@@ -130,7 +132,14 @@ struct GroupAislesManagerView: View {
                 } header: {
                     Text("Your Sections")
                 } footer: {
-                    Text("Drag the ≡ handle to reorder, swipe to delete, or tap a name to rename it.")
+                    // No `.swipeActions` here anymore — SwiftUI hides custom
+                    // swipe actions while a List's `editMode` is `.active`
+                    // (permanently true on this screen now, see this type's
+                    // own doc comment), which made the swipe-to-rename button
+                    // that used to be here permanently unreachable dead code.
+                    // Tap-to-rename (`onTapGesture` above) still works either
+                    // way and was always the primary path.
+                    Text("Drag the ≡ handle to reorder, tap the red − to delete, or tap a name to rename it.")
                         .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -200,6 +209,7 @@ struct GroupAislesManagerView: View {
     }
 
     private func delete(_ aisle: GroupStoreAisle) {
+        resetItemsAssigned(to: aisle.id)
         if aisle.isLocalPlaceholderID {
             modelContext.delete(aisle)
         } else {
@@ -214,14 +224,13 @@ struct GroupAislesManagerView: View {
     /// seeded before that behavior was removed still looked pre-grouped by
     /// category, with no easy way to clear it short of deleting ten rows
     /// one at a time. Deletes every remaining `linkedCategory != nil`
-    /// aisle the same way swiping one away does (`delete(_:)`, so any item
-    /// placed in one falls back to "Unsorted" the identical way a single
-    /// delete already does — see that field's own doc comment in
-    /// prisma/schema.prisma) — one `Task`, one `triggerSync()` call at the
-    /// end rather than one per row, so this doesn't fire a dozen redundant
-    /// syncs back to back.
+    /// aisle the same way swiping one away does (`delete(_:)`, including the
+    /// same immediate local `resetItemsAssigned(to:)` reset) — one `Task`,
+    /// one `triggerSync()` call at the end rather than one per row, so this
+    /// doesn't fire a dozen redundant syncs back to back.
     private func removeStarterAisles() {
         for aisle in visibleAisles where aisle.linkedCategory != nil {
+            resetItemsAssigned(to: aisle.id)
             if aisle.isLocalPlaceholderID {
                 modelContext.delete(aisle)
             } else {
@@ -230,6 +239,28 @@ struct GroupAislesManagerView: View {
         }
         try? modelContext.save()
         triggerSync()
+    }
+
+    /// Mirrors `DELETE /groups/:groupId/grocery/aisles/:id`'s own bulk reset
+    /// (`aisleId: null, aisleManuallySet: false` on every item pointed at
+    /// the aisle being deleted — see that route's own doc comment in
+    /// routes/groupGroceryAisles.js) **locally and immediately**, rather than
+    /// leaving it to the next sync round trip. Without this, an item that
+    /// was manually placed in the aisle being deleted (`aisleManuallySet ==
+    /// true`, `aisleID == ` the now-gone aisle's id) would keep pointing at
+    /// a dangling id — `resolvedAisleID` doesn't fall back to "Unsorted" for
+    /// a manually-set item — so it would match no section in `ForEach
+    /// (visibleAisles)` and simply disappear from "My Layout" until a full
+    /// sync cycle reconciles it, a real gap `removeStarterAisles()` turns
+    /// from a rare one-aisle edge case into a bulk (up to ten aisles at
+    /// once) one for exactly the pre-seeded groups most likely to have real
+    /// items manually assigned into those starter aisles.
+    private func resetItemsAssigned(to aisleID: String) {
+        for item in groceryItems where item.aisleID == aisleID {
+            item.aisleID = nil
+            item.aisleManuallySet = false
+            if item.syncState == .synced { item.syncState = .pendingUpdate }
+        }
     }
 
     /// Same "don't downgrade a still-`.pendingCreate` row" reasoning as
