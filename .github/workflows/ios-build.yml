@@ -7,11 +7,16 @@
 # This workflow is that missing compiler check, running automatically on
 # every push instead of only whenever someone happens to build by hand.
 #
-# CODE_SIGNING_ALLOWED=NO is the standard trick for a CI build against a
-# project that has a real DEVELOPMENT_TEAM set (see project.yml) — a
-# Simulator build/test run never needs an actual signing identity, and this
-# skips code-signing entirely rather than requiring this repo's real Apple
-# Developer credentials to exist as CI secrets.
+# CODE_SIGNING_ALLOWED=NO/CODE_SIGNING_REQUIRED=NO/CODE_SIGN_IDENTITY="" is
+# the standard trio for a CI build against a project that has a real
+# DEVELOPMENT_TEAM set (see project.yml) — a Simulator build/test run never
+# needs an actual signing identity, and this skips code-signing entirely
+# rather than requiring this repo's real Apple Developer credentials to
+# exist as CI secrets. CODE_SIGNING_ALLOWED=NO alone wasn't quite enough
+# on this project's first CI run — `xcodebuild test` failed with "Could not
+# find test host for HomeEatsTests" (a known interaction between partial
+# signing overrides and how the test bundle locates its host app binary);
+# the fuller trio resolves it.
 name: iOS Build
 
 on:
@@ -83,4 +88,4 @@ jobs:
             -project HomeEats.xcodeproj \
             -scheme HomeEats \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
