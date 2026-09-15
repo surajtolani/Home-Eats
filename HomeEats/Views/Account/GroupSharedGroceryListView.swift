@@ -1,6 +1,12 @@
 import SwiftUI
 import SwiftData
 
+private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
+    case byCategory = "By Category"
+    case myLayout = "My Layout"
+    var id: String { rawValue }
+}
+
 /// A single group's own grocery list — scoped to one `groupID` (never
 /// shared across groups; each group has its own independent list). This is
 /// what the main "Grocery" tab shows for whichever group is currently
@@ -35,23 +41,29 @@ import SwiftData
 /// — see that property's own doc comment for the role-gating and "why keep
 /// the detailed sheet too" reasoning.
 ///
-/// **One layout, not two.** The earlier **By Category / My Layout**
-/// view-mode toggle (with its own "Manage My Layout" aisle editor) is gone
-/// — direct user feedback that the two-layout toggle wasn't needed. There's
-/// now only one grouping, by `GroceryCategory` (`byCategorySections`
-/// below), with items inside a category always in alphabetical order (no
-/// manual per-item reordering) and category *sections themselves*
-/// drag-to-reorderable via the standard List reorder handle
-/// (`moveCategories(from:to:)`) — that order is a per-device display
-/// preference persisted locally in `UserDefaults` (`categoryOrder`, keyed
-/// by `groupID`), not synced to the group, since it's purely "what order do
-/// I like to shop in," not shared list data. The old per-item "Move to
-/// Aisle" affordance is gone along with it. The group-scoped
-/// `GroupStoreAisle` model, `GroupAislesManagerView`, and their sync
-/// plumbing in `GroupSyncService` are unused by this screen now but
-/// deliberately left in place rather than torn out — removing them would
-/// mean a SwiftData schema/migration change and backend route removal, well
-/// beyond this screen's own redesign.
+/// **By Category / My Layout, each organized differently.** Briefly
+/// collapsed down to one grouping only — direct user feedback reversed that
+/// almost immediately, so the toggle (`viewMode`) is back. The two modes
+/// now genuinely differ in what they're for, not just in visuals:
+/// - **By Category** (`byCategorySections`) groups by `GroceryCategory`,
+///   always alphabetical within a category (no manual per-item reordering
+///   there), with category *sections themselves* drag-to-reorderable via
+///   the standard List reorder handle (`moveCategories(from:to:)`) — that
+///   order is a per-device display preference persisted locally in
+///   `UserDefaults` (`categoryOrder`, keyed by `groupID`), not synced to the
+///   group, since it's purely "what order do I like to shop in," not shared
+///   list data.
+/// - **My Layout** (`myLayoutSections`) groups by the group's own
+///   `GroupStoreAisle` rows instead — custom sections ("section breaks")
+///   anyone can add/rename/reorder via "Manage My Layout"
+///   (`GroupAislesManagerView`, reachable from the toggle row's own menu),
+///   with items *manually* draggable within a section via the same
+///   List reorder handle (`moveWithinLayoutGroup`) and moveable *between*
+///   sections via each row's "Move to Aisle" menu (`moveToAisleMenu`,
+///   `moveToAisle`) — there's no drag-between-sections in a plain SwiftUI
+///   `List`, so that's still a menu rather than a second drag gesture.
+///   Unlike `categoryOrder`, this layout is genuinely group-shared (synced
+///   via `GroupSyncService`), matching the earlier "My Layout" design.
 ///
 /// **No "Staples" here.** A standing group "staples" template list
 /// (`GroupStaplesManagerView`, reachable from this screen's toolbar) used to
@@ -69,17 +81,20 @@ import SwiftData
 /// indicator's reasoning; not repeated here.
 ///
 /// **Role gating**: mirrors routes/groupGrocery.js's field-by-field split
-/// exactly — any member can check an item off or adjust its quantity (both
-/// are `isChecked`/`orderIndex`, the "routine, day-to-day use" bucket that
-/// field-by-field split draws on — see routes/groupGrocery.js's own doc
-/// comment on its PATCH route); only a `MANAGER` can add an item straight
-/// onto the real list, edit its name/category/quantity/section, or accept a
-/// suggestion; a `PARTICIPANT` can only suggest (create with `section:
-/// .suggested`) and can remove their own suggestion (or any `THIS_WEEK`/
-/// `STAPLES` item — routine maintenance, open to anyone). Reordering
-/// category sections (`moveCategories`) is a local-only display preference,
-/// open to anyone, with no server round trip at all. The quick-add field at
-/// the top of the list, and every path through
+/// exactly — any member can check an item off, adjust its quantity, reorder
+/// it within "My Layout," or move it to a different aisle there (all of
+/// `isChecked`/`orderIndex`/`aisleId`, the "routine, day-to-day use" bucket
+/// that field-by-field split draws on — see routes/groupGrocery.js's own
+/// doc comment on its PATCH route); only a `MANAGER` can add an item
+/// straight onto the real list, edit its name/category/quantity/section, or
+/// accept a suggestion; a `PARTICIPANT` can only suggest (create with
+/// `section: .suggested`) and can remove their own suggestion (or any
+/// `THIS_WEEK`/`STAPLES` item — routine maintenance, open to anyone).
+/// Managing "My Layout" aisles is open to any member too — see
+/// `GroupAislesManagerView`'s own doc comment. Reordering category sections
+/// in "By Category" (`moveCategories`) is a local-only display preference
+/// instead, open to anyone, with no server round trip at all. The quick-add
+/// field at the top of the list, and every path through
 /// `AddGroceriesSheet`, follow this exact same MANAGER-decides/
 /// PARTICIPANT-suggests split — see `quickAddField`'s and
 /// `GroupAddGroceriesFlow.swift`'s own doc comments.
@@ -91,19 +106,22 @@ struct GroupSharedGroceryListView: View {
     @EnvironmentObject private var accountSession: AccountSession
 
     @Query private var items: [GroupSharedGroceryItem]
+    @Query(sort: \GroupStoreAisle.sortIndex) private var allAisles: [GroupStoreAisle]
 
     @State private var group: GroupDetail?
     @State private var lastSyncOutcome: GroupSyncService.SyncOutcome?
     @State private var showAddGroceriesSheet = false
+    @State private var showAislesManager = false
     @State private var editingItem: GroupSharedGroceryItem?
     @State private var actionErrorMessage: String?
 
     /// Backs `quickAddField` — see that property's own doc comment.
     @State private var quickAddText = ""
-    /// The display order of category *sections* — a per-device preference,
-    /// not group-shared data — see `moveCategories(from:to:)`'s own doc
-    /// comment. Loaded once from `UserDefaults` in `init`, written back on
-    /// every reorder.
+    @State private var viewMode: GroupGroceryViewMode = .byCategory
+    /// The display order of category *sections* in "By Category" — a
+    /// per-device preference, not group-shared data — see
+    /// `moveCategories(from:to:)`'s own doc comment. Loaded once from
+    /// `UserDefaults` in `init`, written back on every reorder.
     @State private var categoryOrder: [GroceryCategory]
     /// Same "always active, real writable binding rather than `.constant`"
     /// reasoning as the personal `GroceryListView.editMode` — see that
@@ -117,6 +135,7 @@ struct GroupSharedGroceryListView: View {
         // `GroupSharedMealPlanView.init` — see its own comment.
         let gid = groupID
         _items = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
+        _allAisles = Query(filter: #Predicate<GroupStoreAisle> { $0.groupID == gid }, sort: \GroupStoreAisle.sortIndex)
         _categoryOrder = State(initialValue: Self.loadCategoryOrder(groupID: groupID))
     }
 
@@ -124,7 +143,7 @@ struct GroupSharedGroceryListView: View {
     private var isManager: Bool { myRole == .manager }
 
     private var hasPendingChanges: Bool {
-        items.contains { $0.syncState != .synced }
+        items.contains { $0.syncState != .synced } || allAisles.contains { $0.syncState != .synced }
     }
 
     private var isKnownOffline: Bool {
@@ -139,6 +158,35 @@ struct GroupSharedGroceryListView: View {
     /// own doc comment.
     private var visibleItems: [GroupSharedGroceryItem] {
         items.filter { $0.syncState != .pendingDelete }
+    }
+    private var visibleAisles: [GroupStoreAisle] {
+        allAisles.filter { $0.syncState != .pendingDelete }
+    }
+
+    /// Aisles a "Move to Aisle" action can actually target — `visibleAisles`
+    /// minus any still-`.pendingCreate` one. A fresh aisle's `id` is still a
+    /// local placeholder (`GroupStoreAisle.newLocalPlaceholderID()`), not the
+    /// real, stable id `PATCH .../grocery/:id`'s `aisleId` field requires
+    /// (validated server-side as `z.string().uuid()` — see
+    /// routes/groupGrocery.js); `GroupSyncService.push` runs
+    /// `pushGroceryItems` *before* `pushAisles` in the same cycle (see that
+    /// method's own ordering), so an item assigned to a brand-new aisle in
+    /// the same offline stretch it was created in would have its aisle
+    /// placement PATCHed with that placeholder string in the very same sync
+    /// the aisle itself is about to be swapped onto its real server id —
+    /// and, unlike a genuine relationship, `GroupSharedGroceryItem.aisleID`
+    /// is a plain `String`, not something `GroupSyncService.applyRemote(_:to:
+    /// GroupStoreAisle)` updates every referencing item to match when the
+    /// aisle's own id changes. Left unguarded, that PATCH — and every retry
+    /// after it — would fail forever, permanently stranding the item's aisle
+    /// placement. Excluding a not-yet-synced aisle from this menu closes the
+    /// gap outright rather than trying to reconcile a stale reference after
+    /// the fact; a fresh aisle drops back in and becomes assignable as soon
+    /// as its own create actually lands (near-instant in practice, since
+    /// `GroupAislesManagerView.addAisle` triggers a sync right after
+    /// inserting it).
+    private var assignableAisles: [GroupStoreAisle] {
+        visibleAisles.filter { !$0.isLocalPlaceholderID }
     }
 
     private var suggestedItems: [GroupSharedGroceryItem] {
@@ -164,25 +212,67 @@ struct GroupSharedGroceryListView: View {
             }
     }
 
+    /// "My Layout" only (see `myLayoutSections`) — "By Category" sorts
+    /// alphabetically instead (`purchasableByCategory` above). Same
+    /// tie-breaking-by-id reasoning as `GroceryListView.orderIndexIsBefore`
+    /// — every never-manually-reordered item defaults to `orderIndex == 0`,
+    /// so falling back to `id` keeps ties from visibly swapping places
+    /// across re-renders for no real reason.
+    private func orderIndexIsBefore(_ lhs: GroupSharedGroceryItem, _ rhs: GroupSharedGroceryItem) -> Bool {
+        lhs.orderIndex != rhs.orderIndex ? lhs.orderIndex < rhs.orderIndex : lhs.id < rhs.id
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             groceryListTitleHeader
                 .padding(.horizontal)
 
+            // The By Category/My Layout toggle AND "Manage My Layout"
+            // together — reinstated after a brief removal (direct user
+            // follow-up: "can we please re-add that back including the
+            // icons to select by category and by layout"). Placed directly
+            // under the title, ahead of the quick-add search bar below —
+            // same positioning as before it was removed.
+            HStack(spacing: 8) {
+                Picker("View", selection: $viewMode) {
+                    ForEach(GroupGroceryViewMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Menu {
+                    Button {
+                        presentAfterMenuDismiss { showAislesManager = true }
+                    } label: {
+                        Label("Manage My Layout", systemImage: "square.grid.2x2")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(.horizontal)
+            .padding(.top, 4)
+
             quickAddField
                 .padding(.horizontal)
-                .padding(.top, 4)
-                .padding(.bottom, 10)
+                .padding(.vertical, 10)
 
             // Direct user request: a visible border/card around the actual
             // list of grocery items specifically, distinct from the title/
-            // search chrome above it and the "Prepopulate Groceries" CTA
-            // below — `.clipShape` rounds the `List`'s own row content to
-            // match the `.overlay` stroke drawn on top of it (without it,
-            // the List's square row corners would poke past the rounded
-            // border at each corner).
+            // toggle/search chrome above it and the "Prepopulate Groceries"
+            // CTA below — `.clipShape` rounds the `List`'s own row content
+            // to match the `.overlay` stroke drawn on top of it (without
+            // it, the List's square row corners would poke past the
+            // rounded border at each corner).
             List {
-                byCategorySections
+                if viewMode == .byCategory {
+                    byCategorySections
+                } else {
+                    myLayoutSections
+                }
 
                 // Direct user request: below the real grocery items, not
                 // above them.
@@ -250,6 +340,9 @@ struct GroupSharedGroceryListView: View {
                 actionErrorMessage = errorMessage
             }
         }
+        .sheet(isPresented: $showAislesManager) {
+            GroupAislesManagerView(groupID: groupID)
+        }
         .alert(
             "Couldn't complete that",
             isPresented: Binding(get: { actionErrorMessage != nil }, set: { if !$0 { actionErrorMessage = nil } })
@@ -279,7 +372,7 @@ struct GroupSharedGroceryListView: View {
     /// real list instead, each row showing who suggested it with add/
     /// remove actions right there. Titled "Items Suggested by Group
     /// Members" (was "Suggested Grocery Items") and placed BELOW the real
-    /// `byCategorySections` content (was above) — both
+    /// `byCategorySections`/`myLayoutSections` content (was above) — both
     /// direct follow-up requests, so the real, already-decided list reads
     /// first and this pending-review queue reads as a distinct, secondary
     /// thing underneath it. `@ViewBuilder` (not a plain `if` at the
@@ -476,8 +569,132 @@ struct GroupSharedGroceryListView: View {
         return stored + missing
     }
 
+    // MARK: - "My Layout" view
+
+    /// Where an item actually lands in "My Layout": an explicit choice
+    /// (`item.aisleManuallySet == true`, including one that explicitly
+    /// points at "Unsorted" — `aisleID == nil` with the flag still `true`)
+    /// always wins; absent that, it falls back to whichever
+    /// `GroupStoreAisle` mirrors the item's own `GroceryCategory` — the ten
+    /// starter aisles the backend seeds once per group (see
+    /// `AccountsAPIClient.getGroupGroceryAisles`'s own doc comment) — so "My
+    /// Layout" defaults to the same grouping "By Category" uses instead of
+    /// everything piling up in "Unsorted." Same reasoning as the personal
+    /// `GroceryListView.resolvedAisleID`, adapted for this model's
+    /// `aisleID`/`aisleManuallySet` living directly on the item (no separate
+    /// join table the way the personal `ItemAisleAssignment` is one) — see
+    /// `GroupSharedGroceryItem.aisleID`'s own doc comment for why.
+    private func resolvedAisleID(for item: GroupSharedGroceryItem) -> String? {
+        if item.aisleManuallySet { return item.aisleID }
+        return visibleAisles.first { $0.linkedCategory == item.category }?.id
+    }
+
+    @ViewBuilder
+    private var myLayoutSections: some View {
+        let unassigned = purchasableItems.filter { resolvedAisleID(for: $0) == nil }.sorted(by: orderIndexIsBefore)
+
+        if !unassigned.isEmpty {
+            Section {
+                ForEach(unassigned) { item in
+                    row(for: item, moveMenu: moveToAisleMenu(for: item))
+                        .contextMenu { moveToAisleMenu(for: item) }
+                }
+                .onMove { source, destination in
+                    moveWithinLayoutGroup(unassigned, from: source, to: destination)
+                }
+            } header: {
+                Text("Unsorted")
+            } footer: {
+                Text("Drag the ≡ handle to reorder. Tap the ⋯ on an item (or touch and hold it) to place it into an aisle below — any member can do this. Manage the group's aisles (add section breaks) from the toggle row's ⋯ menu above.")
+                    .font(.brandSubheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        ForEach(visibleAisles) { aisle in
+            let aisleItems = purchasableItems.filter { resolvedAisleID(for: $0) == aisle.id }.sorted(by: orderIndexIsBefore)
+            Section {
+                if aisleItems.isEmpty {
+                    Text("Nothing here yet.").font(.brandCaption).foregroundStyle(.tertiary)
+                }
+                ForEach(aisleItems) { item in
+                    row(for: item, moveMenu: moveToAisleMenu(for: item))
+                        .contextMenu { moveToAisleMenu(for: item) }
+                }
+                .onMove { source, destination in
+                    moveWithinLayoutGroup(aisleItems, from: source, to: destination)
+                }
+            } header: {
+                Text(aisle.name)
+            }
+        }
+    }
+
+    /// Reorders within one aisle/Unsorted group by rewriting `orderIndex` —
+    /// the same field "By Category" used to sort by before switching to
+    /// alphabetical (this model, unlike the personal `GroceryItem`, has no
+    /// separate `layoutOrderIndex` — see `GroupGroceryItem` in
+    /// prisma/schema.prisma, which only ever had one `orderIndex` column
+    /// even after Phase 4 added aisle support). Reordering here no longer
+    /// affects "By Category" (that view sorts alphabetically now,
+    /// independent of `orderIndex`), so this is purely a "My Layout" concern.
+    private func moveWithinLayoutGroup(_ groupItems: [GroupSharedGroceryItem], from source: IndexSet, to destination: Int) {
+        var reordered = groupItems
+        reordered.move(fromOffsets: source, toOffset: destination)
+        for (index, item) in reordered.enumerated() {
+            item.orderIndex = Double(index)
+            markDirtyIfSynced(item)
+        }
+        try? modelContext.save()
+        Task { await runSync() }
+    }
+
+    /// Assigns `item` to `aisleID` (or explicitly to "Unsorted" —
+    /// `aisleID == nil`), marking the placement as manually set either way —
+    /// see `GroupSharedGroceryItem.aisleID`'s own doc comment on why an
+    /// explicit `nil` still has to be persisted as a real choice, not left
+    /// indistinguishable from "never touched." Any member may do this — see
+    /// this type's own doc comment.
+    private func moveToAisle(_ item: GroupSharedGroceryItem, aisleID: String?) {
+        item.aisleID = aisleID
+        item.aisleManuallySet = true
+        markDirtyIfSynced(item)
+        try? modelContext.save()
+        Task { await runSync() }
+    }
+
+    @ViewBuilder
+    private func moveToAisleMenu(for item: GroupSharedGroceryItem) -> some View {
+        Menu {
+            Button {
+                moveToAisle(item, aisleID: nil)
+            } label: {
+                if resolvedAisleID(for: item) == nil {
+                    Label("Unsorted", systemImage: "checkmark")
+                } else {
+                    Text("Unsorted")
+                }
+            }
+            ForEach(assignableAisles) { aisle in
+                Button {
+                    moveToAisle(item, aisleID: aisle.id)
+                } label: {
+                    if resolvedAisleID(for: item) == aisle.id {
+                        Label(aisle.name, systemImage: "checkmark")
+                    } else {
+                        Text(aisle.name)
+                    }
+                }
+            }
+        } label: {
+            Label("Move to Aisle", systemImage: "square.grid.2x2")
+        }
+    }
+
     // MARK: - Rows
 
+    /// "By Category" rows have no move menu — moving between aisles is
+    /// purely a "My Layout" concept, see this view's own top doc comment.
     private func row(for item: GroupSharedGroceryItem) -> some View {
         GroupGroceryItemRow(
             item: item,
@@ -485,7 +702,25 @@ struct GroupSharedGroceryListView: View {
             onSetChecked: { checked in setChecked(item, checked) },
             onSetQuantityCount: { count in setQuantityCount(item, count) },
             onEdit: { editingItem = item },
-            onDelete: { delete(item) }
+            onDelete: { delete(item) },
+            moveMenu: nil
+        )
+    }
+
+    /// "My Layout" rows only — `moveMenu` is rendered as an always-visible
+    /// ⋯ button on the row itself, not just the `.contextMenu` long-press
+    /// each call site also attaches — same "a permanently-active `EditMode`
+    /// list doesn't reliably surface a row's long-press context menu on top
+    /// of it" reasoning as the personal `GroceryListView.row(for:moveMenu:)`.
+    private func row(for item: GroupSharedGroceryItem, moveMenu: some View) -> some View {
+        GroupGroceryItemRow(
+            item: item,
+            isManager: isManager,
+            onSetChecked: { checked in setChecked(item, checked) },
+            onSetQuantityCount: { count in setQuantityCount(item, count) },
+            onEdit: { editingItem = item },
+            onDelete: { delete(item) },
+            moveMenu: AnyView(moveMenu)
         )
     }
 
@@ -662,6 +897,11 @@ private struct GroupGroceryItemRow: View {
     let onSetQuantityCount: (Int) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    /// The "Move to Aisle" menu, shown inline right next to the item name —
+    /// "My Layout" rows only; `nil` for a "By Category" row, where moving
+    /// between aisles doesn't apply (see `GroupSharedGroceryListView.row(for:)`'s
+    /// two overloads).
+    let moveMenu: AnyView?
 
     var body: some View {
         HStack {
@@ -675,9 +915,17 @@ private struct GroupGroceryItemRow: View {
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.name.titleCasedForDisplay)
-                    .strikethrough(item.isChecked)
-                    .foregroundStyle(item.isChecked ? .secondary : .primary)
+                HStack(spacing: 6) {
+                    Text(item.name.titleCasedForDisplay)
+                        .strikethrough(item.isChecked)
+                        .foregroundStyle(item.isChecked ? .secondary : .primary)
+                    if let moveMenu {
+                        moveMenu
+                            .labelStyle(.iconOnly)
+                            .font(.brandCaption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if !item.quantityText.isEmpty {
                     Text(item.quantityText)
                         .font(.brandCaption)
@@ -882,10 +1130,8 @@ struct AddGroupGroceryItemSheet: View {
 /// immediate, online-only call (`GroupSyncService.editGroceryItem`), not a
 /// locally-queued `.pendingUpdate` — see `GroupSharedGroceryItem.syncState`'s
 /// own doc comment for why. Never touches `aisleID`/`aisleManuallySet` —
-/// unused by `GroupSharedGroceryListView` now (see that type's own top doc
-/// comment on why the old per-item aisle assignment is gone), but still a
-/// real field on the model itself, so this leaves it untouched rather than
-/// clearing it.
+/// that stays "My Layout"'s "Move to Aisle" menu's own job (any member, a
+/// different action entirely — see `GroupSharedGroceryListView.moveToAisle`).
 private struct EditGroupGroceryItemSheet: View {
     let groupID: String
     let item: GroupSharedGroceryItem
