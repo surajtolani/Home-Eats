@@ -81,18 +81,33 @@ jobs:
           echo "Using device '$DEVICE_NAME' on runtime $RUNTIME_ID"
           echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
 
-      # Split into two explicit steps rather than one `xcodebuild test` —
-      # a single `test` invocation failed twice in a row with "Could not
-      # find test host for HomeEatsTests", even with the full no-signing
-      # trio above, apparently because `test` alone doesn't reliably force
-      # a full, explicit build of the HomeEats app target (HomeEatsTests'
-      # host — see project.yml) into DerivedData before checking for it.
-      # `build-for-testing` builds everything the test bundle needs and
-      # stages it in DerivedData as its own distinct, explicit step;
-      # `test-without-building` then just runs against what's already
-      # there. `-derivedDataPath build` pins both to the same location
-      # explicitly rather than relying on xcodebuild's default (a hash of
-      # the project path) staying identical across the two invocations.
+      # Three explicit steps rather than one `xcodebuild test` — a single
+      # `test` invocation, and then `build-for-testing` alone, both failed
+      # with "Could not find test host for HomeEatsTests: TEST_HOST
+      # evaluates to .../HomeEats.app/HomeEats", even with the full
+      # no-signing trio above, failing in well under a second at
+      # xcodebuild's own upfront "Prepare packages" plan-validation phase —
+      # before a single file actually compiles. That's consistent with
+      # Xcode 16's test-plan validation checking for the host app binary's
+      # *existence* eagerly, rather than trusting the build graph to
+      # produce it first the way a from-scratch CI checkout needs it to.
+      # Building the `HomeEats` *target* directly first (not the `HomeEats`
+      # *scheme*, which per project.yml's `schemes.HomeEats.build` also
+      # includes `HomeEatsTests: [test]` — using the scheme here would
+      # still pull the test target into this same validation) sidesteps
+      # that check entirely: by the time `build-for-testing` runs,
+      # `HomeEats.app` already exists on disk at exactly the path
+      # `TEST_HOST` names.
+      - name: Build app target first (iOS Simulator, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project HomeEats.xcodeproj \
+            -target HomeEats \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
       - name: Build for testing (iOS Simulator, unsigned)
         run: |
           set -o pipefail
