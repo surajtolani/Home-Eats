@@ -446,6 +446,18 @@ extension AccountsAPIClient {
         return response.group
     }
 
+    /// `PATCH /groups/:groupId` — rename only, `MANAGER`-only server-side
+    /// (`403` otherwise, same as every other group-management route here).
+    /// Direct user request: a group's name could only ever be set at
+    /// creation time. Returns the same full `GroupDetail` shape
+    /// `getGroup(id:)` does, so `GroupDetailView` can just replace its
+    /// local copy with the response rather than merging in a bare name.
+    static func renameGroup(groupID: String, name: String) async throws -> GroupDetail {
+        struct Response: Decodable { let group: GroupDetail }
+        let response: Response = try await send("PATCH", path: "groups/\(groupID)", body: ["name": name])
+        return response.group
+    }
+
     /// Invites an existing friend to the group — **Phase 5: this no longer
     /// adds them directly.** Before Phase 5, `userId` here always created
     /// the `GroupMembership` instantly (an accepted friend had zero chance

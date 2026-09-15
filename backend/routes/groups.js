@@ -255,6 +255,53 @@ router.get("/:groupId", asyncHandler(async (req, res) => {
   });
 }));
 
+const RenameGroupSchema = z
+  .object({
+    name: z.string().trim().min(1, "name can't be empty.").max(200),
+  })
+  .strict();
+
+// PATCH /groups/:groupId
+// Body: { name } — rename only, MANAGER only. Direct user request: a
+// group's name was only ever settable at creation time (`POST /groups`),
+// with no way to fix a typo or rename it later. MANAGER-gated the same way
+// invite/promote/demote already are (see this file's own top doc comment on
+// why group *management* actions, as opposed to the meal-plan/grocery-list
+// routes' own separate rules, draw that line) — a PARTICIPANT gets a 403,
+// same as a non-member. Returns the same shape as GET /:groupId so a
+// caller can just replace its local copy of the group with the response,
+// rather than a bare `{ name }` it would have to merge in by hand.
+router.patch("/:groupId", asyncHandler(async (req, res) => {
+  const membership = await membershipFor(req.params.groupId, req.userId);
+  if (!membership) {
+    return res.status(403).json({ error: "You're not a member of this group." });
+  }
+  if (membership.role !== "MANAGER") {
+    return res.status(403).json({ error: "Only a manager can rename this group." });
+  }
+
+  const parsed = RenameGroupSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+  }
+
+  const updated = await prisma.group.update({
+    where: { id: req.params.groupId },
+    data: { name: parsed.data.name },
+    include: { memberships: { include: { user: true } } },
+  });
+
+  res.json({
+    group: {
+      id: updated.id,
+      name: updated.name,
+      createdByUserId: updated.createdByUserId,
+      createdAt: updated.createdAt,
+      members: updated.memberships.map(publicMember),
+    },
+  });
+}));
+
 // POST /groups/:groupId/invite
 // Body: { userId } (an existing friend) or { phoneNumber } (anyone else —
 // already a Home Eats user, a user who isn't yet a friend, or not a user at

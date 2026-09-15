@@ -26,6 +26,12 @@ struct GroupDetailView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showInvite = false
+    /// Backs the rename `.alert` below — direct user request: "Group names
+    /// should be editable by the managers," which this screen had no way
+    /// to do at all before (a group's name could only ever be set once, at
+    /// creation, via `CreateGroupView`).
+    @State private var showRenameAlert = false
+    @State private var renameText = ""
     /// This group's own outstanding invites (`PENDING`/`DECLINED` only —
     /// see `GroupSentInvite`'s own doc comment), for the "Pending Invites"
     /// section below. Loaded alongside `group` in `load()`, only when
@@ -128,6 +134,19 @@ struct GroupDetailView: View {
                         Image(systemName: "person.badge.plus")
                     }
                 }
+                // Renaming is a management action, same MANAGER gate as
+                // inviting/promoting/demoting — see this screen's own
+                // `isManager` doc comment and routes/groups.js's `PATCH
+                // /:groupId` doc comment for why.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        renameText = group?.name ?? groupName
+                        showRenameAlert = true
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .accessibilityLabel("Rename Group")
+                }
             }
         }
         .task { await load() }
@@ -137,6 +156,12 @@ struct GroupDetailView: View {
                 groupID: groupID,
                 existingMemberIDs: Set(group?.members.map(\.id) ?? [])
             )
+        }
+        .alert("Rename Group", isPresented: $showRenameAlert) {
+            TextField("Group name", text: $renameText)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { Task { await rename() } }
+                .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .alert(
             "Something Went Wrong",
@@ -328,6 +353,22 @@ struct GroupDetailView: View {
             } else {
                 actionFailure = error.localizedDescription
             }
+        }
+    }
+
+    /// `MANAGER`-only server-side (`PATCH /groups/:groupId` — see that
+    /// route's own doc comment) — the toolbar button that opens
+    /// `showRenameAlert` is already hidden from anyone else, but this
+    /// doesn't re-check `isManager` itself since a 403 here surfaces
+    /// cleanly through `actionFailure` regardless, same as every other
+    /// action on this screen.
+    private func rename() async {
+        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        do {
+            group = try await AccountsAPIClient.renameGroup(groupID: groupID, name: trimmed)
+        } catch {
+            actionFailure = error.localizedDescription
         }
     }
 
