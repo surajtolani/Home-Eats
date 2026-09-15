@@ -240,7 +240,13 @@ struct GroupSharedMealPlanView: View {
             await runSync()
             await runPeriodicSyncLoop()
         }
-        .refreshable { await runSync() }
+        .refreshable {
+            // Also re-fetch the group itself, not just item sync — a role
+            // change (promote/demote) only lands here, and without this a
+            // pull-to-refresh wouldn't pick it up either.
+            await loadGroup()
+            await runSync()
+        }
         .alert(
             "Couldn't complete that",
             isPresented: Binding(get: { actionErrorMessage != nil }, set: { if !$0 { actionErrorMessage = nil } })
@@ -543,6 +549,12 @@ struct GroupSharedMealPlanView: View {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 25_000_000_000)
             guard !Task.isCancelled else { return }
+            // `runSync()` only syncs planned meals — group membership and
+            // roles live in `group` (fetched by `loadGroup()`), which
+            // otherwise never refreshes after the initial `.task` load. A
+            // promoted/demoted member would stay stuck at their old
+            // permissions on their own device until they force-quit the app.
+            await loadGroup()
             await runSync()
         }
     }

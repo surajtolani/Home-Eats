@@ -268,7 +268,13 @@ struct GroupSharedGroceryListView: View {
             // where the actual scrollable content lives, now that the
             // title/toggle/search/banner chrome above it is a plain,
             // non-scrolling `VStack` row.
-            .refreshable { await runSync() }
+            .refreshable {
+                // Also re-fetch the group itself, not just item sync — a
+                // role change (promote/demote) only lands here, and without
+                // this a pull-to-refresh wouldn't pick it up either.
+                await loadGroup()
+                await runSync()
+            }
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
@@ -758,6 +764,12 @@ struct GroupSharedGroceryListView: View {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 25_000_000_000)
             guard !Task.isCancelled else { return }
+            // `runSync()` only syncs grocery items — group membership and
+            // roles live in `group` (fetched by `loadGroup()`), which
+            // otherwise never refreshes after the initial `.task` load. A
+            // promoted/demoted member would stay stuck at their old
+            // permissions on their own device until they force-quit the app.
+            await loadGroup()
             await runSync()
         }
     }
