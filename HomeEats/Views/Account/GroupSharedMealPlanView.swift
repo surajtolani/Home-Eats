@@ -20,11 +20,16 @@ import CoreLocation
 /// it, swipe/chevron between days) / **Weekly** (flat 7-day agenda, tap a
 /// day to push the full per-slot screen) toggle, "Go to This Week", and the
 /// same Breakfast/Lunch/Dinner/Other per-slot layout with the icon+pill
-/// decided-meal row and vote-count/"Use This" suggestion row. The actual
-/// per-slot content lives in `GroupDaySlotsView` below, embedded inline here
-/// (Calendar mode) and pushed via `GroupDayDetailView` (Weekly mode's tap
-/// target) — same split, and the same reasoning for it, as the personal
-/// `DaySlotsView`/`DayDetailView`.
+/// decided-meal row and vote-count/"Use This" suggestion row. Where this
+/// screen has since diverged from the personal reference views: each slot's
+/// "add" affordance is a single "Add a Meal" button opening `GroupAddMealSheet`
+/// (three side-by-side wheel pickers — slot/kind/add-or-suggest — plus a
+/// live recipe list or restaurant search underneath), not the personal
+/// screens' bank of individual per-kind buttons; see that sheet's own doc
+/// comment for why. The actual per-slot content lives in `GroupDaySlotsView`
+/// below, embedded inline here (Calendar mode) and pushed via
+/// `GroupDayDetailView` (Weekly mode's tap target) — same split, and the
+/// same reasoning for it, as the personal `DaySlotsView`/`DayDetailView`.
 ///
 /// **Local-first**: every row shown here comes straight from the on-device
 /// SwiftData store, so this screen reads and writes instantly whether
@@ -37,14 +42,13 @@ import CoreLocation
 /// and its "Known limitations" note.
 ///
 /// **Role gating**: mirrors the backend's own MANAGER/PARTICIPANT split
-/// exactly (see routes/groupMealPlan.js) — a `MANAGER` sees "Add a Recipe"/
-/// "Eat Out"/"Order In" (decides a meal directly) and "Use This" (adopts a
-/// suggestion); a `PARTICIPANT` only ever sees the "Suggest instead"/
-/// "Suggest for a Vote" menu and the vote button itself, same "never offer
-/// an action that would just 403" standard the rest of this feature holds
-/// to (see `GroupDaySlotsView.slotSection`, which mirrors the *shape* of the
-/// personal `DaySlotsView.slotSection`'s decide-vs-suggest button split,
-/// gated here by role instead of by nothing at all).
+/// exactly (see routes/groupMealPlan.js) — a `MANAGER` can decide a meal
+/// directly ("Add" in `GroupAddMealSheet`'s third wheel) and sees "Use
+/// This" (adopts a suggestion); a `PARTICIPANT` only ever gets "Suggest" in
+/// that same third wheel (a single-row wheel — see
+/// `GroupAddMealSheet.actionChoices`) and the vote buttons, same "never
+/// offer an action that would just 403" standard the rest of this feature
+/// holds to.
 ///
 /// **Switching groups**: `GroupScopedPlanTab` in RootView.swift gives this
 /// view a fresh `.id(group.id)` whenever the active group changes, which
@@ -81,6 +85,28 @@ struct GroupSharedMealPlanView: View {
     /// below is attached to `calendarWithAgenda`'s `List` itself for the
     /// same reason.
     @State private var activeSheet: GroupSheetAction?
+    /// Which recipe/restaurant a tap-to-navigate row should push to, if any
+    /// — same "owned by whichever screen embeds `GroupDaySlotsView`, not by
+    /// that view itself" reasoning as `activeSheet` above, and the same
+    /// "attach `.navigationDestination(item:)` to the `List`/`Form` root,
+    /// never to row content" fix for the identical List-row race that
+    /// modifier's own doc comment describes. This replaced an earlier
+    /// design where `GroupPlanLinkableRow` embedded a hidden `NavigationLink`
+    /// directly inside each row — direct user report: "Use This" and the
+    /// vote buttons, sitting in the very same row as that hidden link, could
+    /// fire the link's navigation instead of their own action on tap. A
+    /// `NavigationLink` anywhere inside a `List` row — even one with an
+    /// explicit small `.frame` — makes UIKit treat the WHOLE row/cell as a
+    /// single navigable tap target underneath the individually-hit-tested
+    /// `Button`s layered on top of it, a well-known SwiftUI/`List`
+    /// ambiguity that no amount of `.buttonStyle(.plain)` reliably
+    /// resolves. Routing navigation through this state var instead — set by
+    /// a plain `.onTapGesture` on just the tappable part of a row, read by
+    /// one `.navigationDestination(item:)` outside any row content —
+    /// sidesteps the ambiguity entirely: there is no `NavigationLink` in
+    /// row content anywhere anymore for the row's real `Button`s to
+    /// contend with.
+    @State private var pushedTarget: GroupPlanNavigationTarget?
 
     private enum PlanViewMode: String, CaseIterable, Identifiable {
         case calendar = "Calendar"
@@ -235,13 +261,19 @@ struct GroupSharedMealPlanView: View {
     private var calendarWithAgenda: some View {
         List {
             Section {
-                VStack(spacing: 16) {
+                // `spacing: 8`/`.padding(.vertical, 4)` — tighter than this
+                // block's original 16/8. Direct user feedback: the month
+                // grid ate up too much vertical height before the day panel
+                // even started. See `GroupDayCell`/`monthGrid` below for the
+                // matching per-cell tightening (smaller day circles, less
+                // row spacing) that does the rest of the work.
+                VStack(spacing: 8) {
                     monthHeader
                     legend
                     weekdayHeaderRow
                     monthGrid
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 4)
                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                 .listRowSeparator(.hidden)
             }
@@ -254,7 +286,14 @@ struct GroupSharedMealPlanView: View {
             GroupDaySlotsView(
                 groupID: groupID, date: selectedDate, isManager: isManager,
                 currentUserID: accountSession.currentUser?.id, group: group, isKnownOffline: isKnownOffline,
-                activeSheet: $activeSheet, onLocalWrite: { Task { await runSync() } },
+                activeSheet: $activeSheet, pushedTarget: $pushedTarget,
+                // Calendar mode only — swiping anywhere in the day panel
+                // (not just `selectedDayHeader`'s own row) moves between
+                // days here, same gesture, just reachable from every row.
+                // `GroupDayDetailView`'s pushed single-day screen below
+                // passes a no-op instead — see its own comment.
+                onSwipeChangeDay: moveSelectedDate,
+                onLocalWrite: { Task { await runSync() } },
                 onError: { message in actionErrorMessage = message }
             )
         }
@@ -265,7 +304,17 @@ struct GroupSharedMealPlanView: View {
         // Deliberately attached out here, to the `List` itself, rather than
         // to any content declared inside it — see `activeSheet` above.
         .sheet(item: $activeSheet) { action in
-            GroupMealSheetContent(action: action, groupID: groupID, date: selectedDate, currentUserID: accountSession.currentUser?.id)
+            GroupMealSheetContent(
+                action: action, groupID: groupID, date: selectedDate,
+                currentUserID: accountSession.currentUser?.id, isManager: isManager
+            )
+        }
+        // Same "attached to the List root, not to row content" reasoning as
+        // `.sheet(item:)` just above — see `pushedTarget`'s own doc comment
+        // (on `GroupSharedMealPlanView`) and `GroupPlanLinkableRow`'s for why
+        // this replaced an in-row `NavigationLink`.
+        .navigationDestination(item: $pushedTarget) { target in
+            GroupPlanDestinationView(target: target)
         }
     }
 
@@ -354,7 +403,9 @@ struct GroupSharedMealPlanView: View {
 
     private var monthGrid: some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 7)
-        return LazyVGrid(columns: columns, spacing: 6) {
+        // `spacing: 4`, not 6 — part of the same overall height-tightening
+        // as `GroupDayCell`'s own smaller circle/`minHeight` below.
+        return LazyVGrid(columns: columns, spacing: 4) {
             ForEach(calendar.gridDays(forMonthContaining: displayedMonth), id: \.self) { day in
                 Button {
                     selectedDate = calendar.startOfDay(for: day)
@@ -508,10 +559,15 @@ private struct GroupDayCell: View {
     }
 
     var body: some View {
-        VStack(spacing: 4) {
+        // `spacing: 2`, a 26pt circle, and `minHeight: 36` — down from
+        // 4/30/48 — is the bulk of this screen's calendar-height tightening
+        // (six-ish rows × ~12-14pt saved each adds up fast); direct user
+        // feedback that the month grid "isn't so spread out" was mostly
+        // about this cell's own height, not the spacing around it.
+        VStack(spacing: 2) {
             Text(dayNumber)
                 .font(.brandSubheadline.weight(isToday ? .bold : .regular))
-                .frame(width: 30, height: 30)
+                .frame(width: 26, height: 26)
                 .background {
                     if isToday {
                         Circle().fill(Color.accentColor)
@@ -523,7 +579,7 @@ private struct GroupDayCell: View {
 
             statusDot
         }
-        .frame(maxWidth: .infinity, minHeight: 48)
+        .frame(maxWidth: .infinity, minHeight: 36)
         .opacity(cellOpacity)
     }
 
@@ -676,19 +732,33 @@ struct GroupDayDetailView: View {
     // Owned here rather than inside `GroupDaySlotsView` — see the note on
     // `GroupSharedMealPlanView.activeSheet` for why.
     @State private var activeSheet: GroupSheetAction?
+    /// Same reasoning as `GroupSharedMealPlanView.pushedTarget` — owned by
+    /// this pushed screen's own `Form` root instead.
+    @State private var pushedTarget: GroupPlanNavigationTarget?
 
     var body: some View {
         Form {
             GroupDaySlotsView(
                 groupID: groupID, date: date, isManager: isManager, currentUserID: currentUserID,
                 group: group, isKnownOffline: isKnownOffline, activeSheet: $activeSheet,
+                pushedTarget: $pushedTarget,
+                // No day-to-day date to swipe to from here — this screen is
+                // pushed for one fixed `date`, unlike the Calendar mode's
+                // inline panel (`GroupSharedMealPlanView.moveSelectedDate`)
+                // which owns a `selectedDate` this could reassign.
+                onSwipeChangeDay: { _ in },
                 onLocalWrite: onLocalWrite, onError: onError
             )
         }
         .navigationTitle(date.formatted(Date.weekdayFull))
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $activeSheet) { action in
-            GroupMealSheetContent(action: action, groupID: groupID, date: date, currentUserID: currentUserID)
+            GroupMealSheetContent(
+                action: action, groupID: groupID, date: date, currentUserID: currentUserID, isManager: isManager
+            )
+        }
+        .navigationDestination(item: $pushedTarget) { target in
+            GroupPlanDestinationView(target: target)
         }
     }
 }
@@ -716,6 +786,23 @@ struct GroupDaySlotsView: View {
     /// "why not owned here" reasoning (identical to the personal
     /// `DaySlotsView.activeSheet`'s).
     @Binding var activeSheet: GroupSheetAction?
+    /// Same "owned by whichever screen embeds this view" reasoning as
+    /// `activeSheet` — see `GroupSharedMealPlanView.pushedTarget`'s own doc
+    /// comment for the full "why a `@Binding` here, not a hidden
+    /// `NavigationLink` in row content" story.
+    @Binding var pushedTarget: GroupPlanNavigationTarget?
+    /// Fired on a horizontal swipe anywhere in this view's rows, with `-1`/
+    /// `+1` for the direction — the Calendar mode's inline day panel wires
+    /// this to `GroupSharedMealPlanView.moveSelectedDate`; the pushed
+    /// `GroupDayDetailView` (a fixed single day, nothing to swipe to) passes
+    /// a no-op instead. Applied per-row (via `.daySwipeGesture(_:)` below)
+    /// rather than once to some wrapping container — `List`/`Section`
+    /// backs each row with its own separate cell, so a gesture attached
+    /// anywhere but the individual row content would only ever fire for
+    /// whichever one row happened to receive it, same reasoning as why
+    /// `selectedDayHeader`'s original swipe gesture had to live on that row
+    /// itself rather than on the `List` as a whole.
+    let onSwipeChangeDay: (Int) -> Void
     /// Called after every local write (decide, suggest, vote, remove,
     /// withdraw) to kick off a background push/pull cycle — this view has
     /// no `SyncOutcome` of its own to update, so it simply asks whichever
@@ -740,7 +827,8 @@ struct GroupDaySlotsView: View {
 
     init(
         groupID: String, date: Date, isManager: Bool, currentUserID: String?, group: GroupDetail?,
-        isKnownOffline: Bool, activeSheet: Binding<GroupSheetAction?>,
+        isKnownOffline: Bool, activeSheet: Binding<GroupSheetAction?>, pushedTarget: Binding<GroupPlanNavigationTarget?>,
+        onSwipeChangeDay: @escaping (Int) -> Void,
         onLocalWrite: @escaping () -> Void, onError: @escaping (String) -> Void
     ) {
         self.groupID = groupID
@@ -750,6 +838,8 @@ struct GroupDaySlotsView: View {
         self.group = group
         self.isKnownOffline = isKnownOffline
         self._activeSheet = activeSheet
+        self._pushedTarget = pushedTarget
+        self.onSwipeChangeDay = onSwipeChangeDay
         self.onLocalWrite = onLocalWrite
         self.onError = onError
         // Same captured-local-constant `#Predicate` caution as
@@ -820,9 +910,11 @@ struct GroupDaySlotsView: View {
             ForEach(meals(for: slot)) { meal in
                 GroupPlannedMealRow(
                     meal: meal, memberName: memberName(meal.decidedByUserID), isManager: isManager,
+                    pushedTarget: $pushedTarget,
                     onRemove: { removePlannedMeal(meal) }
                 )
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
+                .daySwipeGesture(onSwipeChangeDay)
             }
             ForEach(suggestions(for: slot)) { suggestion in
                 GroupSuggestionRow(
@@ -830,52 +922,43 @@ struct GroupDaySlotsView: View {
                     isManager: isManager,
                     canRemove: isManager || suggestion.proposedByUserID == currentUserID,
                     isKnownOffline: isKnownOffline,
+                    pushedTarget: $pushedTarget,
                     onVote: { direction in vote(suggestion, direction: direction) },
                     onAdopt: { Task { await adopt(suggestion) } },
                     onRemove: { withdrawSuggestion(suggestion) }
                 )
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
+                .daySwipeGesture(onSwipeChangeDay)
             }
 
-            // MANAGER-only "decide now" buttons (green), plus a "suggest
-            // instead" row open to everyone. A PARTICIPANT sees only the
-            // suggest row — as its own three boxes, matching the MANAGER
-            // row's shape exactly rather than a single Menu button, so
-            // "here are your three options" reads the same way regardless
-            // of role — just in `.brandSage` instead of `.brandForest`, so
-            // the two rows are still tellable apart at a glance as "decide"
-            // vs. "suggest" (a MANAGER, who sees both rows stacked, gets
-            // that same visual cue). Was `.brandTerracotta` — changed per
-            // direct user request.
-            VStack(spacing: 4) {
-                if isManager {
-                    HStack(spacing: 8) {
-                        GroupSlotAddButton(title: "Add a Recipe", systemImage: "frying.pan") {
-                            activeSheet = .addRecipe(slot)
-                        }
-                        GroupSlotAddButton(title: "Eat Out", systemImage: "fork.knife") {
-                            activeSheet = .addRestaurant(slot, isOrderIn: false)
-                        }
-                        GroupSlotAddButton(title: "Order In", systemImage: "bag") {
-                            activeSheet = .addRestaurant(slot, isOrderIn: true)
-                        }
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    GroupSlotAddButton(title: "Suggest a Recipe", systemImage: "frying.pan", tint: .brandSage) {
-                        activeSheet = .suggestRecipe(slot)
-                    }
-                    GroupSlotAddButton(title: "Suggest Eat Out", systemImage: "fork.knife", tint: .brandSage) {
-                        activeSheet = .suggestRestaurant(slot, isOrderIn: false)
-                    }
-                    GroupSlotAddButton(title: "Suggest Order In", systemImage: "bag", tint: .brandSage) {
-                        activeSheet = .suggestRestaurant(slot, isOrderIn: true)
-                    }
-                }
+            // A single "Add a Meal" affordance, replacing what used to be
+            // up to six separate boxes here (three MANAGER-only "decide
+            // now" buttons plus three "suggest instead" ones) — direct user
+            // feedback that six icons per slot (times three slots visible
+            // at once) was too much. Tapping it opens `GroupAddMealSheet`'s
+            // combined picker — see that type's own doc comment — which is
+            // where the slot/cook-dine-order/add-suggest choice, and the
+            // MANAGER-vs-PARTICIPANT role gate on the last of those three,
+            // now actually lives; this button itself needs no role check,
+            // since a PARTICIPANT can still always suggest.
+            //
+            // Always shown, not just while `isEmpty` — direct user request:
+            // "when an item is added, then that should show up and the add
+            // should still be there in case you wanted to add something
+            // else." A slot can hold more than one decided meal (see this
+            // view's own top doc comment), so there's always a reason to
+            // keep offering it.
+            Button {
+                activeSheet = .pickMeal(slot)
+            } label: {
+                Label("Add a Meal", systemImage: "plus.circle.fill")
+                    .font(.brandSubheadline.bold())
+                    .foregroundStyle(Color.brandForest)
             }
-            .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 0, leading: 16, bottom: 12, trailing: 16))
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 6, leading: 16, bottom: 12, trailing: 16))
             .listRowSeparator(.hidden)
+            .daySwipeGesture(onSwipeChangeDay)
         } header: {
             HStack(spacing: 4) {
                 Label(slot.displayName, systemImage: slot.symbolName)
@@ -956,24 +1039,60 @@ struct GroupDaySlotsView: View {
     }
 }
 
-// MARK: - Rows
+/// Same horizontal-swipe-changes-day gesture as `selectedDayHeader`'s own,
+/// factored out so every row `GroupDaySlotsView.slotSection` renders can
+/// carry it too — direct user request ("can you add functionality to swipe
+/// left and right to move from one day to another?"): the header's own
+/// small swipe target wasn't the whole story, since most of the day panel's
+/// actual height is these rows, not the header. `.simultaneousGesture`, not
+/// `.gesture` — this row still sits inside a scrollable `List`, and a plain
+/// `.gesture` would claim every touch that starts here exclusively,
+/// including an attempt to scroll (or a `Button` tap, or a `.swipeActions`
+/// reveal) starting from this exact row. `minimumDistance: 20` plus the
+/// horizontal-vs-vertical check below is what lets a normal tap/scroll/
+/// swipe-action pass through untouched — only a drag that's both long
+/// enough and clearly more horizontal than vertical actually changes the
+/// day.
+private extension View {
+    func daySwipeGesture(_ onSwipe: @escaping (Int) -> Void) -> some View {
+        simultaneousGesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    onSwipe(value.translation.width < 0 ? 1 : -1)
+                }
+        )
+    }
+}
 
-/// Wraps `content` so tapping it navigates to whatever this meal/suggestion
-/// actually refers to — direct user request ("why aren't we able to click
-/// on it to go into the recipe... same issue with restaurant, we should be
-/// able to click in it and it takes us to that restaurant page"). Exactly
-/// one of `recipeID`/`restaurantName` is ever set (mirrors the backend's own
+// MARK: - Tap-to-navigate destination
+
+/// Identifies which recipe/restaurant a tap-to-navigate row should push to
+/// — see `GroupSharedMealPlanView.pushedTarget`'s own doc comment for why
+/// this drives a `.navigationDestination(item:)` at the List/Form root
+/// instead of an in-row `NavigationLink`. Exactly one of
+/// `recipeID`/`restaurantName` is ever set (mirrors the backend's own
 /// "exactly one of recipeId/restaurantName" rule — see `GroupPlannedMeal
-/// .recipeID`'s own doc comment); this is a no-op passthrough (no
-/// navigation at all) on the — shouldn't-happen-in-practice — case neither
-/// is set.
-///
-/// A hidden `NavigationLink` behind `content`, not `content` itself being
-/// the link's label — same technique, same reasoning, as `RecipesHomeView
-/// .recipeCard`: this can be applied to just part of a row that has real
-/// `Button`s elsewhere (`GroupSuggestionRow`'s vote/"Use This" controls)
-/// without a `Button` nested inside a `NavigationLink`'s label firing both
-/// actions on one tap.
+/// .recipeID`'s own doc comment).
+struct GroupPlanNavigationTarget: Identifiable, Equatable {
+    let recipeID: String?
+    let cachedRecipeTitle: String?
+    let restaurantName: String?
+
+    var id: String {
+        if let recipeID { return "recipe-\(recipeID)" }
+        if let restaurantName { return "restaurant-\(restaurantName)" }
+        return "none"
+    }
+}
+
+/// Resolves and shows the actual destination for a `GroupPlanNavigationTarget`
+/// — moved out of what used to be `GroupPlanLinkableRow`'s own `destination`
+/// computed property (see `pushedTarget`'s doc comment for why that type no
+/// longer embeds a `NavigationLink`/`@Query` of its own at all); this is now
+/// the one place that logic lives, built fresh by
+/// `.navigationDestination(item:)` only once a tap actually sets a target,
+/// rather than speculatively for every row up front.
 ///
 /// **Recipe destination**: an already-saved local `Recipe` (found by
 /// `backendRecipeID`, the same lookup `GroupSyncService.resolveRecipeTitle`
@@ -988,45 +1107,95 @@ struct GroupDaySlotsView: View {
 /// match by) against the viewer's local `Restaurant` library, case-
 /// insensitively. Otherwise `GroupRestaurantPreviewView`, which runs a live
 /// search for that name.
+struct GroupPlanDestinationView: View {
+    let target: GroupPlanNavigationTarget
+
+    @Query private var matchingRecipes: [Recipe]
+    @Query private var allRestaurants: [Restaurant]
+
+    init(target: GroupPlanNavigationTarget) {
+        self.target = target
+        // Same captured-local-constant, typed-Optional-comparison
+        // `#Predicate` caution as `GroupSyncService.resolveRecipeTitle` —
+        // see its own comment.
+        let targetRecipeID: String? = target.recipeID
+        _matchingRecipes = Query(filter: #Predicate<Recipe> { $0.backendRecipeID == targetRecipeID })
+        _allRestaurants = Query()
+    }
+
+    /// Filtered client-side, not via `#Predicate` — see the identical note
+    /// this replaced on the old `GroupPlanLinkableRow.matchedRestaurant`.
+    private var matchedRestaurant: Restaurant? {
+        guard let restaurantName = target.restaurantName else { return nil }
+        return allRestaurants.first { $0.name.caseInsensitiveCompare(restaurantName) == .orderedSame }
+    }
+
+    var body: some View {
+        if let recipeID = target.recipeID {
+            if let localRecipe = matchingRecipes.first {
+                RecipeDetailView(recipe: localRecipe)
+            } else {
+                GroupRecipePreviewView(recipeID: recipeID, cachedTitle: target.cachedRecipeTitle)
+            }
+        } else if let restaurantName = target.restaurantName {
+            if let matchedRestaurant {
+                RestaurantDetailView(restaurant: matchedRestaurant)
+            } else {
+                GroupRestaurantPreviewView(name: restaurantName)
+            }
+        } else {
+            EmptyView()
+        }
+    }
+}
+
+// MARK: - Rows
+
+/// Wraps `content` so tapping it navigates to whatever this meal/suggestion
+/// actually refers to — direct user request ("why aren't we able to click
+/// on it to go into the recipe... same issue with restaurant, we should be
+/// able to click in it and it takes us to that restaurant page"). Exactly
+/// one of `recipeID`/`restaurantName` is ever set (mirrors the backend's own
+/// "exactly one of recipeId/restaurantName" rule — see `GroupPlannedMeal
+/// .recipeID`'s own doc comment); this is a no-op (no tap gesture at all)
+/// on the — shouldn't-happen-in-practice — case neither is set.
+///
+/// A plain `.onTapGesture` setting `pushedTarget`, NOT a hidden
+/// `NavigationLink` behind `content` (what this used to be) — direct user
+/// report: "Use This"/the vote buttons, `GroupSuggestionRow`'s real
+/// `Button`s sitting in the very same row as that hidden link, could fire
+/// its navigation instead of their own action on tap. A `NavigationLink`
+/// anywhere inside a `List` row — even one with an explicit small `.frame`
+/// — makes UIKit treat the whole row/cell as a single navigable tap target
+/// underneath whatever `Button`s are layered on top of it, a well-known
+/// SwiftUI/`List` ambiguity `.buttonStyle(.plain)` doesn't reliably
+/// resolve. Setting a plain `@Binding` from an `.onTapGesture` instead, read
+/// by one `.navigationDestination(item:)` outside any row content (see
+/// `GroupSharedMealPlanView.pushedTarget`'s own doc comment), has no
+/// `NavigationLink` in row content anywhere left for a real `Button` to
+/// contend with — the destination-resolving logic itself now lives in
+/// `GroupPlanDestinationView`, built only once a tap actually sets a target.
 private struct GroupPlanLinkableRow<RowContent: View>: View {
     let recipeID: String?
     let cachedRecipeTitle: String?
     let restaurantName: String?
+    @Binding var pushedTarget: GroupPlanNavigationTarget?
     // Plain, no `@ViewBuilder` here — the builder transform already
     // happened on the `init` parameter below (the standard place for it on
     // a stored closure property like this); this is just where the already-
     // built closure lives.
     let content: () -> RowContent
 
-    @Query private var matchingRecipes: [Recipe]
-    @Query private var allRestaurants: [Restaurant]
-
     init(
         recipeID: String?, cachedRecipeTitle: String?, restaurantName: String?,
+        pushedTarget: Binding<GroupPlanNavigationTarget?>,
         @ViewBuilder content: @escaping () -> RowContent
     ) {
         self.recipeID = recipeID
         self.cachedRecipeTitle = cachedRecipeTitle
         self.restaurantName = restaurantName
+        self._pushedTarget = pushedTarget
         self.content = content
-        // Same captured-local-constant, typed-Optional-comparison
-        // `#Predicate` caution as `GroupSyncService.resolveRecipeTitle` —
-        // see its own comment.
-        let targetRecipeID: String? = recipeID
-        _matchingRecipes = Query(filter: #Predicate<Recipe> { $0.backendRecipeID == targetRecipeID })
-        _allRestaurants = Query()
-    }
-
-    /// Filtered client-side, not via `#Predicate` — a case-insensitive
-    /// string comparison isn't expressible there, and a household's own
-    /// restaurant library is small enough (dozens, not thousands of rows)
-    /// that fetching all of it and filtering in Swift is the same "no
-    /// server-side filtering at household scale" tradeoff this app already
-    /// makes elsewhere (e.g. the group grocery list's own category/section
-    /// grouping).
-    private var matchedRestaurant: Restaurant? {
-        guard let restaurantName else { return nil }
-        return allRestaurants.first { $0.name.caseInsensitiveCompare(restaurantName) == .orderedSame }
     }
 
     var body: some View {
@@ -1035,35 +1204,11 @@ private struct GroupPlanLinkableRow<RowContent: View>: View {
         } else {
             content()
                 .contentShape(Rectangle())
-                .background {
-                    NavigationLink {
-                        destination
-                    } label: {
-                        EmptyView()
-                    }
-                    .opacity(0)
-                    // Without this explicit frame, the link shrinks to fit
-                    // its own empty label — same fix, same reasoning, as
-                    // `RecipesHomeView.recipeCard`'s identical `.background`.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onTapGesture {
+                    pushedTarget = GroupPlanNavigationTarget(
+                        recipeID: recipeID, cachedRecipeTitle: cachedRecipeTitle, restaurantName: restaurantName
+                    )
                 }
-        }
-    }
-
-    @ViewBuilder
-    private var destination: some View {
-        if let recipeID {
-            if let localRecipe = matchingRecipes.first {
-                RecipeDetailView(recipe: localRecipe)
-            } else {
-                GroupRecipePreviewView(recipeID: recipeID, cachedTitle: cachedRecipeTitle)
-            }
-        } else if let restaurantName {
-            if let matchedRestaurant {
-                RestaurantDetailView(restaurant: matchedRestaurant)
-            } else {
-                GroupRestaurantPreviewView(name: restaurantName)
-            }
         }
     }
 }
@@ -1072,6 +1217,7 @@ private struct GroupPlannedMealRow: View {
     let meal: GroupPlannedMeal
     let memberName: String
     let isManager: Bool
+    @Binding var pushedTarget: GroupPlanNavigationTarget?
     let onRemove: () -> Void
 
     /// Same icon+color convention as the personal `PlannedMealRow` — a
@@ -1094,7 +1240,10 @@ private struct GroupPlannedMealRow: View {
         // "Remove," lives behind `.swipeActions`, which never conflicts
         // with a plain tap), so there's no nested-button-swallows-the-tap
         // concern to work around.
-        GroupPlanLinkableRow(recipeID: meal.recipeID, cachedRecipeTitle: meal.cachedRecipeTitle, restaurantName: meal.restaurantName) {
+        GroupPlanLinkableRow(
+            recipeID: meal.recipeID, cachedRecipeTitle: meal.cachedRecipeTitle, restaurantName: meal.restaurantName,
+            pushedTarget: $pushedTarget
+        ) {
             HStack {
                 HStack(spacing: 6) {
                     Image(systemName: iconName).foregroundStyle(iconColor)
@@ -1134,6 +1283,7 @@ private struct GroupSuggestionRow: View {
     let isManager: Bool
     let canRemove: Bool
     let isKnownOffline: Bool
+    @Binding var pushedTarget: GroupPlanNavigationTarget?
     let onVote: (VoteDirection) -> Void
     let onAdopt: () -> Void
     let onRemove: () -> Void
@@ -1162,7 +1312,7 @@ private struct GroupSuggestionRow: View {
             // here the way it can there.
             GroupPlanLinkableRow(
                 recipeID: suggestion.recipeID, cachedRecipeTitle: suggestion.cachedRecipeTitle,
-                restaurantName: suggestion.restaurantName
+                restaurantName: suggestion.restaurantName, pushedTarget: $pushedTarget
             ) {
                 HStack {
                     Image(systemName: iconName).foregroundStyle(iconColor)
@@ -1285,44 +1435,6 @@ private struct GroupSuggestionRow: View {
     }
 }
 
-/// One of the three single-tap "decide now" buttons in a slot section — same
-/// deliberately small/quiet visual treatment as the personal `SlotAddButton`
-/// (see that type's own doc comment for why `.plain` + a hand-drawn fill,
-/// not `.bordered`).
-private struct GroupSlotAddButton: View {
-    let title: String
-    let systemImage: String
-    /// `.brandForest` (a MANAGER deciding a meal directly) by default —
-    /// every existing call site keeps that color unchanged. The PARTICIPANT
-    /// "suggest" row below passes `.brandTerracotta` instead, so the two
-    /// rows read as visually distinct actions (decide vs. suggest) at a
-    /// glance, not just via their different button labels.
-    var tint: Color = .brandForest
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 0) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 10.5))
-                Text(title)
-                    .font(.system(size: 9.5))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 2)
-            .background {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(tint)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 // MARK: - Add / suggest a meal (sheet)
 
 /// Identifies which sheet is presented, and with what context — the
@@ -1331,87 +1443,214 @@ private struct GroupSlotAddButton: View {
 /// (`NotificationScheduler`) and meal-history logging (`MealHistoryEntry`)
 /// are both purely local/personal-device features with no group-scoped
 /// backend counterpart at all, so they're out of scope here — see this
-/// feature's own final report. `addRestaurant`/`suggestRestaurant` fold the
-/// personal enum's separate `addRestaurant`/`orderIn` cases into one, with
-/// an `isOrderIn` flag, since the group restaurant flow is a single
-/// name-entry sheet either way (see `GroupRestaurantNameSheet` below), not a
-/// full restaurant picker.
+/// feature's own final report.
+///
+/// A single `pickMeal(MealSlot)` case now, not four separate
+/// addRecipe/addRestaurant/suggestRecipe/suggestRestaurant ones — direct
+/// user feedback that six separate per-slot buttons (three MANAGER-only
+/// "decide" boxes plus three "suggest instead" ones) was too much. The
+/// slot/cook-dine-order/add-suggest choice those four cases used to encode
+/// up front, one button each, is now made inside `GroupAddMealSheet` itself
+/// via its three wheel pickers — this case just remembers which slot's "Add
+/// a Meal" button was tapped, to preselect that sheet's first wheel.
 enum GroupSheetAction: Identifiable {
-    case addRecipe(MealSlot)
-    case addRestaurant(MealSlot, isOrderIn: Bool)
-    case suggestRecipe(MealSlot)
-    case suggestRestaurant(MealSlot, isOrderIn: Bool)
+    case pickMeal(MealSlot)
 
     var id: String {
         switch self {
-        case .addRecipe(let slot): return "addRecipe-\(slot.rawValue)"
-        case .addRestaurant(let slot, let isOrderIn): return "addRestaurant-\(slot.rawValue)-\(isOrderIn)"
-        case .suggestRecipe(let slot): return "suggestRecipe-\(slot.rawValue)"
-        case .suggestRestaurant(let slot, let isOrderIn): return "suggestRestaurant-\(slot.rawValue)-\(isOrderIn)"
+        case .pickMeal(let slot): return "pickMeal-\(slot.rawValue)"
         }
     }
 }
 
-/// Builds the actual sheet content for a `GroupSheetAction`, and performs
-/// the data mutations (inserting a `.pendingCreate` `GroupPlannedMeal`/
-/// `GroupMealSuggestion`) each picker's callback triggers — same
-/// local-first-insert-and-dismiss-immediately pattern as every other write
-/// in this feature (the real `POST` happens on the next sync; see
-/// `GroupSyncService.push`), and the same "declared as its own `View`, not a
-/// free function, so its `@Environment` is populated the normal way" reasoning
-/// as the personal `MealSheetContent`.
+/// Builds the actual sheet content for a `GroupSheetAction` — currently
+/// always `GroupAddMealSheet`, the combined slot/cook-dine-order/add-suggest
+/// picker; see that type's own doc comment for the data-mutation logic this
+/// used to hold directly (now inside that sheet, since it's the one place
+/// that actually has all three wheels' final selections). Kept as its own
+/// thin `View`, not folded away entirely, purely so each call site's
+/// `.sheet(item:)` stays a one-line `{ action in GroupMealSheetContent(...) }`
+/// — the same shape as the personal `MealSheetContent` — even though there's
+/// only one case to switch on today; a second sheet-presented action here
+/// again later (this file used to have five) slots back in without
+/// reshaping every call site.
 struct GroupMealSheetContent: View {
     let action: GroupSheetAction
     let groupID: String
     let date: Date
     let currentUserID: String?
-
-    @Environment(\.modelContext) private var modelContext
-
-    private var normalizedDate: Date { GroupPlannedMeal.normalize(date) }
+    let isManager: Bool
 
     var body: some View {
         switch action {
-        case .addRecipe(let slot):
-            GroupRecipePickerSheet { id, title in decide(slot: slot, recipeID: id, recipeTitle: title) }
-        case .addRestaurant(let slot, let isOrderIn):
-            GroupRestaurantNameSheet(isOrderIn: isOrderIn) { name in
-                decide(slot: slot, restaurantName: name, isOrderIn: isOrderIn)
+        case .pickMeal(let slot):
+            GroupAddMealSheet(groupID: groupID, date: date, initialSlot: slot, isManager: isManager, currentUserID: currentUserID)
+        }
+    }
+}
+
+/// The combined "Add a Meal" sheet a slot's single "+" button now opens —
+/// direct user request for three side-by-side scrolling wheels "similar to
+/// the timer on the iPhone": which slot (breakfast/lunch/dinner/other),
+/// which kind (cook/dine out/order in), and which action (add/suggest).
+/// Selections carry a sensible default (`initialSlot` — whichever slot's own
+/// "+" was tapped — and `.add` for a MANAGER, `.suggest` for anyone else,
+/// since a PARTICIPANT has no other option) but are all still freely
+/// changeable, matching the request that this be one general-purpose sheet
+/// rather than one preset per button.
+///
+/// The bottom half swaps between a recipe list (`GroupRecipePickerContent`)
+/// and a restaurant search (`GroupRestaurantPickerContent`, reused for both
+/// "Dine Out" and "Order In" — the middle wheel's own selection already
+/// tells `submitRestaurant` below which `isOrderIn` value to insert with, so
+/// that content view itself doesn't need to know or care which of the two
+/// it's currently being used for) as the middle wheel
+/// changes — "depending on what you select re cook, dine out, order in, the
+/// bottom will either show recipes or restaurants + have a search bar," per
+/// the request. Tapping a result there both submits it (`submitRecipe`/
+/// `submitRestaurant` below, which read the current slot/action wheels and
+/// perform the exact same local-first insert `GroupMealSheetContent`'s old
+/// `decide`/`suggest` helpers used to) and dismisses the whole sheet — same
+/// local-first-insert-and-dismiss-immediately pattern as every other write
+/// in this feature (the real `POST` happens on the next sync; see
+/// `GroupSyncService.push`).
+private struct GroupAddMealSheet: View {
+    let groupID: String
+    let date: Date
+    let isManager: Bool
+    let currentUserID: String?
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    @State private var selectedSlot: MealSlot
+    @State private var selectedKind: MealKindChoice = .cook
+    @State private var selectedAction: MealActionChoice
+
+    init(groupID: String, date: Date, initialSlot: MealSlot, isManager: Bool, currentUserID: String?) {
+        self.groupID = groupID
+        self.date = date
+        self.isManager = isManager
+        self.currentUserID = currentUserID
+        _selectedSlot = State(initialValue: initialSlot)
+        _selectedAction = State(initialValue: isManager ? .add : .suggest)
+    }
+
+    private var normalizedDate: Date { GroupPlannedMeal.normalize(date) }
+
+    private enum MealKindChoice: String, CaseIterable, Identifiable {
+        case cook = "Cook"
+        case dineOut = "Dine Out"
+        case orderIn = "Order In"
+        var id: String { rawValue }
+    }
+
+    private enum MealActionChoice: String, CaseIterable, Identifiable {
+        case add = "Add"
+        case suggest = "Suggest"
+        var id: String { rawValue }
+    }
+
+    /// A PARTICIPANT only ever sees "Suggest" in the third wheel — same role
+    /// gate `slotSection`'s old MANAGER-only "decide now" buttons enforced,
+    /// just expressed as a filtered wheel instead of a hidden button row.
+    /// Still a real (if single-row) wheel rather than hiding the whole
+    /// column, so "there are 3 scrolls side by side" holds for every viewer,
+    /// not just a MANAGER.
+    private var actionChoices: [MealActionChoice] {
+        isManager ? MealActionChoice.allCases : [.suggest]
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    Picker("Meal", selection: $selectedSlot) {
+                        ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
+                            Text(slot.displayName).tag(slot)
+                        }
+                    }
+                    Picker("Type", selection: $selectedKind) {
+                        ForEach(MealKindChoice.allCases) { kind in
+                            Text(kind.rawValue).tag(kind)
+                        }
+                    }
+                    Picker("Action", selection: $selectedAction) {
+                        ForEach(actionChoices) { action in
+                            Text(action.rawValue).tag(action)
+                        }
+                    }
+                }
+                .pickerStyle(.wheel)
+                .frame(height: 150)
+                // Nothing in this sheet's bottom half depends on `.labelsHidden()`ing
+                // these — each `Picker`'s own `"Meal"`/`"Type"`/`"Action"` label
+                // is never shown by `.wheel` style in the first place (unlike
+                // `.menu`); left off deliberately so VoiceOver still reads a
+                // name for each wheel.
+
+                Divider()
+
+                switch selectedKind {
+                case .cook:
+                    GroupRecipePickerContent(onPick: { id, title in submitRecipe(id: id, title: title) })
+                case .dineOut:
+                    GroupRestaurantPickerContent { name in submitRestaurant(name: name, isOrderIn: false) }
+                case .orderIn:
+                    GroupRestaurantPickerContent { name in submitRestaurant(name: name, isOrderIn: true) }
+                }
             }
-        case .suggestRecipe(let slot):
-            GroupRecipePickerSheet { id, title in suggest(slot: slot, recipeID: id, recipeTitle: title) }
-        case .suggestRestaurant(let slot, let isOrderIn):
-            GroupRestaurantNameSheet(isOrderIn: isOrderIn) { name in
-                suggest(slot: slot, restaurantName: name, isOrderIn: isOrderIn)
+            .navigationTitle("Add a Meal")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            // A PARTICIPANT's single-row "Suggest" wheel could otherwise be
+            // left pointing at a since-filtered-out `.add` if this sheet is
+            // ever reused for a still-MANAGER-when-opened, no-longer-MANAGER-
+            // now session (e.g. demoted by another member while this sheet
+            // sat open) — not a real scenario in practice today, but a cheap
+            // guard against `selectedAction` silently pointing at an option
+            // no longer offered.
+            .onChange(of: isManager) { _, stillManager in
+                if !stillManager { selectedAction = .suggest }
             }
         }
     }
 
-    private func decide(
-        slot: MealSlot, recipeID: String? = nil, recipeTitle: String? = nil,
-        restaurantName: String? = nil, isOrderIn: Bool = false
-    ) {
-        guard let currentUserID else { return }
-        let meal = GroupPlannedMeal(
-            id: GroupPlannedMeal.newLocalPlaceholderID(), groupID: groupID, date: normalizedDate, slot: slot,
-            recipeID: recipeID, cachedRecipeTitle: recipeTitle, restaurantName: restaurantName,
-            isOrderIn: isOrderIn, decidedByUserID: currentUserID, syncState: .pendingCreate
-        )
-        modelContext.insert(meal)
-        try? modelContext.save()
+    private func submitRecipe(id: String, title: String) {
+        insert(recipeID: id, recipeTitle: title)
+        dismiss()
     }
 
-    private func suggest(
-        slot: MealSlot, recipeID: String? = nil, recipeTitle: String? = nil,
+    private func submitRestaurant(name: String, isOrderIn: Bool) {
+        insert(restaurantName: name, isOrderIn: isOrderIn)
+        dismiss()
+    }
+
+    private func insert(
+        recipeID: String? = nil, recipeTitle: String? = nil,
         restaurantName: String? = nil, isOrderIn: Bool = false
     ) {
         guard let currentUserID else { return }
-        let suggestion = GroupMealSuggestion(
-            id: GroupMealSuggestion.newLocalPlaceholderID(), groupID: groupID, date: normalizedDate, slot: slot,
-            recipeID: recipeID, cachedRecipeTitle: recipeTitle, restaurantName: restaurantName, isOrderIn: isOrderIn,
-            proposedByUserID: currentUserID, myVote: .up, upvoteCount: 1, downvoteCount: 0, syncState: .pendingCreate
-        )
-        modelContext.insert(suggestion)
+        switch selectedAction {
+        case .add:
+            let meal = GroupPlannedMeal(
+                id: GroupPlannedMeal.newLocalPlaceholderID(), groupID: groupID, date: normalizedDate, slot: selectedSlot,
+                recipeID: recipeID, cachedRecipeTitle: recipeTitle, restaurantName: restaurantName,
+                isOrderIn: isOrderIn, decidedByUserID: currentUserID, syncState: .pendingCreate
+            )
+            modelContext.insert(meal)
+        case .suggest:
+            let suggestion = GroupMealSuggestion(
+                id: GroupMealSuggestion.newLocalPlaceholderID(), groupID: groupID, date: normalizedDate, slot: selectedSlot,
+                recipeID: recipeID, cachedRecipeTitle: recipeTitle, restaurantName: restaurantName, isOrderIn: isOrderIn,
+                proposedByUserID: currentUserID, myVote: .up, upvoteCount: 1, downvoteCount: 0, syncState: .pendingCreate
+            )
+            modelContext.insert(suggestion)
+        }
         try? modelContext.save()
     }
 }
@@ -1457,19 +1696,31 @@ struct GroupMealSheetContent: View {
 /// one-line slot summary) is a compact, space-constrained label, the same
 /// shape a hand-typed name always produced, and an address tacked on would
 /// either get silently truncated there or badly overflow a pill sized for a
-/// short name. The result list in this sheet still shows the address as a
-/// secondary line — enough to tell two same-named places apart before
-/// picking one — it just isn't carried into the string that ends up stored.
-private struct GroupRestaurantNameSheet: View {
-    let isOrderIn: Bool
+/// short name. The result list still shows the address as a secondary line
+/// — enough to tell two same-named places apart before picking one — it
+/// just isn't carried into the string that ends up stored.
+///
+/// Embedded directly in `GroupAddMealSheet`'s bottom half — no
+/// `NavigationStack`/toolbar/title of its own (this used to be a standalone
+/// sheet, `GroupRestaurantNameSheet`, presented directly from a slot's own
+/// "Eat Out"/"Order In" button; now `GroupAddMealSheet` supplies all of
+/// that chrome once for whichever content — this or `GroupRecipePickerContent`
+/// — the middle wheel currently selects). A plain `TextField`, not
+/// `.searchable`, for the same reason: `.searchable`'s navigation-bar
+/// placement assumes it's attached to a `NavigationStack`'s direct content,
+/// not to one branch of a `switch` nested a couple of levels down inside
+/// one — unreliable exactly where this view now lives. `onSubmit` alone,
+/// with no `dismiss()` of its own — the caller (`GroupAddMealSheet`) is the
+/// one that knows which of "add" or "suggest" this selection means and
+/// performs the actual insert, then dismisses the whole sheet itself.
+private struct GroupRestaurantPickerContent: View {
     let onSubmit: (String) -> Void
 
-    @Environment(\.dismiss) private var dismiss
     /// This device's own saved, personal restaurants — see this type's own
     /// doc comment for why they're offered here too, not just live search
     /// results. Unfiltered by `searchText` on purpose: `RestaurantListView`
     /// itself always shows the full "Your Restaurants" list regardless of
-    /// whether a search is active, and this sheet matches that precedent
+    /// whether a search is active, and this view matches that precedent
     /// exactly rather than inventing a different rule.
     @Query(sort: \Restaurant.name) private var savedRestaurants: [Restaurant]
     @State private var searchText = ""
@@ -1481,7 +1732,8 @@ private struct GroupRestaurantNameSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            searchField
             List {
                 if isSearchActive {
                     searchResultsSection
@@ -1493,24 +1745,25 @@ private struct GroupRestaurantNameSheet: View {
                     savedRestaurantsSection
                 }
             }
-            .searchable(text: $searchText, prompt: "Search for a restaurant")
-            .onChange(of: searchText) { _, newValue in
-                searchModel.search(newValue)
-            }
-            .onAppear {
-                locationProvider.requestIfNeeded()
-            }
-            .onChange(of: locationProvider.coordinate) { _, newValue in
-                searchModel.userCoordinate = newValue
-            }
-            .navigationTitle(isOrderIn ? "Order In" : "Eat Out")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
+            .listStyle(.plain)
         }
+        .onAppear {
+            locationProvider.requestIfNeeded()
+        }
+        .onChange(of: locationProvider.coordinate) { _, newValue in
+            searchModel.userCoordinate = newValue
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search for a restaurant", text: $searchText)
+                .onChange(of: searchText) { _, newValue in searchModel.search(newValue) }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding([.horizontal, .top], 12)
     }
 
     private var searchResultsSection: some View {
@@ -1529,7 +1782,6 @@ private struct GroupRestaurantNameSheet: View {
                 ForEach(searchModel.results) { result in
                     Button {
                         onSubmit(result.name)
-                        dismiss()
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(result.name).foregroundStyle(.primary)
@@ -1553,7 +1805,6 @@ private struct GroupRestaurantNameSheet: View {
             ForEach(savedRestaurants) { restaurant in
                 Button {
                     onSubmit(restaurant.name)
-                    dismiss()
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1582,7 +1833,7 @@ private struct GroupRestaurantNameSheet: View {
 
 /// `RestaurantSearchModel`'s exact search precedence
 /// (`GooglePlacesService.search` first, `MKLocalSearch` fallback), just
-/// without the pieces `GroupRestaurantNameSheet` doesn't need — see that
+/// without the pieces `GroupRestaurantPickerContent` doesn't need — see that
 /// type's own doc comment for why this is a deliberate, small duplication
 /// rather than a shared abstraction with the personal, `Restaurant`-backed
 /// model. Same 300ms debounce as `RestaurantSearchModel.search`, for the
@@ -1698,10 +1949,15 @@ private final class GroupRestaurantSearchModel: ObservableObject {
 /// returns one entry PER SHARE (see `SharedRecipeEntry`'s own doc comment),
 /// so the same recipe shared two different ways would otherwise appear
 /// twice here.
-private struct GroupRecipePickerSheet: View {
+///
+/// Embedded directly in `GroupAddMealSheet`'s bottom half — same "no
+/// `NavigationStack`/toolbar/title of its own, plain `TextField` instead of
+/// `.searchable`, `onPick` alone with no internal `dismiss()`" reasoning as
+/// `GroupRestaurantPickerContent`'s own doc comment (this used to be a
+/// standalone sheet, `GroupRecipePickerSheet`, the same way that one was).
+private struct GroupRecipePickerContent: View {
     let onPick: (String, String) -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var recipes: [(id: String, title: String)] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -1713,10 +1969,18 @@ private struct GroupRecipePickerSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search your recipes", text: $searchText)
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding([.horizontal, .top], 12)
+
             List {
                 if isLoading && recipes.isEmpty {
-                    ProgressView()
+                    HStack { Spacer(); ProgressView(); Spacer() }
                 } else if let errorMessage {
                     Text(errorMessage).foregroundStyle(.red)
                     Button("Retry") { Task { await load() } }
@@ -1726,27 +1990,21 @@ private struct GroupRecipePickerSheet: View {
                         systemImage: "book",
                         description: Text("Only recipes you own, or that have been shared with you, can be planned here. Share one from Recipes first.")
                     )
+                } else if filteredRecipes.isEmpty {
+                    Text("No matches.").foregroundStyle(.secondary)
                 } else {
                     ForEach(filteredRecipes, id: \.id) { recipe in
                         Button {
                             onPick(recipe.id, recipe.title)
-                            dismiss()
                         } label: {
                             Text(recipe.title).foregroundStyle(.primary)
                         }
                     }
                 }
             }
-            .searchable(text: $searchText)
-            .navigationTitle("Choose a Recipe")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-            .task { await load() }
+            .listStyle(.plain)
         }
+        .task { await load() }
     }
 
     private func load() async {
