@@ -360,6 +360,17 @@ struct RemoteIngredient: Codable, Identifiable {
     let name: String
     let quantity: Double?
     let unit: String?
+
+    /// Same formatted-line convention as the local `RecipeIngredientEntry
+    /// .displayText` (`"1 1/2 cups flour"`) — reuses that type's own
+    /// `formattedLine` builder rather than duplicating the quantity/fraction
+    /// formatting logic, for an entry that hasn't been saved as a local
+    /// `Recipe` yet (`LibraryRecipeDetailView`/`SharedRecipeDetailView` in
+    /// RecipesHomeView.swift, which read straight off `SharedRecipeEntry`/
+    /// `LibraryRecipeEntry` before a "Save to My Recipes" tap ever runs).
+    var displayText: String {
+        RecipeIngredientEntry.formattedLine(quantity: quantity, unit: unit, name: name.titleCasedForDisplay)
+    }
 }
 
 /// A recipe as the backend's recipe-library API returns it — the shape
@@ -560,6 +571,15 @@ struct LibraryRecipeEntry: Codable, Identifiable {
         guard let addedBy else { return "Added anonymously" }
         return "Added by \(addedBy.displayNameOrPhoneNumber)"
     }
+
+    /// Same `?? 4`/`?? 0` fallbacks `makeLocalRecipe()` below already
+    /// applies when actually saving this entry as a `Recipe` — surfaced
+    /// here too so `RecipesHomeView`'s master-library card can show the
+    /// same "N min"/"serves N" meta row a saved `Recipe`'s own card does,
+    /// for an entry that hasn't been saved yet and so has no `Recipe` to
+    /// read those from.
+    var displayServings: Int { servings ?? 4 }
+    var totalMinutes: Int { (prepMinutes ?? 0) + (cookMinutes ?? 0) }
 
     enum CodingKeys: String, CodingKey {
         case recipeID = "id"

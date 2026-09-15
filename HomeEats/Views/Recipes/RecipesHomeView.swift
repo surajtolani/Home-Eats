@@ -461,31 +461,57 @@ struct RecipesHomeView: View {
                     .font(.brandCaption)
             } else {
                 ForEach(masterLibraryRecipes) { entry in
-                    masterLibraryRow(entry)
+                    masterLibraryCard(entry)
                 }
             }
         }
     }
 
-    private func masterLibraryRow(_ entry: LibraryRecipeEntry) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            SharedRecipeEntryThumbnail(photoData: entry.photoData)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.title).font(.brandHeadline)
-                Text(entry.addedByCaption)
-                    .font(.brandCaption)
-                    .foregroundStyle(.secondary)
-                if savedLibraryEntryIDs.contains(entry.id) {
-                    Label("Saved to My Recipes", systemImage: "checkmark.circle.fill")
-                        .font(.brandCaption)
-                        .foregroundStyle(.green)
-                } else {
-                    Button("Save to My Recipes") { saveLibraryEntry(entry) }
-                        .font(.brandCaption)
+    /// A photo card matching `recipeCard`'s own formatting exactly (same
+    /// `LibraryEntryCardContent`/`RecipeCardContent` layout: photo on top,
+    /// title + meta row below) and, same as every other recipe card on this
+    /// screen, tappable to open a detail view — direct user report that this
+    /// used to be a plain, smaller `HStack` row with no way to view the
+    /// recipe at all before saving it, formatted nothing like the bundled
+    /// `.library` cards right above it or "My Recipes." Since this entry
+    /// hasn't been saved as a local `Recipe` yet (see `saveLibraryEntry`),
+    /// it opens `LibraryRecipeDetailView` — a read-only detail screen built
+    /// straight off the wire `LibraryRecipeEntry` — rather than the
+    /// `Recipe`-`@Bindable` `RecipeDetailView` every other card uses, which
+    /// has no path that doesn't already assume a persisted local recipe.
+    @ViewBuilder
+    private func masterLibraryCard(_ entry: LibraryRecipeEntry) -> some View {
+        let isSaved = savedLibraryEntryIDs.contains(entry.id)
+        LibraryEntryCardContent(entry: entry)
+            .background {
+                // Same "flexible hidden NavigationLink behind the card"
+                // pattern as `recipeCard` — see that method's own doc
+                // comment for why.
+                NavigationLink("") {
+                    LibraryRecipeDetailView(entry: entry, isSaved: isSaved) {
+                        saveLibraryEntry(entry)
+                    }
                 }
+                .opacity(0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }
-        .padding(.vertical, 4)
+            .overlay(alignment: .topTrailing) {
+                Group {
+                    if isSaved {
+                        CircularIconButton(systemImage: "checkmark.circle.fill", tint: .brandSage) {}
+                            .allowsHitTesting(false)
+                            .accessibilityLabel("Saved to My Recipes")
+                    } else {
+                        CircularIconButton(systemImage: "square.and.arrow.down", tint: .white) {
+                            saveLibraryEntry(entry)
+                        }
+                        .accessibilityLabel("Save to My Recipes")
+                    }
+                }
+                .padding(8)
+            }
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .listRowSeparator(.hidden)
     }
 
     private func loadMasterLibrary() async {
@@ -689,32 +715,196 @@ private struct RecipeCardContent: View {
     }
 }
 
-/// A small square photo for one `sharedRecipeRow` — deliberately much
-/// simpler than `RecipeThumbnail` (no remote-URL/bundled-asset cases: a
-/// `SharedRecipeEntry` that hasn't been saved yet only ever has a decoded
-/// photo or nothing), but the same placeholder look (sage tint, a plain
-/// fork-and-knife glyph) so a shared recipe with no photo doesn't look
-/// broken or different from any other "no photo" recipe elsewhere in this
-/// app.
+/// The photo half of `SharedRecipeEntryThumbnail`/`LibraryEntryCardContent`/
+/// `LibraryRecipeDetailView`, deliberately much simpler than `RecipeThumbnail`
+/// (no remote-URL/bundled-asset cases: an entry that hasn't been saved as a
+/// local `Recipe` yet only ever has a decoded photo or nothing) and with no
+/// frame baked in, so each caller sizes it for its own layout (a 56pt square
+/// row thumbnail, a 150pt-tall card top, a 200pt-tall detail header) — same
+/// placeholder look either way (sage tint, a plain fork-and-knife glyph) so
+/// one of these with no photo doesn't look broken or different from any
+/// other "no photo" recipe elsewhere in this app.
+private struct EntryPhoto: View {
+    let photoData: Data?
+
+    var body: some View {
+        if let photoData, let uiImage = UIImage(data: photoData) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFill()
+        } else {
+            ZStack {
+                Color.brandSage.opacity(0.15)
+                Image(systemName: "fork.knife")
+                    .foregroundStyle(Color.brandSage)
+            }
+        }
+    }
+}
+
+/// A small square photo for one `sharedRecipeRow`.
 private struct SharedRecipeEntryThumbnail: View {
     let photoData: Data?
 
     var body: some View {
-        Group {
-            if let photoData, let uiImage = UIImage(data: photoData) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                ZStack {
-                    Color.brandSage.opacity(0.15)
-                    Image(systemName: "fork.knife")
+        EntryPhoto(photoData: photoData)
+            .frame(width: 56, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// The `RecipeCardContent`-equivalent for a master-library entry that
+/// hasn't been saved as a local `Recipe` yet — same layout (photo on top,
+/// title + meta row below) built off `LibraryRecipeEntry`'s own fields
+/// instead of a `Recipe`'s, plus the "Added by ..." caption a saved
+/// recipe's own card has no equivalent of. Not folded into
+/// `RecipeCardContent` itself: `RecipeThumbnail` only knows how to read a
+/// `Recipe`'s photo/asset/remote-URL fields, none of which an unsaved
+/// `LibraryRecipeEntry` has — see `masterLibraryCard`'s own doc comment for
+/// the fuller "why a near-duplicate, not a shared generic" reasoning.
+private struct LibraryEntryCardContent: View {
+    let entry: LibraryRecipeEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            EntryPhoto(photoData: entry.photoData)
+                .frame(height: 150)
+                .frame(maxWidth: .infinity)
+                .clipped()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(.brandHeadline)
+                    .foregroundStyle(.primary)
+                HStack(spacing: 8) {
+                    if entry.totalMinutes > 0 {
+                        Label("\(entry.totalMinutes) min", systemImage: "clock")
+                    }
+                    Label("serves \(entry.displayServings)", systemImage: "person.2")
+                }
+                .font(.brandCaption)
+                .foregroundStyle(.secondary)
+                Text(entry.addedByCaption)
+                    .font(.brandCaption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(10)
+        }
+        .background(Color.brandCream)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.06)))
+    }
+}
+
+/// A read-only recipe detail screen for a master-library entry that hasn't
+/// been saved as a local `Recipe` yet — `RecipeDetailView` needs a real,
+/// persisted `@Bindable Recipe` (its favorite toggle, editor, and share
+/// sheet all write straight to one), which an entry nobody has chosen to
+/// save doesn't have; this reads the same information straight off the
+/// wire `LibraryRecipeEntry` instead. Same content sections, same section
+/// layout, and the same fonts as `RecipeDetailView` (photo, tag-style
+/// header, summary, meta row, ingredients, instructions, source link) —
+/// only the toolbar action differs: no favorite/edit/share (none of those
+/// make sense before this is even saved), just "Save to My Recipes,"
+/// mirroring the card's own affordance one screen up.
+private struct LibraryRecipeDetailView: View {
+    let entry: LibraryRecipeEntry
+    let onSave: () -> Void
+
+    @State private var isSaved: Bool
+
+    init(entry: LibraryRecipeEntry, isSaved: Bool, onSave: @escaping () -> Void) {
+        self.entry = entry
+        self.onSave = onSave
+        _isSaved = State(initialValue: isSaved)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                EntryPhoto(photoData: entry.photoData)
+                    .frame(height: 200)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                Text(entry.addedByCaption)
+                    .font(.brandCaption2.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+
+                if let summary = entry.summary, !summary.isEmpty {
+                    Text(summary)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 20) {
+                    Label("\(entry.displayServings) servings", systemImage: "person.2")
+                    if let prep = entry.prepMinutes, prep > 0 {
+                        Label("\(prep)m prep", systemImage: "timer")
+                    }
+                    if let cook = entry.cookMinutes, cook > 0 {
+                        Label("\(cook)m cook", systemImage: "flame")
+                    }
+                }
+                .font(.brandSubheadline)
+                .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Ingredients").font(.brandTitle3.bold())
+                    ForEach(entry.ingredients) { ingredient in
+                        HStack(alignment: .top) {
+                            Circle()
+                                .fill(Color.secondary)
+                                .frame(width: 5, height: 5)
+                                .padding(.top, 7)
+                                .frame(width: 20)
+                            Text(ingredient.displayText)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Instructions").font(.brandTitle3.bold())
+                    ForEach(Array(entry.instructions.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("\(index + 1)")
+                                .font(.brandHeadline)
+                                .foregroundStyle(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Circle().fill(Color.accentColor))
+                            Text(step)
+                        }
+                    }
+                    if entry.instructions.isEmpty {
+                        Text("No steps added yet.").foregroundStyle(.secondary)
+                    }
+                }
+
+                if let sourceURL = entry.sourceURL, let url = URL(string: sourceURL) {
+                    Link(destination: url) {
+                        Label("View Original Recipe", systemImage: "arrow.up.right.square")
+                    }
+                }
+            }
+            .padding()
+        }
+        .navigationTitle(entry.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if isSaved {
+                    Label("Saved", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(Color.brandSage)
+                } else {
+                    Button("Save to My Recipes") {
+                        isSaved = true
+                        onSave()
+                    }
                 }
             }
         }
-        .frame(width: 56, height: 56)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
