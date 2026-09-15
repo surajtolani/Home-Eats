@@ -10,6 +10,7 @@ struct RestaurantListView: View {
 
     @State private var showEditor = false
     @State private var showNaturalSearch = false
+    @State private var showDuplicates = false
     @State private var searchText = ""
     @StateObject private var searchModel = RestaurantSearchModel()
     @StateObject private var locationProvider = UserLocationProvider()
@@ -116,12 +117,26 @@ struct RestaurantListView: View {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
             }
+            // Direct user request: "There should be a way to eliminate
+            // duplications." See `DuplicateRestaurantsView`'s own doc
+            // comment for what this opens.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showDuplicates = true
+                } label: {
+                    Image(systemName: "checkmark.circle.trianglebadge.exclamationmark")
+                }
+                .accessibilityLabel("Find Duplicate Restaurants")
+            }
         }
         .sheet(isPresented: $showEditor) {
             RestaurantEditorView()
         }
         .sheet(isPresented: $showNaturalSearch) {
             NaturalLanguageRestaurantSearchView(userCoordinate: locationProvider.coordinate)
+        }
+        .sheet(isPresented: $showDuplicates) {
+            DuplicateRestaurantsView()
         }
         // Opportunistic personal-library sync, same reasoning and pattern
         // as `RecipesHomeView`'s own identical `.task` — see
@@ -224,14 +239,43 @@ struct RestaurantListView: View {
     /// checked by `SearchResultRow`'s own `isAdded`) and leaves the rest of
     /// the results in place. Re-adding an already-added result is a no-op —
     /// there's no id to key an update against otherwise.
+    ///
+    /// **Duplicate prevention**: if this result matches a restaurant
+    /// already in the library (`existingMatch(in:)` — same real place
+    /// searched again, possibly in a later session where `addedResultIDs`
+    /// has long since reset), this marks it added without inserting a
+    /// second copy — direct user request that restaurants "should not be
+    /// able to be added twice."
     private func addFromSearch(_ result: RestaurantSearchModel.Result) {
         guard !addedResultIDs.contains(result.id) else { return }
-        modelContext.insert(result.makeRestaurant())
+        if result.existingMatch(in: restaurants) == nil {
+            modelContext.insert(result.makeRestaurant())
+        }
         addedResultIDs.insert(result.id)
     }
 }
 
 extension RestaurantSearchModel.Result {
+    /// A restaurant already in the library that this search result is the
+    /// same real place as, if any — direct user request: "Restaurants...
+    /// should not be able to be added twice." A Google-sourced result
+    /// (`isGoogleSourced`) matches by `googlePlaceID` (the one truly
+    /// reliable identifier: two different Google results never share a
+    /// place ID, but two genuinely different restaurants can share a
+    /// name), falling back to a case-insensitive name match for a MapKit
+    /// result, which has no place ID to compare — same fallback
+    /// `RestaurantEditorView.duplicateMatch` uses for a manually-typed
+    /// name. Checked by both `addFromSearch` overloads below (plain search
+    /// and the natural-language one) before inserting.
+    func existingMatch(in restaurants: [Restaurant]) -> Restaurant? {
+        if isGoogleSourced {
+            if let match = restaurants.first(where: { $0.googlePlaceID == id }) {
+                return match
+            }
+        }
+        return restaurants.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
     /// Builds a `Restaurant` ready to insert from this search result —
     /// shared by both the plain search-as-you-type flow and the
     /// natural-language "Ask for a Restaurant" flow.
@@ -374,6 +418,9 @@ struct NaturalLanguageRestaurantSearchView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    /// Standalone mode only — see `addFromSearch`'s own doc comment for the
+    /// duplicate check this backs.
+    @Query(sort: \Restaurant.name) private var restaurants: [Restaurant]
 
     @State private var queryText = ""
     @State private var isSearching = false
@@ -526,7 +573,11 @@ struct NaturalLanguageRestaurantSearchView: View {
             return
         }
         guard !addedResultIDs.contains(result.id) else { return }
-        modelContext.insert(result.makeRestaurant())
+        // Same duplicate check as the plain search bar's own
+        // `addFromSearch` — see `existingMatch(in:)`'s own doc comment.
+        if result.existingMatch(in: restaurants) == nil {
+            modelContext.insert(result.makeRestaurant())
+        }
         addedResultIDs.insert(result.id)
     }
 }

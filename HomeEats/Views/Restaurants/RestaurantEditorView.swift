@@ -10,6 +10,9 @@ struct RestaurantEditorView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    /// Read-only, purely to back `duplicateMatch` below — see that
+    /// property's own doc comment.
+    @Query(sort: \Restaurant.name) private var restaurants: [Restaurant]
 
     @State private var name: String = ""
     @State private var cuisine: String = ""
@@ -19,8 +22,27 @@ struct RestaurantEditorView: View {
     @State private var websiteURL: String = ""
     @State private var address: String = ""
     @State private var isFavorite: Bool = false
+    /// Backs the "Add Anyway?" confirmation dialog — see `duplicateMatch`'s
+    /// own doc comment for why this only ever applies to a brand-new
+    /// restaurant (`existing == nil`), never an edit.
+    @State private var showDuplicateConfirm = false
 
     private static let priceOptions = ["$", "$$", "$$$", "$$$$"]
+
+    /// Direct user request: "Restaurants... should not be able to be added
+    /// twice." Only meaningful for a brand-new restaurant (`existing ==
+    /// nil`) — editing an existing one obviously keeps its own name.
+    /// Case-/whitespace-insensitive exact match against every restaurant
+    /// already in the library; a search-result add (`RestaurantListView
+    /// .addFromSearch`) runs the identical check before this screen is even
+    /// involved, so this specifically catches the manual-entry path that
+    /// check can't reach.
+    private var duplicateMatch: Restaurant? {
+        guard existing == nil else { return nil }
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        return restaurants.first { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
+    }
 
     init(existing: Restaurant? = nil, onSave: @escaping (Restaurant) -> Void = { _ in }) {
         self.existing = existing
@@ -82,10 +104,28 @@ struct RestaurantEditorView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
+                    Button("Save") { attemptSave() }
                         .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .alert(
+                "Already in Your Restaurants",
+                isPresented: $showDuplicateConfirm,
+                presenting: duplicateMatch
+            ) { _ in
+                Button("Cancel", role: .cancel) {}
+                Button("Add Anyway") { save() }
+            } message: { match in
+                Text("You already have a restaurant named \"\(match.name)\". Add another one with the same name?")
+            }
+        }
+    }
+
+    private func attemptSave() {
+        if duplicateMatch != nil {
+            showDuplicateConfirm = true
+        } else {
+            save()
         }
     }
 
