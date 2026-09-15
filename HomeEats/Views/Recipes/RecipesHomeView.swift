@@ -42,6 +42,62 @@ struct RecipesHomeView: View {
         var id: String { rawValue }
     }
 
+    /// A custom inline search field, not `.searchable(...)` (what this used
+    /// to be) — direct user request to move the "+" add-recipe menu from
+    /// the top-right toolbar to sit right next to the search bar itself.
+    /// `.searchable`'s system search field always spans the full toolbar
+    /// width with nothing else in it, so there's no way to place a button
+    /// beside it there; a plain `TextField` in the same `HStack` as the
+    /// menu is what actually makes "next to the search bar" possible —
+    /// same fix as `RestaurantListView.searchFieldRow`'s identical change.
+    private var searchFieldRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search recipes", text: $searchText)
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            Divider().frame(height: 18)
+            Menu {
+                Button {
+                    presentAfterMenuDismiss { showManualEditor = true }
+                } label: {
+                    Label("Type a Recipe", systemImage: "square.and.pencil")
+                }
+                Button {
+                    presentAfterMenuDismiss { showImportSheet = true }
+                } label: {
+                    Label("Import from URL", systemImage: "link")
+                }
+                Button {
+                    presentAfterMenuDismiss { showAIImportSheet = true }
+                } label: {
+                    Label("Add from Photo or Notes", systemImage: "camera.viewfinder")
+                }
+                Divider()
+                Button {
+                    presentAfterMenuDismiss { showRecommendSheet = true }
+                } label: {
+                    Label("Recommend a Meal", systemImage: "sparkles")
+                }
+            } label: {
+                Image(systemName: "plus.circle.fill")
+            }
+            .accessibilityLabel("Add a Recipe")
+        }
+        .foregroundStyle(.primary)
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
     private var myRecipes: [Recipe] {
         allRecipes.filter { $0.source != .library || $0.isSavedToCollection }
     }
@@ -74,6 +130,8 @@ struct RecipesHomeView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal)
             .padding(.top, 8)
+
+            searchFieldRow
 
             List {
                 if section == .shared {
@@ -130,39 +188,11 @@ struct RecipesHomeView: View {
             }
             .listStyle(.plain)
         }
-        .searchable(text: $searchText, prompt: "Search recipes")
         .navigationTitle("Recipes")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button {
-                        presentAfterMenuDismiss { showManualEditor = true }
-                    } label: {
-                        Label("Type a Recipe", systemImage: "square.and.pencil")
-                    }
-                    Button {
-                        presentAfterMenuDismiss { showImportSheet = true }
-                    } label: {
-                        Label("Import from URL", systemImage: "link")
-                    }
-                    Button {
-                        presentAfterMenuDismiss { showAIImportSheet = true }
-                    } label: {
-                        Label("Add from Photo or Notes", systemImage: "camera.viewfinder")
-                    }
-                    Divider()
-                    Button {
-                        presentAfterMenuDismiss { showRecommendSheet = true }
-                    } label: {
-                        Label("Recommend a Meal", systemImage: "sparkles")
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                }
             }
         }
         .sheet(isPresented: $showManualEditor) {
@@ -307,44 +337,15 @@ struct RecipesHomeView: View {
     /// counterpart to `RecipeDetailView`'s existing Library-save path
     /// (`recipe.isSavedToCollection = true`), except a shared recipe has no
     /// pre-existing local row to flip that flag on (see
-    /// `RecipeSource.shared`'s doc comment), so this creates one instead,
-    /// already saved (`isSavedToCollection` defaults to `true`) and tagged
-    /// with the backend id it came from so re-sharing it later reuses that
-    /// same backend recipe rather than creating a duplicate.
-    ///
-    /// `photoData: entry.photoData` is what actually fixes this recipe's
-    /// photo showing up at all: `entry.photoData` decodes `entry.photoBase64`
-    /// (see `SharedRecipeEntry`'s own doc comment) straight into the same
-    /// `Data?` `RecipeThumbnail` already knows how to render for any other
-    /// `Recipe` — no new display code needed here, since a `.shared` recipe
-    /// becomes an ordinary local `Recipe` the moment it's saved, and every
-    /// existing recipe list/detail view already shows `photoData` when
-    /// present. `nil` when the shared recipe had no photo at all, same as
-    /// every other recipe source.
+    /// `RecipeSource.shared`'s doc comment), so this creates one instead.
+    /// The actual construction lives in `SharedRecipeEntry.makeLocalRecipe()`
+    /// (`PersonalLibrarySyncService.swift`) — factored out so
+    /// `GroupSharedMealPlanView`'s own "Add to your Recipes too?" prompt can
+    /// build the exact same local copy without duplicating it a second
+    /// time; see that method's own doc comment for the full
+    /// photo/sourceURL/backend-id reasoning, which applies verbatim here.
     private func saveSharedRecipe(_ entry: SharedRecipeEntry) {
-        // `sourceURL`/`imageName` here fix a real gap: same bug class
-        // `photoData`/`entry.photoBase64` had before that field existed —
-        // an imported recipe's source-page link and photo never made it
-        // across the wire at all until `SharedRecipeEntry.sourceURL`/
-        // `.imageName` did.
-        let recipe = Recipe(
-            title: entry.title,
-            source: .shared,
-            sourceURL: entry.sourceURL,
-            summary: entry.summary,
-            instructions: entry.instructions,
-            ingredients: entry.ingredients.map {
-                RecipeIngredientEntry(name: $0.name, quantity: $0.quantity, unit: $0.unit)
-            },
-            servings: entry.servings ?? 4,
-            prepMinutes: entry.prepMinutes ?? 0,
-            cookMinutes: entry.cookMinutes ?? 0,
-            tags: ["Shared"],
-            imageName: entry.imageName,
-            photoData: entry.photoData,
-            backendRecipeID: entry.recipeID
-        )
-        modelContext.insert(recipe)
+        modelContext.insert(entry.makeLocalRecipe())
         savedShareIDs.insert(entry.id)
     }
 

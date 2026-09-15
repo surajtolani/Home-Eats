@@ -19,60 +19,63 @@ struct RestaurantListView: View {
     }
 
     var body: some View {
-        List {
-            if isSearchActive {
-                searchResultsSection
-            }
+        VStack(spacing: 0) {
+            searchFieldRow
+            List {
+                if isSearchActive {
+                    searchResultsSection
+                }
 
-            if restaurants.isEmpty && !isSearchActive {
-                ContentUnavailableView(
-                    "No Restaurants Yet",
-                    systemImage: "fork.knife",
-                    description: Text("Search above to find a place and add it, or add one manually from the toolbar.")
-                )
-            } else if !restaurants.isEmpty {
-                Section {
-                    ForEach(restaurants) { restaurant in
-                        NavigationLink {
-                            RestaurantDetailView(restaurant: restaurant)
-                        } label: {
-                            HStack {
-                                RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoNames.first, size: 44)
-                                VStack(alignment: .leading) {
-                                    HStack {
-                                        Text(restaurant.name).foregroundStyle(.primary)
-                                        if restaurant.isFavorite {
-                                            Image(systemName: "star.fill").foregroundStyle(.yellow).font(.brandCaption)
+                if restaurants.isEmpty && !isSearchActive {
+                    ContentUnavailableView(
+                        "No Restaurants Yet",
+                        systemImage: "fork.knife",
+                        description: Text("Search above to find a place and add it, or tap + to add one manually.")
+                    )
+                } else if !restaurants.isEmpty {
+                    Section {
+                        ForEach(restaurants) { restaurant in
+                            NavigationLink {
+                                RestaurantDetailView(restaurant: restaurant)
+                            } label: {
+                                HStack {
+                                    RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoNames.first, size: 44)
+                                    VStack(alignment: .leading) {
+                                        HStack {
+                                            Text(restaurant.name).foregroundStyle(.primary)
+                                            if restaurant.isFavorite {
+                                                Image(systemName: "star.fill").foregroundStyle(.yellow).font(.brandCaption)
+                                            }
+                                        }
+                                        if let descriptorLine = restaurant.descriptorLine {
+                                            Text(descriptorLine).font(.brandCaption).foregroundStyle(.secondary)
                                         }
                                     }
-                                    if let descriptorLine = restaurant.descriptorLine {
-                                        Text(descriptorLine).font(.brandCaption).foregroundStyle(.secondary)
-                                    }
+                                    Spacer()
                                 }
-                                Spacer()
                             }
                         }
-                    }
-                    .onDelete { offsets in
-                        for index in offsets {
-                            let restaurant = restaurants[index]
-                            CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
-                            // Same "immediate, online-only, captured before
-                            // the local delete" pattern as `RecipesHomeView`'s
-                            // own recipe delete — see
-                            // `PersonalLibrarySyncService`'s doc comment.
-                            if let backendID = restaurant.backendID {
-                                Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
+                        .onDelete { offsets in
+                            for index in offsets {
+                                let restaurant = restaurants[index]
+                                CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
+                                // Same "immediate, online-only, captured before
+                                // the local delete" pattern as `RecipesHomeView`'s
+                                // own recipe delete — see
+                                // `PersonalLibrarySyncService`'s doc comment.
+                                if let backendID = restaurant.backendID {
+                                    Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
+                                }
+                                modelContext.delete(restaurant)
                             }
-                            modelContext.delete(restaurant)
                         }
+                    } header: {
+                        Text("Your Restaurants")
                     }
-                } header: {
-                    Text("Your Restaurants")
                 }
             }
+            .listStyle(.plain)
         }
-        .searchable(text: $searchText, prompt: "Search for a restaurant to add")
         .onChange(of: searchText) { _, newValue in
             searchModel.search(newValue)
         }
@@ -82,27 +85,11 @@ struct RestaurantListView: View {
         .onChange(of: locationProvider.coordinate) { _, newValue in
             searchModel.userCoordinate = newValue
         }
-        .navigationTitle("Eating Out")
+        .navigationTitle("Restaurants")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showNaturalSearch = true
-                } label: {
-                    Image(systemName: "sparkles")
-                }
-                .disabled(!GooglePlacesService.isConfigured || !ClaudeRecipeService.isConfigured)
-                .accessibilityLabel("Ask for a Restaurant")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showEditor = true
-                } label: {
-                    Image(systemName: "plus")
-                }
             }
         }
         .sheet(isPresented: $showEditor) {
@@ -118,6 +105,52 @@ struct RestaurantListView: View {
             guard accountSession.isSignedIn else { return }
             await PersonalLibrarySyncService.sync(modelContext: modelContext)
         }
+    }
+
+    /// A custom inline search field, not `.searchable(...)` (what this used
+    /// to be) — direct user request to move the "+"/"Ask for a Restaurant"
+    /// actions from the top-right toolbar to sit right next to the search
+    /// bar itself. `.searchable`'s system search field always spans the
+    /// full toolbar width with nothing else in it, so there's no way to
+    /// place a button beside it there; a plain `TextField` in the same
+    /// `HStack` as those two buttons is what actually makes "next to the
+    /// search bar" possible.
+    private var searchFieldRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search for a restaurant to add", text: $searchText)
+            if isSearchActive {
+                Button {
+                    searchText = ""
+                    searchModel.clear()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            Divider().frame(height: 18)
+            Button {
+                showNaturalSearch = true
+            } label: {
+                Image(systemName: "sparkles")
+            }
+            .buttonStyle(.plain)
+            .disabled(!GooglePlacesService.isConfigured || !ClaudeRecipeService.isConfigured)
+            .accessibilityLabel("Ask for a Restaurant")
+            Button {
+                showEditor = true
+            } label: {
+                Image(systemName: "plus.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add a Restaurant")
+        }
+        .foregroundStyle(.primary)
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal)
+        .padding(.vertical, 8)
     }
 
     private var searchResultsSection: some View {
@@ -247,10 +280,20 @@ struct RestaurantThumbnail: View {
 /// separate sheet from the plain search-as-you-type bar, since this is a
 /// deliberate "search for this" action (with a real network round trip to
 /// Claude) rather than something to fire on every keystroke.
+///
+/// **Dual-purpose via `onPick`**: opened standalone (from Restaurants —
+/// `onPick` `nil`), picking a result inserts it straight into the personal
+/// Restaurant library, same as always. `GroupSharedMealPlanView`'s "Add a
+/// Meal" sheet also opens this exact same view, with `onPick` set — there,
+/// picking a result hands the full `RestaurantSearchModel.Result` back to
+/// that caller instead (which plans it for the group, then separately
+/// offers to also save it to the personal library) and no local insert
+/// happens here in that mode.
 struct NaturalLanguageRestaurantSearchView: View {
     /// The app's best guess at the user's current location, if available —
     /// used only when the sentence itself doesn't name a specific place.
     let userCoordinate: CLLocationCoordinate2D?
+    var onPick: ((RestaurantSearchModel.Result) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -385,7 +428,11 @@ struct NaturalLanguageRestaurantSearchView: View {
     }
 
     private func addFromSearch(_ result: RestaurantSearchModel.Result) {
-        modelContext.insert(result.makeRestaurant())
+        if let onPick {
+            onPick(result)
+        } else {
+            modelContext.insert(result.makeRestaurant())
+        }
         dismiss()
     }
 }

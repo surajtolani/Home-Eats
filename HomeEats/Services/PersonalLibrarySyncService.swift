@@ -213,3 +213,35 @@ extension RemoteRecipe {
         )
     }
 }
+
+extension SharedRecipeEntry {
+    /// Builds a `Recipe` from this shared entry, ready to insert as the
+    /// caller's own saved copy — factored out of `RecipesHomeView
+    /// .saveSharedRecipe(_:)` (which now just calls this) so
+    /// `GroupSharedMealPlanView`'s "Add to your Recipes too?" prompt (a
+    /// group member picking a friend's shared recipe to plan/suggest for
+    /// the group) can build the exact same local copy without duplicating
+    /// this construction a second time. `.shared` source (not `.manual` —
+    /// see `RemoteRecipe.makeLocalRecipe()`'s own doc comment on that same
+    /// distinction), already saved (`isSavedToCollection` defaults to
+    /// `true`) and tagged with the backend id it came from
+    /// (`backendRecipeID: recipeID`) so re-sharing it later reuses that
+    /// same backend recipe rather than creating a duplicate.
+    func makeLocalRecipe() -> Recipe {
+        Recipe(
+            title: title,
+            source: .shared,
+            sourceURL: sourceURL,
+            summary: summary,
+            instructions: instructions,
+            ingredients: ingredients.map { RecipeIngredientEntry(name: $0.name, quantity: $0.quantity, unit: $0.unit) },
+            servings: servings ?? 4,
+            prepMinutes: prepMinutes ?? 0,
+            cookMinutes: cookMinutes ?? 0,
+            tags: ["Shared"],
+            imageName: imageName,
+            photoData: photoData,
+            backendRecipeID: recipeID
+        )
+    }
+}

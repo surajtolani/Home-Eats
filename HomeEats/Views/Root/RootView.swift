@@ -125,9 +125,9 @@ struct RootView: View {
             } else if activeGroupSession.groups.isEmpty {
                 CreateOrJoinFirstGroupView()
             } else {
-                // Tab order: Plan, Grocery, Recipes, Eating Out, More — per
+                // Tab order: Plan, Grocery, Recipes, Restaurants, More — per
                 // direct user request to move Grocery into the 2nd position
-                // (it used to be 4th, after Recipes and Eating Out). `Tab`'s
+                // (it used to be 4th, after Recipes and Restaurants). `Tab`'s
                 // own case order below is unchanged on purpose: `selectedTab`
                 // is compared by value everywhere it's read (`.tag`/
                 // `.onChange` in `PlanningReminderRouter`'s handling further
@@ -156,7 +156,10 @@ struct RootView: View {
                     NavigationStack {
                         RestaurantListView()
                     }
-                    .tabItem { Label("Eating Out", systemImage: "fork.knife") }
+                    // "Restaurants" — direct user request, was "Eating Out"
+                    // (this tab covers both eating out and ordering in, so
+                    // the narrower name undersold what it's actually for).
+                    .tabItem { Label("Restaurants", systemImage: "fork.knife") }
                     .tag(Tab.restaurants)
 
                     NavigationStack {

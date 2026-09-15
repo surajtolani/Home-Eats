@@ -21,10 +21,12 @@ import CoreLocation
 /// day to push the full per-slot screen) toggle, "Go to This Week", and the
 /// same Breakfast/Lunch/Dinner/Other per-slot layout with the icon+pill
 /// decided-meal row and vote-count/"Use This" suggestion row. Where this
-/// screen has since diverged from the personal reference views: each slot's
-/// "add" affordance is a single "Add a Meal" button opening `GroupAddMealSheet`
-/// (three side-by-side wheel pickers — slot/kind/add-or-suggest — plus a
-/// live recipe list or restaurant search underneath), not the personal
+/// screen has since diverged from the personal reference views: there's a
+/// single "Add a Meal" button for the whole day (`GroupDaySlotsView
+/// .addMealSection`), not one per slot, opening `GroupAddMealSheet` (three
+/// side-by-side wheel pickers — slot/kind/add-or-suggest — plus a live
+/// recipe list or restaurant search underneath, itself offering "Recommend
+/// a Meal"/"Ask for a Restaurant" alongside that search), not the personal
 /// screens' bank of individual per-kind buttons; see that sheet's own doc
 /// comment for why. The actual per-slot content lives in `GroupDaySlotsView`
 /// below, embedded inline here (Calendar mode) and pushed via
@@ -870,7 +872,44 @@ struct GroupDaySlotsView: View {
         group?.members.first(where: { $0.id == userID })?.displayNameOrPhoneNumber ?? "Someone"
     }
 
+    /// One single "Add a Meal" entry point for the whole day, not one per
+    /// slot — direct user feedback: `GroupAddMealSheet`'s own first wheel
+    /// already lets you pick breakfast/lunch/dinner/other, so a separate
+    /// button in every slot section just to reach the same sheet was
+    /// redundant with a picker that already exists right there once it's
+    /// open. Always shown (not conditioned on anything being empty) — a
+    /// slot can hold more than one decided meal, so there's always a
+    /// reason to keep offering it; each `slotSection` below shows a plain
+    /// "Nothing planned yet" line instead of its own add affordance now.
+    private var addMealSection: some View {
+        Section {
+            Button {
+                activeSheet = .pickMeal(defaultSlotForAdd)
+            } label: {
+                Label("Add a Meal", systemImage: "plus.circle.fill")
+                    .font(.brandSubheadline.bold())
+                    .foregroundStyle(Color.brandForest)
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+            .listRowSeparator(.hidden)
+            .daySwipeGesture(onSwipeChangeDay)
+        }
+    }
+
+    /// The slot `Add a Meal`'s wheel opens preselected to — the first slot
+    /// with nothing planned or suggested yet for the day, or `.breakfast` if
+    /// every slot already has something. Purely a starting point for the
+    /// wheel (freely changeable there) — see `addMealSection`'s own doc
+    /// comment for why there's only ever this one entry point now, instead
+    /// of one per slot.
+    private var defaultSlotForAdd: MealSlot {
+        MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }
+            .first { meals(for: $0).isEmpty && suggestions(for: $0).isEmpty } ?? .breakfast
+    }
+
     var body: some View {
+        addMealSection
         ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
             slotSection(slot)
         }
@@ -918,9 +957,10 @@ struct GroupDaySlotsView: View {
             // recognizer. Adding the day-swipe gesture here too risked the
             // exact same leftward drag that reveals "Remove" also being
             // read as "go to the next day," fighting or double-firing
-            // unpredictably. The "Add a Meal" row below has no
-            // `.swipeActions` at all, so it's a safe place for the day-swipe
-            // gesture to live without that particular conflict.
+            // unpredictably. `addMealSection`'s own row above (the one
+            // place this file still applies `.daySwipeGesture`) has no
+            // `.swipeActions` at all, so it's a safe place for the gesture
+            // to live without that particular conflict.
             ForEach(meals(for: slot)) { meal in
                 GroupPlannedMealRow(
                     meal: meal, memberName: memberName(meal.decidedByUserID), isManager: isManager,
@@ -943,34 +983,13 @@ struct GroupDaySlotsView: View {
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
             }
 
-            // A single "Add a Meal" affordance, replacing what used to be
-            // up to six separate boxes here (three MANAGER-only "decide
-            // now" buttons plus three "suggest instead" ones) — direct user
-            // feedback that six icons per slot (times three slots visible
-            // at once) was too much. Tapping it opens `GroupAddMealSheet`'s
-            // combined picker — see that type's own doc comment — which is
-            // where the slot/cook-dine-order/add-suggest choice, and the
-            // MANAGER-vs-PARTICIPANT role gate on the last of those three,
-            // now actually lives; this button itself needs no role check,
-            // since a PARTICIPANT can still always suggest.
-            //
-            // Always shown, not just while `isEmpty` — direct user request:
-            // "when an item is added, then that should show up and the add
-            // should still be there in case you wanted to add something
-            // else." A slot can hold more than one decided meal (see this
-            // view's own top doc comment), so there's always a reason to
-            // keep offering it.
-            Button {
-                activeSheet = .pickMeal(slot)
-            } label: {
-                Label("Add a Meal", systemImage: "plus.circle.fill")
-                    .font(.brandSubheadline.bold())
-                    .foregroundStyle(Color.brandForest)
+            if isEmpty {
+                Text("Nothing planned yet.")
+                    .font(.brandCaption)
+                    .foregroundStyle(.secondary)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowSeparator(.hidden)
             }
-            .buttonStyle(.plain)
-            .listRowInsets(EdgeInsets(top: isEmpty ? 14 : 6, leading: 16, bottom: 12, trailing: 16))
-            .listRowSeparator(.hidden)
-            .daySwipeGesture(onSwipeChangeDay)
         } header: {
             HStack(spacing: 4) {
                 Label(slot.displayName, systemImage: slot.symbolName)
@@ -1466,6 +1485,20 @@ private struct GroupSuggestionRow: View {
 
 // MARK: - Add / suggest a meal (sheet)
 
+/// One row of `GroupRecipePickerContent`'s "My Recipes" list — just enough
+/// to render and to submit a pick for the group plan (a recipe already has
+/// a real backend id the moment it's visible here, whether owned or
+/// shared, so there's no id-availability problem the way a fresh
+/// "Recommend a Meal" draft has). `isMine` is what
+/// `GroupAddMealSheet.handleRecipePick` uses to decide whether "Add to your
+/// Recipes too?" applies at all — asking to save an already-owned recipe
+/// would be pointless.
+private struct GroupRecipeChoice: Identifiable {
+    let id: String
+    let title: String
+    let isMine: Bool
+}
+
 /// Identifies which sheet is presented, and with what context — the
 /// group-scoped counterpart of the personal `SheetAction`. Deliberately has
 /// no `setOrderReminder`/`logMeal` cases: order reminders
@@ -1569,13 +1602,40 @@ private struct GroupAddMealSheet: View {
     // including an unintended one while scrolling an adjacent wheel.
     // Hoisting this up here and passing it down as read/write parameters
     // instead keeps it alive across every flip, for the life of the sheet.
-    @State private var recipes: [(id: String, title: String)] = []
+    @State private var recipes: [GroupRecipeChoice] = []
+    /// The full `SharedRecipeEntry` behind each non-owned `recipes` row,
+    /// keyed by recipe id — `recipes` itself only carries id/title/`isMine`
+    /// (all `GroupRecipePickerContent`'s list actually needs to render and
+    /// to submit a pick for the group plan), but "Add to your Recipes too?"
+    /// needs the real ingredients/instructions/photo to build a proper
+    /// saved copy — see `saveToLibrary(_:)`.
+    @State private var sharedRecipeEntries: [String: SharedRecipeEntry] = [:]
     @State private var isLoadingRecipes = false
     @State private var recipesErrorMessage: String?
     @State private var recipeSearchText = ""
     @State private var restaurantSearchText = ""
     @StateObject private var restaurantSearchModel = GroupRestaurantSearchModel()
     @StateObject private var locationProvider = UserLocationProvider()
+
+    @State private var showRecommendMeal = false
+    @State private var showAskRestaurant = false
+    /// Set right after a pick that ISN'T already in the caller's own
+    /// personal library, to drive the "Add to your Recipes/Restaurants
+    /// too?" confirmation — direct user request. `nil` for a pick that's
+    /// already theirs (an owned recipe from "My Recipes," or a restaurant
+    /// from "Your Restaurants") — asking to save something already saved
+    /// would be pointless. The meal itself is always already planned/
+    /// suggested for the group by the time this is set (see `handle*Pick`
+    /// below); this only decides what happens next — sheet dismissal is
+    /// deferred until the prompt resolves, see the `.confirmationDialog`
+    /// this drives, below.
+    @State private var pendingLibrarySave: LibrarySavePrompt?
+    /// Surfaces the one online-only step in this sheet — pushing a fresh
+    /// "Recommend a Meal" draft to the backend so it has a real id to plan
+    /// with (see `handleRecipeDraftPick`) — failing, rather than a silent
+    /// no-op.
+    @State private var draftSyncErrorMessage: String?
+    @State private var isSubmittingDraft = false
 
     init(groupID: String, date: Date, initialSlot: MealSlot, isManager: Bool, currentUserID: String?) {
         self.groupID = groupID
@@ -1611,6 +1671,40 @@ private struct GroupAddMealSheet: View {
         isManager ? MealActionChoice.allCases : [.suggest]
     }
 
+    /// Drives the "Add to your Recipes/Restaurants too?" confirmation —
+    /// direct user request. Each case carries just what `saveToLibrary(_:)`
+    /// needs to build the actual saved copy; see `pendingLibrarySave`'s own
+    /// doc comment for when this gets set at all.
+    private enum LibrarySavePrompt: Identifiable {
+        case sharedRecipe(id: String, title: String)
+        /// A pick from this sheet's own inline restaurant search
+        /// (`GroupRestaurantSearchModel.Result` — id/name/address only, see
+        /// that type's own doc comment for why it's deliberately more
+        /// minimal than the personal `RestaurantSearchModel.Result`).
+        case groupSearchRestaurant(name: String, address: String?)
+        /// A pick from "Ask for a Restaurant" (`NaturalLanguageRestaurantSearchView`,
+        /// which reuses the personal `RestaurantSearchModel.Result` — richer
+        /// data, including cuisine/price/rating/photos, saved via that
+        /// type's own `makeRestaurant()`).
+        case richRestaurant(RestaurantSearchModel.Result)
+
+        var id: String {
+            switch self {
+            case .sharedRecipe(let id, _): return "recipe-\(id)"
+            case .groupSearchRestaurant(let name, _): return "restaurant-\(name)"
+            case .richRestaurant(let result): return "restaurant-\(result.id)"
+            }
+        }
+
+        var promptText: String {
+            switch self {
+            case .sharedRecipe(_, let title): return "Add \"\(title)\" to your own Recipes too?"
+            case .groupSearchRestaurant(let name, _): return "Add \"\(name)\" to your own Restaurants too?"
+            case .richRestaurant(let result): return "Add \"\(result.name)\" to your own Restaurants too?"
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -1622,22 +1716,26 @@ private struct GroupAddMealSheet: View {
                 // columns the request asked for. The explicit frame forces
                 // all three to split the `HStack`'s width evenly regardless
                 // of how long any one column's longest row happens to be.
+                // `.font(.brandCallout)` on each row's `Text` — direct user
+                // feedback that the wheels' default system font size read
+                // too large; a `Picker`'s row font comes from whatever's
+                // inside it, not from a font set on the `Picker` itself.
                 HStack(spacing: 0) {
                     Picker("Meal", selection: $selectedSlot) {
                         ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
-                            Text(slot.displayName).tag(slot)
+                            Text(slot.displayName).font(.brandCallout).tag(slot)
                         }
                     }
                     .frame(maxWidth: .infinity)
                     Picker("Type", selection: $selectedKind) {
                         ForEach(MealKindChoice.allCases) { kind in
-                            Text(kind.rawValue).tag(kind)
+                            Text(kind.rawValue).font(.brandCallout).tag(kind)
                         }
                     }
                     .frame(maxWidth: .infinity)
                     Picker("Action", selection: $selectedAction) {
                         ForEach(actionChoices) { action in
-                            Text(action.rawValue).tag(action)
+                            Text(action.rawValue).font(.brandCallout).tag(action)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -1652,24 +1750,55 @@ private struct GroupAddMealSheet: View {
 
                 Divider()
 
+                // Each branch gets its own "My Recipes"/"My Restaurants"
+                // header above the actual picker content — direct user
+                // request, so it's clear at a glance whose list this is
+                // (never the group's; every group member's own personal
+                // library) regardless of which of the three kinds is
+                // currently selected.
                 switch selectedKind {
                 case .cook:
-                    GroupRecipePickerContent(
-                        recipes: recipes, isLoading: isLoadingRecipes, errorMessage: recipesErrorMessage,
-                        searchText: $recipeSearchText,
-                        onRetry: { Task { await loadRecipes() } },
-                        onPick: { id, title in submitRecipe(id: id, title: title) }
-                    )
+                    VStack(alignment: .leading, spacing: 0) {
+                        contentHeader("My Recipes")
+                        GroupRecipePickerContent(
+                            recipes: recipes, isLoading: isLoadingRecipes, errorMessage: recipesErrorMessage,
+                            searchText: $recipeSearchText,
+                            onRetry: { Task { await loadRecipes() } },
+                            onRecommend: { showRecommendMeal = true },
+                            onPick: { id, title, isMine in handleRecipePick(id: id, title: title, isMine: isMine) }
+                        )
+                    }
                 case .dineOut:
-                    GroupRestaurantPickerContent(
-                        searchText: $restaurantSearchText, searchModel: restaurantSearchModel, locationProvider: locationProvider,
-                        onSubmit: { name in submitRestaurant(name: name, isOrderIn: false) }
-                    )
+                    VStack(alignment: .leading, spacing: 0) {
+                        contentHeader("My Restaurants")
+                        GroupRestaurantPickerContent(
+                            searchText: $restaurantSearchText, searchModel: restaurantSearchModel, locationProvider: locationProvider,
+                            onAskForRestaurant: { showAskRestaurant = true },
+                            onSubmit: { name, address in handleRestaurantPick(name: name, isOrderIn: false, address: address) }
+                        )
+                    }
                 case .orderIn:
-                    GroupRestaurantPickerContent(
-                        searchText: $restaurantSearchText, searchModel: restaurantSearchModel, locationProvider: locationProvider,
-                        onSubmit: { name in submitRestaurant(name: name, isOrderIn: true) }
-                    )
+                    VStack(alignment: .leading, spacing: 0) {
+                        contentHeader("My Restaurants")
+                        GroupRestaurantPickerContent(
+                            searchText: $restaurantSearchText, searchModel: restaurantSearchModel, locationProvider: locationProvider,
+                            onAskForRestaurant: { showAskRestaurant = true },
+                            onSubmit: { name, address in handleRestaurantPick(name: name, isOrderIn: true, address: address) }
+                        )
+                    }
+                }
+            }
+            .overlay {
+                // Only ever shown for the one genuinely online-dependent
+                // step in this sheet — see `handleRecipeDraftPick`'s own
+                // doc comment for why a fresh "Recommend a Meal" draft
+                // needs a real network round trip before it can be
+                // planned/suggested for the group at all.
+                if isSubmittingDraft {
+                    Color.black.opacity(0.05).ignoresSafeArea()
+                    ProgressView("Saving…")
+                        .padding()
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
             .navigationTitle("Add a Meal")
@@ -1694,7 +1823,67 @@ private struct GroupAddMealSheet: View {
             .onChange(of: isManager) { _, stillManager in
                 selectedAction = stillManager ? .add : .suggest
             }
+            .sheet(isPresented: $showRecommendMeal) {
+                RecommendMealView(onPick: { draft in Task { await handleRecipeDraftPick(draft) } })
+            }
+            .sheet(isPresented: $showAskRestaurant) {
+                NaturalLanguageRestaurantSearchView(
+                    userCoordinate: locationProvider.coordinate,
+                    onPick: { result in
+                        // Same "only offer to save what was actually
+                        // planned" guard as `handleRestaurantPick`/
+                        // `handleRecipePick` — a discarded `insert(...)`
+                        // result here would set `pendingLibrarySave` (and
+                        // show its confirmation) even on the rare silent
+                        // failure where `currentUserID` is `nil`, dangling
+                        // a prompt for a meal that was never actually added.
+                        guard insert(restaurantName: result.name, isOrderIn: selectedKind == .orderIn) else { return }
+                        pendingLibrarySave = .richRestaurant(result)
+                    }
+                )
+            }
+            // The meal itself is already planned/suggested for the group by
+            // the time this appears (see each `handle*Pick` above/below) —
+            // this only decides whether a copy also gets saved to the
+            // picker's own personal library, and either answer dismisses
+            // the whole sheet once resolved (see `pendingLibrarySave`'s own
+            // doc comment for why dismissal waits for this rather than
+            // happening immediately on pick).
+            .confirmationDialog(
+                pendingLibrarySave?.promptText ?? "",
+                isPresented: Binding(get: { pendingLibrarySave != nil }, set: { if !$0 { pendingLibrarySave = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Add It") {
+                    if let pendingLibrarySave { saveToLibrary(pendingLibrarySave) }
+                    pendingLibrarySave = nil
+                    dismiss()
+                }
+                Button("Not Now", role: .cancel) {
+                    pendingLibrarySave = nil
+                    dismiss()
+                }
+            }
+            .alert(
+                "Couldn't Add to the Group's Plan",
+                isPresented: Binding(get: { draftSyncErrorMessage != nil }, set: { if !$0 { draftSyncErrorMessage = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(draftSyncErrorMessage ?? "")
+            }
         }
+    }
+
+    /// A small bold label above whichever of `GroupRecipePickerContent`/
+    /// `GroupRestaurantPickerContent` is currently showing — see the
+    /// `switch` above for why.
+    private func contentHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.brandCaption.bold())
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
     }
 
     private func loadRecipes() async {
@@ -1705,29 +1894,106 @@ private struct GroupAddMealSheet: View {
             async let mine = AccountsAPIClient.getMyRecipes()
             async let shared = AccountsAPIClient.getSharedRecipes()
             let (mineResult, sharedResult) = try await (mine, shared)
-            var byID: [String: String] = [:]
-            for recipe in mineResult { byID[recipe.id] = recipe.title }
-            for entry in sharedResult { byID[entry.recipeID] = entry.title }
-            recipes = byID.map { (id: $0.key, title: $0.value) }.sorted { $0.title < $1.title }
+            let mineIDs = Set(mineResult.map(\.id))
+            var byID: [String: GroupRecipeChoice] = [:]
+            for recipe in mineResult {
+                byID[recipe.id] = GroupRecipeChoice(id: recipe.id, title: recipe.title, isMine: true)
+            }
+            // `where !mineIDs.contains` — a recipe shared with the caller
+            // that they also already own (however that happened) stays
+            // `isMine: true`, not overwritten by its shared-list entry.
+            for entry in sharedResult where !mineIDs.contains(entry.recipeID) {
+                byID[entry.recipeID] = GroupRecipeChoice(id: entry.recipeID, title: entry.title, isMine: false)
+                sharedRecipeEntries[entry.recipeID] = entry
+            }
+            recipes = byID.values.sorted { $0.title < $1.title }
         } catch {
             recipesErrorMessage = error.localizedDescription
         }
     }
 
-    private func submitRecipe(id: String, title: String) {
-        // Only dismiss on an actual insert — `insert(...)` silently no-ops
-        // if `currentUserID` is somehow `nil` (structurally possible, if
-        // never expected in practice under this app's mandatory-sign-in
-        // gate), and closing the sheet anyway would make that failure look
-        // like a success with nothing on screen to explain why nothing was
-        // planned/suggested.
+    /// A pick from `GroupRecipePickerContent`'s own "My Recipes" list —
+    /// already a real backend recipe either way (owned or shared), so this
+    /// plans/suggests it for the group immediately; `isMine == false` is
+    /// the one case that also offers "Add to your Recipes too?" (saving a
+    /// friend's shared recipe as your own copy — see `saveToLibrary(_:)`).
+    private func handleRecipePick(id: String, title: String, isMine: Bool) {
         guard insert(recipeID: id, recipeTitle: title) else { return }
-        dismiss()
+        if isMine {
+            dismiss()
+        } else {
+            pendingLibrarySave = .sharedRecipe(id: id, title: title)
+        }
     }
 
-    private func submitRestaurant(name: String, isOrderIn: Bool) {
+    /// A pick from "Recommend a Meal" — unlike every other pick this sheet
+    /// handles, an AI-drafted recipe has no backend id at all yet, and
+    /// `GroupPlannedMeal`/`GroupMealSuggestion.recipeID` can only ever
+    /// reference a real one (there's no "just a title, no real recipe"
+    /// path for a *recipe* suggestion the way `restaurantName` is a free
+    /// string for a restaurant one — see `GroupPlannedMeal.recipeID`'s own
+    /// doc comment). So saving this to My Recipes isn't an optional
+    /// afterthought the way it is for every other pick here — it's the
+    /// only way to get the real id planning it for the group needs, which
+    /// is why there's no `pendingLibrarySave` confirmation for this path:
+    /// the draft is inserted and pushed to the backend immediately, and
+    /// only once that succeeds does it get submitted to the group plan.
+    /// `isSubmittingDraft` drives the loading overlay for this one
+    /// genuinely network-dependent step.
+    private func handleRecipeDraftPick(_ draft: RecipeDraft) async {
+        let recipe = draft.makeRecipe(createdByMemberID: nil)
+        modelContext.insert(recipe)
+        try? modelContext.save()
+        isSubmittingDraft = true
+        defer { isSubmittingDraft = false }
+        do {
+            let created = try await AccountsAPIClient.createRecipe(RecipeLibraryPayload(recipe: recipe))
+            recipe.backendRecipeID = created.id
+            guard insert(recipeID: created.id, recipeTitle: recipe.title) else { return }
+            dismiss()
+        } catch {
+            // The recipe is still saved locally (visible in My Recipes
+            // right away) regardless of this failure — only the "plan it
+            // for the group" half didn't happen. The next opportunistic
+            // `PersonalLibrarySyncService` pass (the Recipes tab's own
+            // `.task`, or this account's next sign-in) will still push it
+            // and give it a real id then; the group plan just doesn't have
+            // it yet.
+            draftSyncErrorMessage = "Saved \"\(recipe.title)\" to your Recipes, but couldn't reach the server to add it to the group's plan — try again once you're back online."
+        }
+    }
+
+    /// A pick from `GroupRestaurantPickerContent`'s own inline search
+    /// (`address` non-`nil` only for a live search result, never for a
+    /// pick from "Your Restaurants" — see that view's own `onSubmit`).
+    /// `restaurantName` needs no backend id at all (a free string — see
+    /// `GroupPlannedMeal.restaurantName`'s own doc comment), so this always
+    /// plans/suggests it for the group immediately, same as a recipe pick;
+    /// `address != nil` is what decides whether "Add to your Restaurants
+    /// too?" also applies.
+    private func handleRestaurantPick(name: String, isOrderIn: Bool, address: String?) {
         guard insert(restaurantName: name, isOrderIn: isOrderIn) else { return }
-        dismiss()
+        if let address {
+            pendingLibrarySave = .groupSearchRestaurant(name: name, address: address)
+        } else {
+            dismiss()
+        }
+    }
+
+    /// Builds and inserts the actual saved copy `pendingLibrarySave`
+    /// describes — called only from the "Add It" branch of this sheet's
+    /// own `.confirmationDialog`.
+    private func saveToLibrary(_ prompt: LibrarySavePrompt) {
+        switch prompt {
+        case .sharedRecipe(let id, _):
+            if let entry = sharedRecipeEntries[id] {
+                modelContext.insert(entry.makeLocalRecipe())
+            }
+        case .groupSearchRestaurant(let name, let address):
+            modelContext.insert(Restaurant(name: name, address: address))
+        case .richRestaurant(let result):
+            modelContext.insert(result.makeRestaurant())
+        }
     }
 
     @discardableResult
@@ -1786,7 +2052,7 @@ private struct GroupAddMealSheet: View {
 ///    ("the search bar should be linked to the google places api").
 /// 2. **A "Your Restaurants" quick-pick**, listing this device's own saved,
 ///    personal `Restaurant` rows (the same ones `RestaurantListView` shows
-///    under "Eating Out") above the live search — user feedback was that
+///    under "Restaurants") above the live search — user feedback was that
 ///    "eat out and order in has a search bar and not the options you have
 ///    from your restaurant list." Tapping one submits its name exactly like
 ///    a live search result does; nothing here reads or writes the `Restaurant`
@@ -1828,7 +2094,15 @@ private struct GroupRestaurantPickerContent: View {
     @Binding var searchText: String
     @ObservedObject var searchModel: GroupRestaurantSearchModel
     @ObservedObject var locationProvider: UserLocationProvider
-    let onSubmit: (String) -> Void
+    /// Opens "Ask for a Restaurant" (`NaturalLanguageRestaurantSearchView`)
+    /// — direct user request to offer that alongside the plain search bar,
+    /// not just from the personal Restaurants tab.
+    let onAskForRestaurant: () -> Void
+    /// `address` is `nil` for a "Your Restaurants" pick (already saved —
+    /// nothing to offer adding), non-`nil` for a live search result (not
+    /// yet saved) — `GroupAddMealSheet.handleRestaurantPick` uses it to
+    /// decide whether "Add to your Restaurants too?" applies.
+    let onSubmit: (String, String?) -> Void
 
     /// This device's own saved, personal restaurants — see this type's own
     /// doc comment for why they're offered here too, not just live search
@@ -1850,7 +2124,7 @@ private struct GroupRestaurantPickerContent: View {
                     searchResultsSection
                 }
                 if savedRestaurants.isEmpty && !isSearchActive {
-                    Text("Search above to find a place, or save some to Eating Out to see them here.")
+                    Text("Search above to find a place, or save some to Restaurants to see them here.")
                         .foregroundStyle(.secondary)
                 } else if !savedRestaurants.isEmpty {
                     savedRestaurantsSection
@@ -1866,11 +2140,21 @@ private struct GroupRestaurantPickerContent: View {
         }
     }
 
+    /// The "Ask for a Restaurant" (sparkles) button lives right in this
+    /// same row, next to the plain search field — direct user request
+    /// ("can we also add the functionality around ... ask for a
+    /// restaurant (next to the search bar)").
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search for a restaurant", text: $searchText)
                 .onChange(of: searchText) { _, newValue in searchModel.search(newValue) }
+            Button(action: onAskForRestaurant) {
+                Image(systemName: "sparkles")
+            }
+            .buttonStyle(.plain)
+            .disabled(!GooglePlacesService.isConfigured || !ClaudeRecipeService.isConfigured)
+            .accessibilityLabel("Ask for a Restaurant")
         }
         .padding(8)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
@@ -1892,7 +2176,7 @@ private struct GroupRestaurantPickerContent: View {
             } else {
                 ForEach(searchModel.results) { result in
                     Button {
-                        onSubmit(result.name)
+                        onSubmit(result.name, result.address)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(result.name).foregroundStyle(.primary)
@@ -1915,7 +2199,7 @@ private struct GroupRestaurantPickerContent: View {
         Section {
             ForEach(savedRestaurants) { restaurant in
                 Button {
-                    onSubmit(restaurant.name)
+                    onSubmit(restaurant.name, nil)
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -2077,27 +2361,28 @@ private final class GroupRestaurantSearchModel: ObservableObject {
 /// `searchText` stays local `@State` here, unlike those three, since
 /// nothing else needs to read or reset it from outside.
 private struct GroupRecipePickerContent: View {
-    let recipes: [(id: String, title: String)]
+    let recipes: [GroupRecipeChoice]
     let isLoading: Bool
     let errorMessage: String?
     @Binding var searchText: String
     let onRetry: () -> Void
-    let onPick: (String, String) -> Void
+    /// Opens "Recommend a Meal" (`RecommendMealView`) — direct user request
+    /// to offer that alongside the plain search bar, not just from the
+    /// personal Recipes tab.
+    let onRecommend: () -> Void
+    /// `isMine` lets `GroupAddMealSheet.handleRecipePick` decide whether
+    /// "Add to your Recipes too?" applies — a pick that's already the
+    /// caller's own recipe has nothing left to add.
+    let onPick: (String, String, Bool) -> Void
 
-    private var filteredRecipes: [(id: String, title: String)] {
+    private var filteredRecipes: [GroupRecipeChoice] {
         guard !searchText.isEmpty else { return recipes }
         return recipes.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search your recipes", text: $searchText)
-            }
-            .padding(8)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            .padding([.horizontal, .top], 12)
+            searchField
 
             List {
                 if isLoading && recipes.isEmpty {
@@ -2109,14 +2394,14 @@ private struct GroupRecipePickerContent: View {
                     ContentUnavailableView(
                         "No Recipes Yet",
                         systemImage: "book",
-                        description: Text("Only recipes you own, or that have been shared with you, can be planned here. Share one from Recipes first.")
+                        description: Text("Only recipes you own, or that have been shared with you, can be planned here. Share one from Recipes first, or tap ✨ above for an idea.")
                     )
                 } else if filteredRecipes.isEmpty {
                     Text("No matches.").foregroundStyle(.secondary)
                 } else {
-                    ForEach(filteredRecipes, id: \.id) { recipe in
+                    ForEach(filteredRecipes) { recipe in
                         Button {
-                            onPick(recipe.id, recipe.title)
+                            onPick(recipe.id, recipe.title, recipe.isMine)
                         } label: {
                             Text(recipe.title).foregroundStyle(.primary)
                         }
@@ -2125,5 +2410,25 @@ private struct GroupRecipePickerContent: View {
             }
             .listStyle(.plain)
         }
+    }
+
+    /// The "Recommend a Meal" (sparkles) button lives right in this same
+    /// row, next to the plain search field — direct user request ("can we
+    /// also add the functionality around recommend a meal ... next to the
+    /// search bar").
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search your recipes", text: $searchText)
+            Button(action: onRecommend) {
+                Image(systemName: "sparkles")
+            }
+            .buttonStyle(.plain)
+            .disabled(!ClaudeRecipeService.isConfigured)
+            .accessibilityLabel("Recommend a Meal")
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding([.horizontal, .top], 12)
     }
 }

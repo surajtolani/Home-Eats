@@ -4,7 +4,18 @@ import SwiftData
 /// "What can I make with X, Y, Z" — or, with nothing typed in, "just
 /// suggest something" — backed by `ClaudeRecipeService`. Each suggestion
 /// can be added straight to My Recipes with one tap.
+///
+/// **Dual-purpose via `onPick`**: opened standalone (from Recipes — `onPick`
+/// `nil`), picking a suggestion inserts it straight into My Recipes, same as
+/// always. `GroupSharedMealPlanView`'s "Add a Meal" sheet also opens this
+/// exact same view, with `onPick` set — there, picking a suggestion hands
+/// the draft back to that caller instead (which decides what "planning it
+/// for the group" needs to happen first, since an AI-drafted recipe has no
+/// backend id yet to reference) and this view just dismisses; nothing here
+/// inserts anything in that mode; see `GroupAddMealSheet.handleRecipeDraftPick`.
 struct RecommendMealView: View {
+    var onPick: ((RecipeDraft) -> Void)? = nil
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var activeUserSession: ActiveUserSession
@@ -60,6 +71,7 @@ struct RecommendMealView: View {
                                 RecipeDraftPreviewView(
                                     draft: draft,
                                     isAdded: addedTitles.contains(draft.title),
+                                    isPickMode: onPick != nil,
                                     onAdd: { add(draft) }
                                 )
                             } label: {
@@ -99,6 +111,11 @@ struct RecommendMealView: View {
     }
 
     private func add(_ draft: RecipeDraft) {
+        if let onPick {
+            onPick(draft)
+            dismiss()
+            return
+        }
         let recipe = draft.makeRecipe(createdByMemberID: activeUserSession.activeMemberID)
         modelContext.insert(recipe)
         addedTitles.insert(draft.title)
@@ -148,6 +165,13 @@ private struct SuggestionRow: View {
 private struct RecipeDraftPreviewView: View {
     let draft: RecipeDraft
     let isAdded: Bool
+    /// Set when this view is reached via `RecommendMealView`'s `onPick`
+    /// mode — see that type's own doc comment. Swaps the button's label
+    /// (and skips the "already added" disabled state, which doesn't apply
+    /// here: picking always dismisses straight back to the caller) since
+    /// this tap means "use this for the meal I'm planning," not "add it to
+    /// My Recipes."
+    let isPickMode: Bool
     let onAdd: () -> Void
 
     var body: some View {
@@ -195,13 +219,16 @@ private struct RecipeDraftPreviewView: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Label(isAdded ? "Added" : "Add to My Recipes", systemImage: isAdded ? "checkmark" : "plus")
+                        Label(
+                            isPickMode ? "Use This" : (isAdded ? "Added" : "Add to My Recipes"),
+                            systemImage: isPickMode ? "checkmark" : (isAdded ? "checkmark" : "plus")
+                        )
                         Spacer()
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color.brandForest)
-                .disabled(isAdded)
+                .disabled(!isPickMode && isAdded)
             }
         }
         .navigationTitle(draft.title)
