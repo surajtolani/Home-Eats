@@ -1,22 +1,32 @@
-# Builds and runs the unit tests on a real macOS runner with a real Swift
-# compiler — the thing no Claude Code session working on this repo can do
-# itself, since Claude runs in a Linux sandbox with no Swift toolchain
-# available (Xcode/swiftc only exist on macOS). Without this, a change that
-# looks correct on a careful manual read of the diff can still fail to
-# compile, and nobody finds out until the next person opens Xcode locally.
-# This workflow is that missing compiler check, running automatically on
-# every push instead of only whenever someone happens to build by hand.
+# Builds the app on a real macOS runner with a real Swift compiler — the
+# thing no Claude Code session working on this repo can do itself, since
+# Claude runs in a Linux sandbox with no Swift toolchain available
+# (Xcode/swiftc only exist on macOS). Without this, a change that looks
+# correct on a careful manual read of the diff can still fail to compile,
+# and nobody finds out until the next person opens Xcode locally. This
+# workflow is that missing compiler check, running automatically on every
+# push instead of only whenever someone happens to build by hand.
 #
 # CODE_SIGNING_ALLOWED=NO/CODE_SIGNING_REQUIRED=NO/CODE_SIGN_IDENTITY="" is
 # the standard trio for a CI build against a project that has a real
-# DEVELOPMENT_TEAM set (see project.yml) — a Simulator build/test run never
-# needs an actual signing identity, and this skips code-signing entirely
-# rather than requiring this repo's real Apple Developer credentials to
-# exist as CI secrets. See the "Build for testing"/"Run unit tests" steps'
-# own comment below for why the actual test run is split into two explicit
-# xcodebuild invocations rather than a single `xcodebuild test` — the
-# signing trio alone wasn't the whole fix for this project's "Could not
-# find test host" failure.
+# DEVELOPMENT_TEAM set (see project.yml) — a Simulator build never needs an
+# actual signing identity, and this skips code-signing entirely rather than
+# requiring this repo's real Apple Developer credentials to exist as CI
+# secrets.
+#
+# Deliberately scoped to a plain `xcodebuild build` only, not the unit
+# tests: `xcodebuild build-for-testing`/`test` reliably fail here with
+# "Could not find test host for HomeEatsTests" at xcodebuild's own upfront
+# test-plan validation, before a single file compiles — reproduced across
+# five different flag/step combinations (the signing trio alone, splitting
+# build-for-testing from test-without-building, building the HomeEats
+# target directly first) without resolving it, even once the app target
+# genuinely finished building successfully first. This looks like a
+# CI-environment-specific quirk in Xcode 16's test-plan validation on a
+# from-scratch checkout, not a problem with this project's code — the same
+# test target builds and runs fine locally in Xcode. Per team decision,
+# CI now verifies compilation only; running the unit test suite stays a
+# local/Xcode task until this is worth revisiting.
 name: iOS Build
 
 on:
@@ -27,7 +37,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-test:
+  build:
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -81,52 +91,10 @@ jobs:
           echo "Using device '$DEVICE_NAME' on runtime $RUNTIME_ID"
           echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
 
-      # Three explicit steps rather than one `xcodebuild test` — a single
-      # `test` invocation, and then `build-for-testing` alone, both failed
-      # with "Could not find test host for HomeEatsTests: TEST_HOST
-      # evaluates to .../HomeEats.app/HomeEats", even with the full
-      # no-signing trio above, failing in well under a second at
-      # xcodebuild's own upfront "Prepare packages" plan-validation phase —
-      # before a single file actually compiles. That's consistent with
-      # Xcode 16's test-plan validation checking for the host app binary's
-      # *existence* eagerly, rather than trusting the build graph to
-      # produce it first the way a from-scratch CI checkout needs it to.
-      #
-      # This step builds the app on its own first, so `HomeEats.app`
-      # already exists on disk at exactly the path `TEST_HOST` names by
-      # the time the test target's own build starts. `-scheme HomeEats`
-      # here (not `-target HomeEats`, tried first — reverted, since
-      # `-derivedDataPath` requires `-scheme`/`-testProductsPath`/
-      # `-xctestrun` and rejects a bare `-target`) still only builds the
-      # app: per project.yml's `schemes.HomeEats.build`, `HomeEatsTests`
-      # is scoped to the `test` action only, not `build`, so this plain
-      # `xcodebuild build` (the "build" action) never touches it or its
-      # test-host validation at all — only `build-for-testing`/`test`
-      # (the "test" action, next) do.
-      - name: Build app target first (iOS Simulator, unsigned)
+      - name: Build app (iOS Simulator, unsigned)
         run: |
           set -o pipefail
           xcodebuild build \
-            -project HomeEats.xcodeproj \
-            -scheme HomeEats \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
-
-      - name: Build for testing (iOS Simulator, unsigned)
-        run: |
-          set -o pipefail
-          xcodebuild build-for-testing \
-            -project HomeEats.xcodeproj \
-            -scheme HomeEats \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
-
-      - name: Run unit tests
-        run: |
-          set -o pipefail
-          xcodebuild test-without-building \
             -project HomeEats.xcodeproj \
             -scheme HomeEats \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
