@@ -45,11 +45,42 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # Picks whichever iOS Simulator runtime is actually newest on this
+      # runner, rather than a hardcoded device+OS pair — the very first run
+      # of this workflow failed here (`error: Unable to find a device
+      # matching the provided destination specifier`) because "iPhone 15"
+      # with no OS pinned defaulted to the newest iOS on the runner, and
+      # this runner's iPhone 15 simulators only go up through 17.5 — the
+      # newest runtime it actually has (18.2) only ships iPhone 16
+      # simulators. `simctl list` finds a real, currently-installed
+      # `iPhone-1[5-9]` runtime and lets it float forward automatically the
+      # next time GitHub updates this runner image's simulators, instead of
+      # needing a manual bump here every time.
+      - name: Find a usable iOS Simulator destination
+        id: sim
+        run: |
+          set -o pipefail
+          # One-line `python3 -c` scripts (not a multi-line embedded
+          # script) — YAML's `|` block scalar requires every line to stay
+          # indented at least as much as the block's first line, which a
+          # multi-line string literal breaks the moment it's pasted in at
+          # column 0; single-line scripts sidestep that entirely.
+          #
+          # Version sorted as a tuple of ints, not as a raw string — a
+          # plain string sort would misorder e.g. '17.10' before '17.9'.
+          RUNTIME_ID="$(xcrun simctl list runtimes available -j | python3 -c "import json,sys; rts=[r for r in json.load(sys.stdin)['runtimes'] if r['identifier'].startswith('com.apple.CoreSimulator.SimRuntime.iOS-')]; rts.sort(key=lambda r: tuple(int(p) for p in r['version'].split('.'))); print(rts[-1]['identifier'])")"
+          # Any available iPhone on that runtime works equally well here —
+          # this is just picking a destination xcodebuild can actually run
+          # on, not choosing a "best" device.
+          DEVICE_NAME="$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices'].get('$RUNTIME_ID', []); ip=[x for x in d if x['name'].startswith('iPhone')]; print(ip[0]['name'])")"
+          echo "Using device '$DEVICE_NAME' on runtime $RUNTIME_ID"
+          echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Build and run unit tests (iOS Simulator, unsigned)
         run: |
           set -o pipefail
           xcodebuild test \
             -project HomeEats.xcodeproj \
             -scheme HomeEats \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
             CODE_SIGNING_ALLOWED=NO
