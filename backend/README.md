@@ -790,6 +790,35 @@ A client that already knows how to render `GET /friends`'s
 to also render this combined feed — it's the same two shapes, just fetched
 together and counted.
 
+### 9a. Push notifications (APNs)
+
+Everything above is pull-based — a client has to actually open the app and
+fetch `GET /notifications` to learn anything's pending. `POST
+/me/device-token` (`routes/me.js`) plus `lib/apns.js` add a genuine push: a
+friend request (`POST /friends/request`) or a group invite (`POST
+/groups/:groupId/invite`) now also sends an APNs push to every device
+token the recipient has registered, if they're already a Home Eats user
+with at least one.
+
+Registration is unauthenticated-adjacent but simple: the iOS client calls
+`POST /me/device-token` with `{ "token": "<hex APNs token>" }` (any signed-in
+request; see `HomeEats/Services/PushNotificationService.swift`) at launch and
+right after sign-in. The row is keyed by `token` (`@unique`), not `userId` —
+the same physical device/install can end up registering the same token
+against a different account later (reinstall, restore to a different Apple
+ID), and re-registering should just repoint that row at its new owner
+rather than collide or leave two rows.
+
+Actually **sending** a push needs four env vars, all from the Apple
+Developer account this app's bundle id (`family.homeeats.app`) belongs to
+— see `.env.example`: `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_AUTH_KEY` (the
+`.p8` Auth Key file's raw contents), `APNS_PRODUCTION`. Without them,
+`lib/apns.js`'s `sendPush` silently no-ops (same "lazily constructed,
+returns null when unconfigured" shape as `twilioClient()`/
+`anthropicClient()` elsewhere in this file) — device-token registration and
+every other route keep working normally either way, there's just nothing
+on the other end to actually deliver a push until these are set.
+
 ## 10. Personal restaurant library
 
 A signed-in user's own saved restaurants — added so this survives a

@@ -70,6 +70,14 @@ targets:
         # provisioning profiles itself once this team is set.
         DEVELOPMENT_TEAM: N9Z99NUSB9
         CODE_SIGN_STYLE: Automatic
+        # Push Notifications capability (see PushNotificationService.swift/
+        # HomeEatsAppDelegate.swift) — real delivery still needs the Apple
+        # Developer account this App ID belongs to to have the Push
+        # Notifications capability enabled (Xcode's automatic signing
+        # usually turns this on by itself the first time it builds to a
+        # real device/archives with this entitlement present; if not,
+        # enable it by hand at developer.apple.com under this bundle id).
+        CODE_SIGN_ENTITLEMENTS: HomeEats/Supporting/HomeEats.entitlements
         MARKETING_VERSION: "0.1.0"
         # Apple requires every new TestFlight/App Store upload to have a
         # strictly higher build number than the last one uploaded for this

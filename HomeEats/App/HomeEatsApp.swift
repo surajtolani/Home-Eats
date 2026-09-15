@@ -3,6 +3,9 @@ import SwiftData
 
 @main
 struct HomeEatsApp: App {
+    /// See `HomeEatsAppDelegate`'s own doc comment for why this SwiftUI app
+    /// needs one at all — purely to reach the APNs registration callbacks.
+    @UIApplicationDelegateAdaptor(HomeEatsAppDelegate.self) private var appDelegate
     let modelContainer: ModelContainer
     @StateObject private var reminderRouter = PlanningReminderRouter()
     @StateObject private var activeUserSession = ActiveUserSession()
@@ -134,6 +137,15 @@ struct HomeEatsApp: App {
                     reminderRouter.install()
                     await scheduleReminderIfConfigured()
                     await scheduleGroceryRemindersIfConfigured()
+                    // Real push notifications (a friend request, a group
+                    // invite) — see `PushNotificationService`'s own doc
+                    // comment. Unconditional at launch, same "ask once, up
+                    // front" pattern the two calls above already use for
+                    // the local reminder; `registerWithBackendIfPossible()`
+                    // (called again once the device token actually arrives,
+                    // and again right after sign-in) is what actually needs
+                    // a signed-in account, not this.
+                    await PushNotificationService.requestAuthorizationAndRegisterForRemoteNotifications()
                 }
         }
         .modelContainer(modelContainer)

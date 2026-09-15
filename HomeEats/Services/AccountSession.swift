@@ -102,6 +102,12 @@ final class AccountSession: ObservableObject {
         // guess pending a separate `GET /me` — so there's no "still loading"
         // moment for `RootView`'s completion gate to wait out here.
         hasLoadedProfileOnce = true
+        // A device token obtained before this sign-in (the common case —
+        // `HomeEatsApp` requests it unconditionally at launch) has had
+        // nowhere to register to until now; re-attempt right away rather
+        // than waiting for the next app launch. See
+        // `PushNotificationService`'s own doc comment.
+        Task { await PushNotificationService.registerWithBackendIfPossible() }
     }
 
     /// Reflects a display name change from `PATCH /me` (the post-sign-in

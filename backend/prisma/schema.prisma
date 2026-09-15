@@ -99,7 +99,34 @@ model User {
   // standing "staples" template-list feature — see GroupStoreAisle's doc
   // comment for the removal note.)
 
+  // Real push notifications (a friend request, a group invite) — see the
+  // DeviceToken model below for the full story.
+  deviceTokens DeviceToken[]
+
   @@index([phoneNumber])
+}
+
+// One row per device that's ever registered for push (POST
+// /me/device-token, routes/me.js) — a real `User` -> many `DeviceToken`
+// relation, not a single column on `User`, since someone can plausibly have
+// more than one device signed into the same account (a phone and a second
+// phone, a reinstall that hasn't cleared the old token's row yet, ...) and
+// every one of them should get pushed to, not just whichever registered
+// most recently. `token` itself is `@unique` (not `@@unique([userId,
+// token])`) because a device token is inherently tied to one app
+// install/device at a time — APNs can reassign the same token string to a
+// different person's account after an uninstall/reinstall or a restore to
+// a different Apple ID, and when that happens the row needs to move to
+// the new owner rather than existing twice; POST /me/device-token upserts
+// on `token` for exactly this reason (see that route's own doc comment).
+model DeviceToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 enum FriendshipStatus {

@@ -293,6 +293,18 @@ extension AccountsAPIClient {
         let response: Response = try await send("PATCH", path: "me", body: body)
         return response.user
     }
+
+    /// Registers this device's APNs push token against the signed-in
+    /// account (`POST /me/device-token`) — see `PushNotificationService`'s
+    /// own doc comment for the full "why now, from where" story. A plain
+    /// `sendNoContent` call (the backend's success response has nothing
+    /// this client needs back): the same token can move to a different
+    /// account across a reinstall/sign-out-sign-in, which the backend
+    /// handles by re-pointing that row at whoever registers it most
+    /// recently — nothing for this client to reconcile locally either way.
+    static func registerDeviceToken(_ token: String) async throws {
+        try await sendNoContent("POST", path: "me/device-token", body: ["token": token])
+    }
 }
 
 // MARK: - Friends (POST/GET /friends/*)

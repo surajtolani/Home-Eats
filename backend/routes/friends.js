@@ -11,6 +11,7 @@ const { Prisma } = require("@prisma/client");
 const { prisma } = require("../lib/prisma");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
+const { sendPush } = require("../lib/apns");
 
 const router = express.Router();
 
@@ -201,7 +202,11 @@ router.post("/request", asyncHandler(async (req, res) => {
       await tx.friendship.create({
         data: { requesterId: req.userId, recipientId: target.id, status: "PENDING" },
       });
-      return requestedResult();
+      // `pushTargetUserId` rides alongside the real response shape below —
+      // read by the plain (non-`.status`/`.body`) caller after this
+      // transaction commits, see its own comment there for why the actual
+      // push send happens after, not inside, this transaction.
+      return { ...requestedResult(), pushTargetUserId: target.id };
     }
 
     if (existing.status === "ACCEPTED") {
@@ -230,10 +235,31 @@ router.post("/request", asyncHandler(async (req, res) => {
       where: { id: existing.id },
       data: { requesterId: req.userId, recipientId: target.id, status: "PENDING" },
     });
-    return requestedResult();
+    return { ...requestedResult(), pushTargetUserId: target.id };
   });
 
   res.status(result.status).json(result.body);
+
+  // Push after the transaction has actually committed (a slow APNs call
+  // has no business holding a Serializable transaction's locks open, and a
+  // push failing must never roll back or block the friend request itself —
+  // see lib/apns.js's own doc comment on why this is fire-and-forget) —
+  // `pushTargetUserId` is only set on the branch that just created a real
+  // PENDING Friendship for an existing user (an Invite-only outcome, for a
+  // phone number with no account yet, has no device tokens to push to at
+  // all).
+  if (result.pushTargetUserId) {
+    const deviceTokens = (await prisma.deviceToken.findMany({
+      where: { userId: result.pushTargetUserId },
+      select: { token: true },
+    })).map((row) => row.token);
+    await sendPush({
+      deviceTokens,
+      title: "New Friend Request",
+      body: `${me.displayName || me.phoneNumber} wants to be friends on Home Eats.`,
+      payload: { type: "friendRequest" },
+    });
+  }
 }));
 
 // Shared by accept/decline: loads the friendship, checks the caller is the

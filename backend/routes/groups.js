@@ -39,6 +39,7 @@ const { z } = require("zod");
 const { prisma } = require("../lib/prisma");
 const { phoneNumberField } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
+const { sendPush } = require("../lib/apns");
 
 const router = express.Router();
 
@@ -441,7 +442,26 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
     }
   });
 
-  return invitedResponse(res);
+  invitedResponse(res);
+
+  // Push after the transaction has committed, and only when `phoneNumber`
+  // already belongs to a user — the same "there's an actual device to push
+  // to" reasoning as routes/friends.js's own POST /request (see that
+  // route's identical comment on why this happens after, not inside, the
+  // transaction, and is fire-and-forget). A not-yet-a-user phone number's
+  // Invite still just sits PENDING until they sign up, exactly as before.
+  if (existingUser) {
+    const [me, deviceTokens] = await Promise.all([
+      prisma.user.findUnique({ where: { id: req.userId } }),
+      prisma.deviceToken.findMany({ where: { userId: existingUser.id }, select: { token: true } }),
+    ]);
+    await sendPush({
+      deviceTokens: deviceTokens.map((row) => row.token),
+      title: "Group Invite",
+      body: `${me?.displayName || me?.phoneNumber || "Someone"} invited you to join "${group.name}" on Home Eats.`,
+      payload: { type: "groupInvite", groupId: req.params.groupId },
+    });
+  }
 }));
 
 // GET /groups/:groupId/invites — MANAGER only. Every PENDING or DECLINED

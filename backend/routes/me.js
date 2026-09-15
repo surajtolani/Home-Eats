@@ -111,6 +111,40 @@ router.patch("/", asyncHandler(async (req, res) => {
   res.json({ user: selfProfile(user) });
 }));
 
+// POST /me/device-token
+// Body: { token } — registers this device's APNs token against the
+// signed-in caller, so a push (routes/friends.js, routes/groups.js — see
+// lib/apns.js) actually has somewhere to go for them. Called by the iOS
+// client's `PushNotificationService` at launch and right after sign-in —
+// see that type's own doc comment.
+//
+// Upserts on `token` (not `userId`), matching `DeviceToken.token`'s own
+// `@unique` constraint (see its doc comment in prisma/schema.prisma): the
+// exact same token string can legitimately move to a *different* user over
+// time — an uninstall/reinstall, a restore to a different Apple ID, or
+// simply someone else's account signing into the same physical device
+// later. Re-registering the same token for a new `userId` should silently
+// repoint that one row at its new owner, not collide, and definitely not
+// leave the old owner still receiving pushes meant for someone else.
+const DeviceTokenSchema = z.object({
+  token: z.string().trim().min(1, "token is required.").max(500),
+});
+
+router.post("/device-token", asyncHandler(async (req, res) => {
+  const parsed = DeviceTokenSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+  }
+  const { token } = parsed.data;
+
+  await prisma.deviceToken.upsert({
+    where: { token },
+    update: { userId: req.userId },
+    create: { token, userId: req.userId },
+  });
+  res.status(204).end();
+}));
+
 // `selfProfile` is attached to the exported router (an Express `Router()`
 // is itself just a function, so it can carry extra properties fine) rather
 // than exported as a second top-level value, so `index.js`'s existing
