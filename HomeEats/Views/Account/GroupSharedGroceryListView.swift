@@ -14,43 +14,30 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// reachable directly from `GroupDetailView`'s "Grocery List" link for a
 /// non-active group.
 ///
-/// **Ports the personal `GroceryListView`'s full visual/interaction design**
-/// (see that file's own doc comment — it stays untouched, personal/
-/// local-only reference view per this feature's scope) onto the
-/// group-scoped, offline-capable, backend-synced `GroupSharedGroceryItem`
-/// model: a **By Category / My Layout** view-mode toggle, drag-to-reorder,
-/// and a "Suggested" section — Phase-4-backed by the group-scoped
-/// `GroupStoreAisle` model instead of the local `StoreAisle`. This screen
-/// also has its own "From Your Household Groceries" section
-/// (`householdGroceriesSection` below), reading the signed-in user's
-/// personal `HistoricalGroceryItem` catalog directly — a group-shared "past
-/// groceries" catalog (`GroupGroceryHistoryEntry`) used to live here too,
-/// removed outright per direct user feedback that a second, group-scoped
-/// catalog for the same "bring something I usually get onto this list" job
-/// was redundant once the personal one was reachable from here — see
-/// `GroupStoreAisle`'s doc comment in
-/// HomeEats/Models/GroupGroceryLayout.swift for the removal note. A
-/// quick-add field at the top of the list (`quickAddField` below) lets a
-/// plain name-only add reach the list directly via Return, with no sheet at
-/// all — see that property's own doc comment for the role-gating and the
-/// "why keep the sheet too" reasoning.
-/// One thing this version deliberately does NOT port: the personal screen's
-/// "Paste an Old Grocery List" bulk-import sheet
-/// (`GroceryHistoryImportSheet`) — there is no group-scoped bulk-import
-/// endpoint on the backend, so this group's past-groceries catalog can only
-/// ever grow the automatic way (checking an item off), never by pasting a
-/// list; see this feature's own final report.
-///
-/// **Generate suggestions from planned recipes**: the "Suggested" section
-/// (`suggestionsSection` below) also carries a day-strip + "Generate
-/// Suggestions" control, mirroring the personal `GroceryListView`'s own
-/// "Suggestions From Your Meal Plan" — pick some upcoming days, and every
-/// ingredient from a home-cooked `GroupPlannedMeal` in that range becomes a
-/// `.suggested` candidate (deduped against what's already on the list). See
-/// `GroupGroceryListBuilder`'s own doc comment for the group-scoped
-/// ingredient-resolution/dedup story, and `suggestionsSection`'s doc comment
-/// for why a generated candidate and a participant's typed one share one
-/// review queue rather than two.
+/// **One list, one "Add Groceries" entry point** — a redesign per direct
+/// user feedback (with a reference screenshot of another app's flow
+/// attached): the previous version of this screen kept three things open
+/// on screen at once — the actual list, an always-expanded "Suggested From
+/// Your Cooking List" section with its own day-strip/Generate control and
+/// review queue inline, and an always-expanded "From Your Household
+/// Groceries" section — which the user summed up as "not that good right
+/// now and very confusing." Every one of those capabilities is still here,
+/// just consolidated: `addGroceriesButton` below opens `AddGroceriesSheet`
+/// (`GroupAddGroceriesFlow.swift`), a single sheet offering three focused
+/// flows — type/search a plain item, generate ingredients from planned
+/// meals (with a genuine review-and-check-off step before anything's
+/// created), or quick-add from your own personal "My Usuals" catalog (the
+/// same `HistoricalGroceryItem` table the old "Household Groceries"
+/// section read, tabbed by category here). Pending `.suggested` items (a
+/// PARTICIPANT's own suggestion, or a MANAGER's reviewed cooking-list pick)
+/// still collect in one review queue for a MANAGER to accept/reject — see
+/// `suggestedBanner`'s own doc comment for where that moved to. **Still
+/// unchanged**: the **By Category / My Layout** view-mode toggle and
+/// drag-to-reorder (`viewMode`/`byCategorySections`/`myLayoutSections`
+/// below, Phase-4-backed by the group-scoped `GroupStoreAisle` model), and
+/// the always-visible name-only `quickAddField` at the very top of the
+/// list — see that property's own doc comment for the role-gating and "why
+/// keep the detailed sheet too" reasoning, both untouched by this redesign.
 ///
 /// **No "Staples" here.** A standing group "staples" template list
 /// (`GroupStaplesManagerView`, reachable from this screen's toolbar) used to
@@ -79,9 +66,10 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// can remove their own suggestion (or any `THIS_WEEK`/`STAPLES` item —
 /// routine maintenance, open to anyone). Managing "My Layout" aisles is open
 /// to any member too — see `GroupAislesManagerView`'s own doc comment. The
-/// quick-add field at the top of the list follows this exact same
-/// MANAGER-decides/PARTICIPANT-suggests split — see `quickAddField`'s own
-/// doc comment.
+/// quick-add field at the top of the list, and every path through
+/// `AddGroceriesSheet`, follow this exact same MANAGER-decides/
+/// PARTICIPANT-suggests split — see `quickAddField`'s and
+/// `GroupAddGroceriesFlow.swift`'s own doc comments.
 struct GroupSharedGroceryListView: View {
     let groupID: String
     let groupName: String
@@ -91,55 +79,22 @@ struct GroupSharedGroceryListView: View {
 
     @Query private var items: [GroupSharedGroceryItem]
     @Query(sort: \GroupStoreAisle.sortIndex) private var allAisles: [GroupStoreAisle]
-    /// The signed-in user's own, personal Household Groceries catalog — not
-    /// scoped to `groupID` at all (unlike every other `@Query` here), since
-    /// it's the same local, individualized table `GroceryListView` reads
-    /// (`HistoricalGroceryItem` — see that model's own doc comment on why
-    /// it's deliberately never synced/shared). Backs `householdGroceriesSection`
-    /// below — direct user request to be able to bring one of your own
-    /// personal go-tos onto a shared group list without that catalog entry
-    /// itself ever becoming shared.
-    @Query(sort: \HistoricalGroceryItem.name) private var myHouseholdItems: [HistoricalGroceryItem]
-    /// Read-only here — feeds `generateSuggestions()`'s day-strip picker;
-    /// see that property's own doc comment. This screen never writes a
-    /// `GroupPlannedMeal` itself (that's `GroupSharedMealPlanView`'s job).
-    @Query private var plannedMeals: [GroupPlannedMeal]
 
     @State private var group: GroupDetail?
     @State private var lastSyncOutcome: GroupSyncService.SyncOutcome?
-    @State private var showAddSheet = false
+    @State private var showAddGroceriesSheet = false
+    @State private var showSuggestedReview = false
     @State private var showAislesManager = false
     @State private var editingItem: GroupSharedGroceryItem?
     @State private var actionErrorMessage: String?
 
     /// Backs `quickAddField` — see that property's own doc comment.
     @State private var quickAddText = ""
-    /// Backs `householdGroceriesSection`'s own type-to-add field — see that
-    /// property's own doc comment. Separate state from `quickAddText`
-    /// above (that one adds straight onto this GROUP's list; this one adds
-    /// to the viewer's personal Household Groceries catalog instead).
-    @State private var householdQuickAddText = ""
     @State private var viewMode: GroupGroceryViewMode = .byCategory
     /// Same "always active, real writable binding rather than `.constant`"
     /// reasoning as the personal `GroceryListView.editMode` — see that
     /// property's own doc comment.
     @State private var editMode: EditMode = .active
-    // The only two collapsible sections on this screen, defaulted open —
-    // same as the personal `GroceryListView`'s own `suggestionsExpanded`/
-    // `householdGroceriesExpanded`.
-    @State private var suggestionsExpanded = true
-    @State private var householdGroceriesExpanded = true
-    /// The days `generateSuggestions()` pulls planned meals from — same
-    /// "today through six days out" default, and same `Set<Date>` (not a
-    /// contiguous from/to range) shape as the personal `GroceryListView
-    /// .selectedSuggestionDates`; see that property's own doc comment for
-    /// why a `Set` (skippable individual days, e.g. a day you're eating
-    /// out) beats a start/end range here.
-    @State private var selectedSuggestionDates: Set<Date> = GroupSharedGroceryListView.defaultSuggestionDates()
-    /// True only while `generateSuggestions()`'s recipe-ingredient network
-    /// calls are in flight — disables the Generate button so a second tap
-    /// can't kick off an overlapping run.
-    @State private var isGeneratingSuggestions = false
 
     init(groupID: String, groupName: String) {
         self.groupID = groupID
@@ -149,7 +104,6 @@ struct GroupSharedGroceryListView: View {
         let gid = groupID
         _items = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
         _allAisles = Query(filter: #Predicate<GroupStoreAisle> { $0.groupID == gid }, sort: \GroupStoreAisle.sortIndex)
-        _plannedMeals = Query(filter: #Predicate<GroupPlannedMeal> { $0.groupID == gid })
     }
 
     private var myRole: GroupRole? { group?.myRole(currentUserID: accountSession.currentUser?.id) }
@@ -206,14 +160,6 @@ struct GroupSharedGroceryListView: View {
         visibleItems.filter { $0.section == .suggested }.sorted { $0.name < $1.name }
     }
 
-    /// Same "hide a `.pendingDelete` row rather than leave it visible until
-    /// the next successful push" reasoning as `visibleItems` above — read by
-    /// `generateSuggestions()` so a meal that's mid-removal never
-    /// contributes ingredients to a fresh batch of suggestions.
-    private var visiblePlannedMeals: [GroupPlannedMeal] {
-        plannedMeals.filter { $0.syncState != .pendingDelete }
-    }
-
     private var purchasableItems: [GroupSharedGroceryItem] {
         visibleItems.filter { $0.section == .thisWeek || $0.section == .staples }
     }
@@ -262,10 +208,14 @@ struct GroupSharedGroceryListView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Button { showAddSheet = true } label: { Image(systemName: "plus") }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
+                    // The standalone "+" that used to live here (opening
+                    // `AddGroupGroceryItemSheet` directly) is gone — direct
+                    // user request to declutter this row down to just the
+                    // view-mode toggle and "Manage My Layout." Nothing is
+                    // lost: that same detailed form is still one tap further
+                    // away, via `addGroceriesButton` below -> "Add an Item"
+                    // -> "Add a Custom Item" (see `AddItemSearchView`'s own
+                    // doc comment in GroupAddGroceriesFlow.swift).
                     Menu {
                         Button {
                             presentAfterMenuDismiss { showAislesManager = true }
@@ -286,15 +236,17 @@ struct GroupSharedGroceryListView: View {
                     .listRowSeparator(.hidden)
             }
 
+            if !suggestedItems.isEmpty {
+                suggestedBanner
+            }
+
+            addGroceriesButton
+
             if viewMode == .byCategory {
                 byCategorySections
             } else {
                 myLayoutSections
             }
-
-            suggestionsSection
-
-            householdGroceriesSection
         }
         // `.plain`, not the default inset-grouped style — direct user
         // report of "an unnecessary lot of extra space at the top below
@@ -326,8 +278,14 @@ struct GroupSharedGroceryListView: View {
             await runPeriodicSyncLoop()
         }
         .refreshable { await runSync() }
-        .sheet(isPresented: $showAddSheet) {
-            AddGroupGroceryItemSheet(groupID: groupID, isManager: isManager)
+        .sheet(isPresented: $showAddGroceriesSheet) {
+            AddGroceriesSheet(groupID: groupID, isManager: isManager, isKnownOffline: isKnownOffline)
+        }
+        .sheet(isPresented: $showSuggestedReview) {
+            SuggestedItemsReviewView(
+                groupID: groupID, isManager: isManager, currentUserID: accountSession.currentUser?.id,
+                isKnownOffline: isKnownOffline, onLocalWrite: { Task { await runSync() } }
+            )
         }
         .sheet(item: $editingItem) { item in
             EditGroupGroceryItemSheet(groupID: groupID, item: item) { errorMessage in
@@ -352,6 +310,61 @@ struct GroupSharedGroceryListView: View {
             return "Some changes haven't synced yet — they'll go out automatically once you're back online."
         }
         return "Couldn't reach the server — showing what was last synced."
+    }
+
+    // MARK: - Suggested queue + Add Groceries entry point
+
+    /// A slim, tap-to-review row — only shown when there's actually
+    /// something pending, unlike the old, always-expanded "Suggested From
+    /// Your Cooking List" section this replaces. Both a PARTICIPANT's own
+    /// typed suggestion and a MANAGER's reviewed `AddGroceriesSheet` pick
+    /// (see `GroupAddGroceriesFlow.swift`'s `ReviewIngredientsView`) still
+    /// land in this exact same `.suggested` review queue — same
+    /// unification as before, just reachable by tapping through to
+    /// `SuggestedItemsReviewView` instead of always sitting open inline.
+    private var suggestedBanner: some View {
+        Section {
+            Button {
+                showSuggestedReview = true
+            } label: {
+                HStack {
+                    Image(systemName: "text.badge.checkmark")
+                        .foregroundStyle(Color.brandSage)
+                    Text("\(suggestedItems.count) item\(suggestedItems.count == 1 ? "" : "s") suggested — tap to review")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    /// The single entry point for every way to add something onto this
+    /// list beyond the plain-name `quickAddField` above — see
+    /// `AddGroceriesSheet`'s own doc comment in GroupAddGroceriesFlow.swift
+    /// for the full "why one button now, not three always-open sections"
+    /// reasoning.
+    private var addGroceriesButton: some View {
+        Section {
+            Button {
+                showAddGroceriesSheet = true
+            } label: {
+                Label("Add Groceries", systemImage: "plus.circle.fill")
+                    .font(.brandSubheadline.bold())
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.brandForest)
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16))
+        }
     }
 
     // MARK: - By category view
@@ -379,7 +392,7 @@ struct GroupSharedGroceryListView: View {
             }
         } else {
             Section {
-                Text("Nothing on your list yet. Tap + to add an item, or generate suggestions with one below.")
+                Text("Nothing on your list yet. Type something above, or tap Add Groceries below.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -524,355 +537,6 @@ struct GroupSharedGroceryListView: View {
         }
     }
 
-    // MARK: - Suggested (participant-proposed + generated-from-recipes, pending manager Accept/Reject)
-
-    /// Both a participant's manually-typed suggestion and a
-    /// `generateSuggestions()`-produced one land in this exact same
-    /// `.suggested` review queue and this exact same section — there's no
-    /// separate "generated" bucket. That's a deliberate unification, not an
-    /// accident: a `.suggested` row has always meant "something a MANAGER
-    /// still needs to look at before it's really on the list," regardless of
-    /// where it came from, and the personal `GroceryListView`'s own
-    /// "Suggestions From Your Meal Plan" section already treats its
-    /// recipe-generated candidates and its (there, purely automatic — no
-    /// participants exist locally) suggestions as the same list for the same
-    /// reason.
-    @ViewBuilder
-    private var suggestionsSection: some View {
-        Section {
-            DisclosureGroup(isExpanded: $suggestionsExpanded) {
-                // `.center` alignment (was `.leading`) plus explicit
-                // `.multilineTextAlignment(.center)` below — per direct
-                // user request ("the entire text under 'suggested' shoudl
-                // be centered horizontally - right now its tilted to the
-                // right"): left-aligned multi-line text wraps with a
-                // ragged right edge, which read as "tilted" rather than
-                // deliberately left-justified.
-                VStack(alignment: .center, spacing: 12) {
-                    Text("Tap the days you want to pull ingredients from — anyone can generate suggestions, but a manager still has to accept them onto the real list.")
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    suggestionDayStrip
-                    HStack {
-                        Button("Clear", action: clearSuggestionDates)
-                            .font(.brandCaption)
-                            .disabled(selectedSuggestionDates.isEmpty)
-                        Spacer()
-                    }
-                    Button {
-                        Task { await generateSuggestions() }
-                    } label: {
-                        if isGeneratingSuggestions {
-                            HStack {
-                                Spacer()
-                                ProgressView().tint(.white)
-                                Spacer()
-                            }
-                        } else {
-                            Label("Generate Suggestions", systemImage: "sparkles")
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.brandForest)
-                    .disabled(selectedSuggestionDates.isEmpty || isGeneratingSuggestions || isKnownOffline)
-                }
-                .padding(.vertical, 6)
-
-                if !suggestedItems.isEmpty {
-                    Button("Accept All") { acceptAllSuggested() }
-                        .font(.brandCallout.bold())
-                        .foregroundStyle(Color.brandForest)
-                        .disabled(!isManager || isKnownOffline)
-                    ForEach(suggestedItems) { item in
-                        GroupGrocerySuggestionRow(
-                            name: item.name,
-                            quantityText: item.quantityText,
-                            isSecondary: false,
-                            addIsDisabled: !isManager || isKnownOffline || item.isLocalPlaceholderID,
-                            onAdd: { Task { await accept(item) } },
-                            onReject: (isManager || item.addedByUserID == accountSession.currentUser?.id)
-                                ? { reject(item) } : nil
-                        )
-                    }
-                } else {
-                    Text("Nothing suggested right now.")
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                }
-            } label: {
-                majorHeader("Suggested From Your Cooking List")
-            }
-        } footer: {
-            Text(isManager
-                ? "Anyone can suggest an item (by hand, or generated from the meal plan) for you to review — accept to move it onto the real list, or reject to remove it."
-                : "Suggest an item here, or generate suggestions from the meal plan above, for a manager to review. You can still remove your own suggestion.")
-        }
-    }
-
-    // MARK: - Generate suggestions from planned recipes
-
-    /// The default set of pre-selected days when the screen first loads —
-    /// today through six days out, mirroring the personal `GroceryListView
-    /// .defaultSuggestionDates()`'s identical "week ahead" default. A
-    /// `static` factory (not a plain default expression) for the same
-    /// reason as that one: it needs its own local `Calendar`/`Date.now`
-    /// rather than reaching into instance state that doesn't exist yet at
-    /// `@State` initialization time.
-    private static func defaultSuggestionDates() -> Set<Date> {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: .now)
-        return Set((0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: today) })
-    }
-
-    /// How many days ahead the tappable day strip shows — same window as
-    /// the personal screen's own `suggestionWindowInDays`.
-    private static let suggestionWindowInDays = 21
-
-    private var suggestionWindowDays: [Date] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: .now)
-        return (0..<Self.suggestionWindowInDays).compactMap {
-            calendar.date(byAdding: .day, value: $0, to: today)
-        }
-    }
-
-    private func toggleSuggestionDate(_ day: Date) {
-        let normalized = Calendar.current.startOfDay(for: day)
-        if selectedSuggestionDates.contains(normalized) {
-            selectedSuggestionDates.remove(normalized)
-        } else {
-            selectedSuggestionDates.insert(normalized)
-        }
-    }
-
-    private func clearSuggestionDates() {
-        selectedSuggestionDates.removeAll()
-    }
-
-    /// A single horizontal, tap-to-select row of upcoming days — visually
-    /// and behaviorally identical to the personal `GroceryListView
-    /// .suggestionDayStrip` (each day toggles independently, not a
-    /// contiguous from/to range, since the days worth covering aren't
-    /// always contiguous — e.g. skip a day the group's eating out).
-    private var suggestionDayStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(suggestionWindowDays, id: \.self) { day in
-                    let isSelected = selectedSuggestionDates.contains(day)
-                    // Smaller circles + smaller font, per direct user
-                    // request — was 44x52 with a `.brandHeadline.bold()`
-                    // day number; now a more compact 36x42 with a smaller
-                    // day-number style, so the whole strip reads as a row
-                    // of quick date chips rather than a row of large tiles.
-                    Button {
-                        toggleSuggestionDate(day)
-                    } label: {
-                        VStack(spacing: 1) {
-                            Text(day.formatted(.dateTime.weekday(.abbreviated)))
-                                .font(.system(size: 9))
-                            Text(day.formatted(.dateTime.day()))
-                                .font(.brandCallout.bold())
-                        }
-                        .frame(width: 36, height: 42)
-                        .background(isSelected ? Color.brandForest : Color.secondary.opacity(0.12))
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: 9))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 2)
-        }
-    }
-
-    /// Restores the "generate a grocery list from your planned recipes"
-    /// feature for the group list — user-reported as missing entirely (the
-    /// personal `GroceryListView`'s day-strip + `GroceryListBuilder
-    /// .regenerate` has no group-scoped counterpart until this). Filters
-    /// this group's own planned meals down to whatever days are selected,
-    /// then hands off to `GroupGroceryListBuilder.generate` — see that
-    /// type's own doc comment for the full ingredient-resolution/dedup
-    /// story. Open to both roles (see `suggestionsSection`'s own doc
-    /// comment on why a generated suggestion is no different from a
-    /// participant's typed one); disabled while offline since resolving
-    /// recipe ingredients is a real network call with nothing sensible to
-    /// queue for later — same "immediate/online-only" treatment
-    /// `GroupSyncService`'s "Known limitations" note gives `adopt`/`accept`.
-    private func generateSuggestions() async {
-        guard let currentUserID = accountSession.currentUser?.id else { return }
-        let mealsOnSelectedDays = visiblePlannedMeals.filter { meal in
-            selectedSuggestionDates.contains(Calendar.current.startOfDay(for: meal.date))
-        }
-        isGeneratingSuggestions = true
-        _ = await GroupGroceryListBuilder.generate(
-            groupID: groupID,
-            plannedMeals: mealsOnSelectedDays,
-            existingItems: visibleItems,
-            currentUserID: currentUserID,
-            modelContext: modelContext
-        )
-        isGeneratingSuggestions = false
-        await runSync()
-    }
-
-    private func acceptAllSuggested() {
-        guard isManager else { return }
-        for item in suggestedItems where !item.isLocalPlaceholderID {
-            Task { await accept(item) }
-        }
-    }
-
-    private func accept(_ item: GroupSharedGroceryItem) async {
-        do {
-            try await GroupSyncService.acceptGroceryItem(groupID: groupID, itemID: item.id, modelContext: modelContext)
-        } catch {
-            actionErrorMessage = error.localizedDescription
-        }
-    }
-
-    /// "Reject" just removes the suggestion outright — same corrected
-    /// semantics as the personal `GroceryListView.reject` and this backend's
-    /// own `GroupGrocerySection` (which has no `REJECTED` case at all — see
-    /// that enum's doc comment in prisma/schema.prisma).
-    private func reject(_ item: GroupSharedGroceryItem) {
-        delete(item)
-    }
-
-    // MARK: - Quick add from your own Household Groceries
-
-    /// Direct user request: "once you add it to the grocery tab for that
-    /// group, the 'item' gets duped to the group grocery list for that
-    /// group. That way if you always generally buy a specific brand, you
-    /// can include that to the master grocery list." This is now the only
-    /// "past groceries"-style catalog this screen shows — a group-shared
-    /// one (`GroupGroceryHistoryEntry`) used to live here too, removed
-    /// outright per direct follow-up feedback ("not sure we need the 'from
-    /// your group's past groceries' section... the 'from your household
-    /// groceries' should just be your standard groceries") — see
-    /// `GroupStoreAisle`'s doc comment in
-    /// HomeEats/Models/GroupGroceryLayout.swift for the removal note.
-    /// Always shown, even empty, same "don't make it disappear until
-    /// something populates it" reasoning as every other collapsible section
-    /// on this screen.
-    ///
-    /// Includes its own type-to-add field (`submitHouseholdQuickAdd()`
-    /// below) — same one the personal `GroceryListView`'s own Household
-    /// Groceries section has, duplicated here rather than only reachable
-    /// from the Grocery tab, per the same follow-up request ("want there to
-    /// be a place to add an item to your household groceries") read in the
-    /// context of this screen specifically: someone managing a group's list
-    /// shouldn't have to leave it to add something new to their own catalog
-    /// first.
-    ///
-    /// Only the name/category duplicate onto the new `GroupSharedGroceryItem`
-    /// — never the noted product/brand itself (`HistoricalGroceryItem
-    /// .preferredProductOptionID`): `GroupSharedGroceryItem` has no product
-    /// concept at all (see that model's own doc comment on why it's
-    /// deliberately a smaller shape than the personal `GroceryItem`), and a
-    /// `ProductOption` is itself a local-only row with no backend/group
-    /// counterpart to carry over to begin with.
-    @ViewBuilder
-    private var householdGroceriesSection: some View {
-        Section {
-            DisclosureGroup(isExpanded: $householdGroceriesExpanded) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Add to Household Groceries", text: $householdQuickAddText)
-                        .submitLabel(.done)
-                        .onSubmit(submitHouseholdQuickAdd)
-                    if !householdQuickAddText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button(action: submitHouseholdQuickAdd) {
-                            Image(systemName: "arrow.up.circle.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.brandForest)
-                    }
-                }
-                .padding(.vertical, 2)
-
-                if myHouseholdItems.isEmpty {
-                    Text("Nothing in your Household Groceries yet — add one above.")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                } else {
-                    Button("Add All", action: addAllFromHousehold)
-                        .font(.brandCallout.bold())
-                        .foregroundStyle(Color.brandForest)
-                    ForEach(myHouseholdItems) { historyItem in
-                        GroupGrocerySuggestionRow(
-                            name: historyItem.name,
-                            quantityText: nil,
-                            isSecondary: alreadyInList(historyItem),
-                            addIsDisabled: alreadyInList(historyItem),
-                            onAdd: { quickAddFromHousehold(historyItem) },
-                            onReject: nil
-                        )
-                    }
-                }
-            } label: {
-                majorHeader("From Your Household Groceries")
-            }
-        } footer: {
-            Text("Your own personal catalog, not shared with the group — type a name above to add to it, or tap + (or Add All) to bring one of your usual items onto this list.")
-        }
-    }
-
-    private func alreadyInList(_ historyItem: HistoricalGroceryItem) -> Bool {
-        let key = GroceryListBuilder.canonicalKey(for: historyItem.name)
-        return items.contains { GroceryListBuilder.canonicalKey(for: $0.name) == key }
-    }
-
-    /// Any member may quick-add — same "routine list use" bucket as
-    /// checking an item off; lands directly as `.thisWeek` (skipping the
-    /// suggest-then-accept step) matching the personal app's own
-    /// `quickAdd`. This does mean a `PARTICIPANT` can put something
-    /// straight onto the real list via this one specific path — a
-    /// deliberate parity choice with the personal reference rather than a
-    /// role-gating gap: see this feature's own final report for the
-    /// reasoning (the backend's `POST /groups/:groupId/grocery` itself would
-    /// still reject a `PARTICIPANT`'s attempt to create with anything but
-    /// `SUGGESTED`, so the eventual push of this row is done as a `.suggested`
-    /// item for a `PARTICIPANT`, not `.thisWeek`, to avoid a push that can
-    /// only ever fail).
-    private func quickAddFromHousehold(_ historyItem: HistoricalGroceryItem) {
-        guard !alreadyInList(historyItem), let currentUserID = accountSession.currentUser?.id else { return }
-        let item = GroupSharedGroceryItem(
-            id: GroupSharedGroceryItem.newLocalPlaceholderID(), groupID: groupID, name: historyItem.name,
-            category: historyItem.category, section: isManager ? .thisWeek : .suggested,
-            addedByUserID: currentUserID, syncState: .pendingCreate
-        )
-        modelContext.insert(item)
-        try? modelContext.save()
-        Task { await runSync() }
-    }
-
-    private func addAllFromHousehold() {
-        for historyItem in myHouseholdItems where !alreadyInList(historyItem) {
-            quickAddFromHousehold(historyItem)
-        }
-    }
-
-    /// Adds a brand-new Household Groceries entry from `householdQuickAddText`
-    /// — same canonical-name dedupe every other add path on this catalog
-    /// already uses (see the personal `GroceryListView
-    /// .submitHouseholdQuickAdd`'s identical logic), so typing a name
-    /// that's already in the catalog is a harmless no-op rather than a
-    /// visible duplicate row.
-    private func submitHouseholdQuickAdd() {
-        let trimmedName = householdQuickAddText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return }
-        let key = GroceryListBuilder.canonicalKey(for: trimmedName)
-        guard !myHouseholdItems.contains(where: { GroceryListBuilder.canonicalKey(for: $0.name) == key }) else {
-            householdQuickAddText = ""
-            return
-        }
-        modelContext.insert(HistoricalGroceryItem(name: trimmedName))
-        householdQuickAddText = ""
-    }
-
     // MARK: - Rows
 
     /// `moveMenu` is rendered as an always-visible ⋯ button on the row
@@ -890,17 +554,6 @@ struct GroupSharedGroceryListView: View {
             onDelete: { delete(item) },
             moveMenu: AnyView(moveMenu)
         )
-    }
-
-    /// Pronounced top-level heading, same as the personal
-    /// `GroceryListView.majorHeader` — `.textCase(nil)` stops `List`'s
-    /// default small-caps-gray section-header styling from overriding this.
-    private func majorHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.brandTitle3.bold())
-            .foregroundStyle(.primary)
-            .textCase(nil)
-            .padding(.vertical, 4)
     }
 
     private var groceryListTitleHeader: some View {
@@ -933,12 +586,12 @@ struct GroupSharedGroceryListView: View {
     /// **Same role-gating as the existing sheet-based flow, no exceptions**:
     /// a `MANAGER`'s submission lands directly on the real list
     /// (`section: .thisWeek`); a `PARTICIPANT`'s lands as a `.suggested`
-    /// item requiring a `MANAGER` to adopt it via the "Suggested" section
-    /// below — the exact same split `AddGroupGroceryItemSheet.submit()`
-    /// already enforces (see that type's own doc comment for why: the
-    /// backend's `POST /groups/:groupId/grocery` itself rejects any other
-    /// section from a `PARTICIPANT`), just reached by pressing Return
-    /// instead of opening a sheet and tapping "Add".
+    /// item requiring a `MANAGER` to adopt it via `suggestedBanner` ->
+    /// `SuggestedItemsReviewView` — the exact same split `AddGroupGroceryItemSheet
+    /// .submit()` already enforces (see that type's own doc comment for
+    /// why: the backend's `POST /groups/:groupId/grocery` itself rejects
+    /// any other section from a `PARTICIPANT`), just reached by pressing
+    /// Return instead of opening a sheet and tapping "Add".
     ///
     /// **Why `AddGroupGroceryItemSheet` still exists alongside this,
     /// instead of being replaced by it**: this field is deliberately
@@ -947,10 +600,12 @@ struct GroupSharedGroceryListView: View {
     /// *some* way to set a quantity or override the category `GroceryCategory
     /// .guess(fromIngredientName:)` gets wrong, or (for a `MANAGER`) to add
     /// straight into `.suggested`/`.staples` instead of the default
-    /// `.thisWeek`. The existing sheet (still reachable from the toolbar's
-    /// `+`) covers exactly that "I want to set more than just the name"
-    /// case; this field covers the much more common "just add milk" case
-    /// the user asked for directly, without regressing the other one.
+    /// `.thisWeek`. The existing sheet (reachable via `addGroceriesButton`
+    /// -> "Add an Item" -> "Add a Custom Item," see `GroupAddGroceriesFlow
+    /// .swift`'s `AddItemSearchView`) covers exactly that "I want to set
+    /// more than just the name" case; this field covers the much more
+    /// common "just add milk" case the user asked for directly, without
+    /// regressing the other one.
     private var quickAddField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
@@ -1056,10 +711,10 @@ struct GroupSharedGroceryListView: View {
 
 // MARK: - Rows
 
-/// One row shared by "Suggested" and "From Your Group's Past Groceries" —
-/// the same layout and iconography in both places by design, matching the
-/// personal `GrocerySuggestionRow` exactly (feedback there was that the two
-/// lists should look alike; the same reasoning applies here).
+/// One row for `SuggestedItemsReviewView`'s pending-suggestion queue —
+/// matching the personal `GrocerySuggestionRow`'s layout/iconography
+/// (feedback there was that a suggestion row and a real list row should
+/// look related but distinct; the same reasoning applies here).
 private struct GroupGrocerySuggestionRow: View {
     let name: String
     let quantityText: String?
@@ -1251,6 +906,119 @@ private struct GroupQuantityStepper: View {
     }
 }
 
+// MARK: - Suggested items review (MANAGER accept/reject queue)
+
+/// A MANAGER's queue of pending suggestions — both a PARTICIPANT's typed
+/// suggestion and a reviewed `AddGroceriesSheet` pick (see
+/// `GroupAddGroceriesFlow.swift`'s `ReviewIngredientsView`) land in this
+/// exact same `.suggested` review queue, same unification as this screen
+/// always had. Pulled out into its own pushed screen, reachable only from
+/// `GroupSharedGroceryListView.suggestedBanner` — see that property's own
+/// doc comment for why this used to sit inline, always expanded, and no
+/// longer does.
+private struct SuggestedItemsReviewView: View {
+    let groupID: String
+    let isManager: Bool
+    let currentUserID: String?
+    let isKnownOffline: Bool
+    /// Fired only after `reject` (a local write with nothing else driving a
+    /// resync) — `accept` goes through `GroupSyncService.acceptGroceryItem`,
+    /// which is already its own immediate, online round trip with nothing
+    /// left for a follow-up sync to do, matching this queue's original
+    /// `accept`/`reject` asymmetry.
+    let onLocalWrite: () -> Void
+
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @Query private var items: [GroupSharedGroceryItem]
+    @State private var actionErrorMessage: String?
+
+    init(groupID: String, isManager: Bool, currentUserID: String?, isKnownOffline: Bool, onLocalWrite: @escaping () -> Void) {
+        self.groupID = groupID
+        self.isManager = isManager
+        self.currentUserID = currentUserID
+        self.isKnownOffline = isKnownOffline
+        self.onLocalWrite = onLocalWrite
+        let gid = groupID
+        _items = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
+    }
+
+    private var suggestedItems: [GroupSharedGroceryItem] {
+        items.filter { $0.syncState != .pendingDelete && $0.section == .suggested }.sorted { $0.name < $1.name }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if suggestedItems.isEmpty {
+                    Text("Nothing left to review.").foregroundStyle(.secondary)
+                } else {
+                    if isManager {
+                        Button("Accept All") { acceptAll() }
+                            .font(.brandCallout.bold())
+                            .foregroundStyle(Color.brandForest)
+                            .disabled(isKnownOffline)
+                    }
+                    ForEach(suggestedItems) { item in
+                        GroupGrocerySuggestionRow(
+                            name: item.name,
+                            quantityText: item.quantityText,
+                            isSecondary: false,
+                            addIsDisabled: !isManager || isKnownOffline || item.isLocalPlaceholderID,
+                            onAdd: { Task { await accept(item) } },
+                            onReject: (isManager || item.addedByUserID == currentUserID) ? { reject(item) } : nil
+                        )
+                    }
+                }
+            }
+            .navigationTitle("Suggested Items")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert(
+                "Couldn't complete that",
+                isPresented: Binding(get: { actionErrorMessage != nil }, set: { if !$0 { actionErrorMessage = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(actionErrorMessage ?? "")
+            }
+        }
+    }
+
+    private func acceptAll() {
+        guard isManager else { return }
+        for item in suggestedItems where !item.isLocalPlaceholderID {
+            Task { await accept(item) }
+        }
+    }
+
+    private func accept(_ item: GroupSharedGroceryItem) async {
+        do {
+            try await GroupSyncService.acceptGroceryItem(groupID: groupID, itemID: item.id, modelContext: modelContext)
+        } catch {
+            actionErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// "Reject" just removes the suggestion outright — same corrected
+    /// semantics as the personal `GroceryListView.reject` and this backend's
+    /// own `GroupGrocerySection` (which has no `REJECTED` case at all — see
+    /// that enum's doc comment in prisma/schema.prisma).
+    private func reject(_ item: GroupSharedGroceryItem) {
+        if item.isLocalPlaceholderID {
+            modelContext.delete(item)
+        } else {
+            item.syncState = .pendingDelete
+        }
+        try? modelContext.save()
+        onLocalWrite()
+    }
+}
+
 // MARK: - Add an item
 
 /// The "Add"/"Suggest an Item" sheet. A `MANAGER` picks a section
@@ -1263,8 +1031,10 @@ private struct GroupQuantityStepper: View {
 /// `GroupMealSheetContent`. A fresh item always starts with no aisle
 /// explicitly chosen (`aisleManuallySet: false`, the model's own default),
 /// so it immediately falls back to its category's default aisle in "My
-/// Layout" rather than starting in "Unsorted."
-private struct AddGroupGroceryItemSheet: View {
+/// Layout" rather than starting in "Unsorted." Not `private` — reused by
+/// `GroupAddGroceriesFlow.swift`'s `AddItemSearchView` ("Add a Custom
+/// Item"), which needs more than this screen's own name-only quick add.
+struct AddGroupGroceryItemSheet: View {
     let groupID: String
     let isManager: Bool
 

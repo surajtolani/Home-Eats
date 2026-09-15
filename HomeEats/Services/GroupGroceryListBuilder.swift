@@ -45,8 +45,11 @@ enum GroupGroceryListBuilder {
     /// `GroceryListBuilder.canonicalKey(for: displayName)` — pure, in-memory
     /// data with no network or `ModelContext` involved, so `aggregate(_:)`
     /// below is directly unit-testable on its own (see
-    /// `GroupGroceryListBuilderTests`).
-    struct Candidate: Equatable {
+    /// `GroupGroceryListBuilderTests`). `Hashable` (not just `Equatable`) so
+    /// a batch of these can ride along on a SwiftUI `NavigationPath` —
+    /// `GroupAddGroceriesFlow.swift`'s review screen is reached by pushing a
+    /// `.reviewIngredients(candidates:)` destination carrying this array.
+    struct Candidate: Equatable, Hashable {
         var displayName: String
         var category: GroceryCategory
         var quantityText: String
@@ -105,41 +108,35 @@ enum GroupGroceryListBuilder {
         return candidates
     }
 
-    /// Orchestrates the full "generate suggestions for these days" action:
-    /// takes whichever `plannedMeals` the caller already filtered down to
-    /// the days someone picked (mirroring `GroceryListBuilder.regenerate`'s
-    /// own "filtering is the view's job, not the builder's" split), resolves
-    /// each distinct recipe's ingredients from the backend, aggregates them,
-    /// and inserts a `.pendingCreate` `.suggested` `GroupSharedGroceryItem`
-    /// for every candidate not already present on the group's list — matched
-    /// case/plural-insensitively via the same canonical key, against every
-    /// existing item regardless of section (mirroring
-    /// `GroceryListBuilder.regenerate`'s own "the list is a single
-    /// persistent whole" dedup against everything already there, not just
-    /// what's already suggested). Existing items are never modified — a
-    /// repeat "Generate" for an overlapping set of days simply skips
-    /// whatever's already on the list instead of creating a duplicate
-    /// suggestion. New items always land as `.suggested`, open to either
-    /// role: generating a suggestion isn't a "decide" action any more than a
-    /// PARTICIPANT's own manual suggestion is — a MANAGER still has to
-    /// accept it onto the real list, same as any other suggestion.
-    ///
-    /// - Returns: how many new suggestions were actually inserted, for a
-    ///   caller that wants to show something (not currently surfaced by
-    ///   `GroupSharedGroceryListView`, which — matching the personal
-    ///   screen's own silent-insert behavior — just lets the newly-created
-    ///   rows appear in the "Suggested" list below rather than popping a
-    ///   separate confirmation).
+    /// Resolves whichever `plannedMeals` the caller already filtered down to
+    /// the days/meals someone picked (mirroring `GroceryListBuilder
+    /// .regenerate`'s own "filtering is the view's job, not the builder's"
+    /// split) into aggregated candidate lines, excluding anything that
+    /// canonically matches an item already on the list — matched case/
+    /// plural-insensitively via the same canonical key, against every
+    /// existing item regardless of section (mirroring `GroceryListBuilder
+    /// .regenerate`'s own "the list is a single persistent whole" dedup
+    /// against everything already there). Pure resolve-only: unlike this
+    /// type's old `generate(...)` (removed — see `GroupAddGroceriesFlow
+    /// .swift`'s `CookingListDaysView`/`ReviewIngredientsView` for what
+    /// replaced it), this never touches a `ModelContext` or inserts
+    /// anything itself. The caller now always gets a chance to review and
+    /// check off which candidates it actually wants before anything is
+    /// created — `generate(...)` used to skip straight to inserting every
+    /// candidate as an unreviewed `.suggested` row, which is what made a
+    /// separate manager-review step necessary there; the dedicated review
+    /// screen this feeds now serves that same purpose up front, so a
+    /// reviewed pick can go straight onto the real list for a MANAGER, the
+    /// same as any other direct add (see `ReviewIngredientsView.commit()`'s
+    /// own doc comment for the fuller reasoning, mirroring the role split
+    /// every other add path on this screen already uses).
     @MainActor
-    static func generate(
-        groupID: String,
+    static func resolveCandidates(
         plannedMeals: [GroupPlannedMeal],
-        existingItems: [GroupSharedGroceryItem],
-        currentUserID: String,
-        modelContext: ModelContext
-    ) async -> Int {
+        existingItems: [GroupSharedGroceryItem]
+    ) async -> [Candidate] {
         let recipeIDs = Set(plannedMeals.compactMap(\.recipeID))
-        guard !recipeIDs.isEmpty else { return 0 }
+        guard !recipeIDs.isEmpty else { return [] }
 
         var ingredientsByRecipeID: [String: [RemoteIngredient]] = [:]
         for recipeID in recipeIDs {
@@ -150,25 +147,9 @@ enum GroupGroceryListBuilder {
 
         let candidates = aggregate(ingredientsByRecipeID: ingredientsByRecipeID)
         let existingKeys = Set(existingItems.map { GroceryListBuilder.canonicalKey(for: $0.name) })
-
-        var addedCount = 0
-        for (key, candidate) in candidates where !existingKeys.contains(key) {
-            let item = GroupSharedGroceryItem(
-                id: GroupSharedGroceryItem.newLocalPlaceholderID(),
-                groupID: groupID,
-                name: candidate.displayName,
-                category: candidate.category,
-                section: .suggested,
-                quantityText: candidate.quantityText,
-                addedByUserID: currentUserID,
-                syncState: .pendingCreate
-            )
-            modelContext.insert(item)
-            addedCount += 1
-        }
-        if addedCount > 0 {
-            try? modelContext.save()
-        }
-        return addedCount
+        return candidates
+            .filter { !existingKeys.contains($0.key) }
+            .map(\.value)
+            .sorted { $0.displayName < $1.displayName }
     }
 }
