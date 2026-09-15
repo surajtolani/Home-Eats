@@ -380,38 +380,56 @@ struct RecipesHomeView: View {
             )
         } else {
             ForEach(sharedRecipes) { entry in
-                sharedRecipeRow(entry)
+                sharedRecipeCard(entry)
             }
         }
     }
 
-    private func sharedRecipeRow(_ entry: SharedRecipeEntry) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Shows the sender's photo before the recipe is even saved —
-            // this row used to have no thumbnail at all (nothing here ever
-            // had a photo to show before `photoBase64` existed), so this is
-            // new, not a fix to something that regressed. Kept as its own
-            // small view (`SharedRecipeEntryThumbnail` below) rather than
-            // reusing `RecipeThumbnail`, which takes a local `Recipe` and
-            // has no reason to learn about a wire-format `SharedRecipeEntry`
-            // that doesn't exist as a `Recipe` until the moment it's saved.
-            SharedRecipeEntryThumbnail(photoData: entry.photoData)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.title).font(.brandHeadline)
-                Text(entry.sharedByCaption)
-                    .font(.brandCaption)
-                    .foregroundStyle(.secondary)
-                if savedShareIDs.contains(entry.id) {
-                    Label("Saved to My Recipes", systemImage: "checkmark.circle.fill")
-                        .font(.brandCaption)
-                        .foregroundStyle(.green)
-                } else {
-                    Button("Save to My Recipes") { saveSharedRecipe(entry) }
-                        .font(.brandCaption)
+    /// A photo card matching `recipeCard`/`masterLibraryCard`'s own
+    /// formatting (see either's doc comment) and, same as every other
+    /// recipe card on this screen, tappable to preview it before saving —
+    /// direct user report that this used to be a plain `HStack` row where
+    /// the untargeted "Save to My Recipes" `Button` (no `.buttonStyle
+    /// (.plain)`) ended up as the row's only tap target under the hood, so
+    /// tapping *anywhere* in the row — not just that button's own text —
+    /// immediately saved it, with no way to preview it first. Opens
+    /// `SharedRecipeDetailView` (the "Shared" counterpart to
+    /// `LibraryRecipeDetailView` — see that type's own doc comment for why
+    /// a read-only detail view built off the wire entry, not
+    /// `RecipeDetailView`, which needs an already-persisted `Recipe`);
+    /// "Save to My Recipes" is now its own explicit, separately-tappable
+    /// button, both here (`.buttonStyle(.plain)`, unlike before) and in
+    /// that detail view's toolbar.
+    @ViewBuilder
+    private func sharedRecipeCard(_ entry: SharedRecipeEntry) -> some View {
+        let isSaved = savedShareIDs.contains(entry.id)
+        SharedEntryCardContent(entry: entry)
+            .background {
+                NavigationLink("") {
+                    SharedRecipeDetailView(entry: entry, isSaved: isSaved) {
+                        saveSharedRecipe(entry)
+                    }
                 }
+                .opacity(0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }
-        .padding(.vertical, 4)
+            .overlay(alignment: .topTrailing) {
+                Group {
+                    if isSaved {
+                        CircularIconButton(systemImage: "checkmark.circle.fill", tint: .brandSage) {}
+                            .allowsHitTesting(false)
+                            .accessibilityLabel("Saved to My Recipes")
+                    } else {
+                        CircularIconButton(systemImage: "square.and.arrow.down", tint: .white) {
+                            saveSharedRecipe(entry)
+                        }
+                        .accessibilityLabel("Save to My Recipes")
+                    }
+                }
+                .padding(8)
+            }
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .listRowSeparator(.hidden)
     }
 
     private func loadSharedRecipes() async {
@@ -829,6 +847,149 @@ private struct LibraryRecipeDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14))
 
                 Text(entry.addedByCaption)
+                    .font(.brandCaption2.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+
+                if let summary = entry.summary, !summary.isEmpty {
+                    Text(summary)
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 20) {
+                    Label("\(entry.displayServings) servings", systemImage: "person.2")
+                    if let prep = entry.prepMinutes, prep > 0 {
+                        Label("\(prep)m prep", systemImage: "timer")
+                    }
+                    if let cook = entry.cookMinutes, cook > 0 {
+                        Label("\(cook)m cook", systemImage: "flame")
+                    }
+                }
+                .font(.brandSubheadline)
+                .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Ingredients").font(.brandTitle3.bold())
+                    ForEach(entry.ingredients) { ingredient in
+                        HStack(alignment: .top) {
+                            Circle()
+                                .fill(Color.secondary)
+                                .frame(width: 5, height: 5)
+                                .padding(.top, 7)
+                                .frame(width: 20)
+                            Text(ingredient.displayText)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Instructions").font(.brandTitle3.bold())
+                    ForEach(Array(entry.instructions.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("\(index + 1)")
+                                .font(.brandHeadline)
+                                .foregroundStyle(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Circle().fill(Color.accentColor))
+                            Text(step)
+                        }
+                    }
+                    if entry.instructions.isEmpty {
+                        Text("No steps added yet.").foregroundStyle(.secondary)
+                    }
+                }
+
+                if let sourceURL = entry.sourceURL, let url = URL(string: sourceURL) {
+                    Link(destination: url) {
+                        Label("View Original Recipe", systemImage: "arrow.up.right.square")
+                    }
+                }
+            }
+            .padding()
+        }
+        .navigationTitle(entry.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if isSaved {
+                    Label("Saved", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(Color.brandSage)
+                } else {
+                    Button("Save to My Recipes") {
+                        isSaved = true
+                        onSave()
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The `LibraryEntryCardContent` counterpart for a "Shared" entry — same
+/// layout, same reasoning for why this is a near-duplicate rather than a
+/// shared generic (see that type's own doc comment), just reading
+/// `SharedRecipeEntry`'s fields (`sharedByCaption` in place of
+/// `addedByCaption`) instead.
+private struct SharedEntryCardContent: View {
+    let entry: SharedRecipeEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            EntryPhoto(photoData: entry.photoData)
+                .frame(height: 150)
+                .frame(maxWidth: .infinity)
+                .clipped()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(.brandHeadline)
+                    .foregroundStyle(.primary)
+                HStack(spacing: 8) {
+                    if entry.totalMinutes > 0 {
+                        Label("\(entry.totalMinutes) min", systemImage: "clock")
+                    }
+                    Label("serves \(entry.displayServings)", systemImage: "person.2")
+                }
+                .font(.brandCaption)
+                .foregroundStyle(.secondary)
+                Text(entry.sharedByCaption)
+                    .font(.brandCaption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(10)
+        }
+        .background(Color.brandCream)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.06)))
+    }
+}
+
+/// The `LibraryRecipeDetailView` counterpart for a "Shared" entry — same
+/// read-only layout/reasoning (see that type's own doc comment), just
+/// reading `SharedRecipeEntry`'s fields instead.
+private struct SharedRecipeDetailView: View {
+    let entry: SharedRecipeEntry
+    let onSave: () -> Void
+
+    @State private var isSaved: Bool
+
+    init(entry: SharedRecipeEntry, isSaved: Bool, onSave: @escaping () -> Void) {
+        self.entry = entry
+        self.onSave = onSave
+        _isSaved = State(initialValue: isSaved)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                EntryPhoto(photoData: entry.photoData)
+                    .frame(height: 200)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                Text(entry.sharedByCaption)
                     .font(.brandCaption2.bold())
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)

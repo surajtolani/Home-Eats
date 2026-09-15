@@ -518,6 +518,15 @@ struct SharedRecipeEntry: Codable, Identifiable {
         return "Shared by \(name)"
     }
 
+    /// Same `?? 4`/`?? 0` fallbacks `makeLocalRecipe()` below already
+    /// applies when actually saving this entry as a `Recipe` — see
+    /// `LibraryRecipeEntry.displayServings`/`.totalMinutes`'s own doc
+    /// comment for why these are surfaced here too, for the identical
+    /// reason: `RecipesHomeView`'s "Shared" card/detail view needs a
+    /// "N min"/"serves N" meta row for an entry that hasn't been saved yet.
+    var displayServings: Int { servings ?? 4 }
+    var totalMinutes: Int { (prepMinutes ?? 0) + (cookMinutes ?? 0) }
+
     enum CodingKeys: String, CodingKey {
         case recipeID = "id"
         case title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, photoBase64, createdAt, updatedAt, ingredients, share
