@@ -108,6 +108,76 @@ enum GroupGroceryListBuilder {
         return candidates
     }
 
+    /// Same aggregation as `aggregate(ingredientsByRecipeID:)`, but over the
+    /// personal `Recipe.ingredients` (`RecipeIngredientEntry`) instead of a
+    /// backend `RemoteIngredient` — used by `GroupAddGroceriesFlow.swift`'s
+    /// "From a Recipe" picker, which works directly off recipes already
+    /// loaded locally via SwiftData rather than a planned meal's
+    /// `recipeID` (so, unlike `resolveCandidates` below, there's no network
+    /// fetch involved at all: a `Recipe` sitting in someone's own library
+    /// already has everything needed). The one real difference from the
+    /// remote version: `RecipeIngredientEntry` already carries its own
+    /// `category` (set at import/entry time), so this uses that directly
+    /// rather than falling back to `GroceryCategory.guess(fromIngredientName:)`
+    /// the way a category-less `RemoteIngredient` has to.
+    static func aggregateLocal(ingredientsByRecipeID: [UUID: [RecipeIngredientEntry]]) -> [String: Candidate] {
+        var candidates: [String: Candidate] = [:]
+        var totalsByKey: [String: [String: Double]] = [:]
+        var recipeCountByKey: [String: Int] = [:]
+
+        for (_, ingredients) in ingredientsByRecipeID {
+            for ingredient in ingredients {
+                let cleanName = IngredientNameCleaner.groceryName(from: ingredient.name)
+                guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
+                    continue
+                }
+                let key = GroceryListBuilder.canonicalKey(for: cleanName)
+
+                if candidates[key] == nil {
+                    candidates[key] = Candidate(displayName: cleanName, category: ingredient.category, quantityText: "")
+                }
+                recipeCountByKey[key, default: 0] += 1
+
+                if let quantity = ingredient.quantity {
+                    let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
+                    totalsByKey[key, default: [:]][unitKey, default: 0] += quantity
+                }
+            }
+        }
+
+        for key in candidates.keys {
+            var parts: [String] = []
+            for (unit, total) in (totalsByKey[key] ?? [:]).sorted(by: { $0.key < $1.key }) {
+                let amount = IngredientQuantityFormatter.string(for: total)
+                parts.append(unit.isEmpty ? amount : "\(amount) \(unit)")
+            }
+            let recipeCount = recipeCountByKey[key] ?? 0
+            let suffix = recipeCount > 1 ? " (from \(recipeCount) recipes)" : ""
+            candidates[key]?.quantityText = parts.isEmpty ? "" : parts.joined(separator: " + ") + suffix
+        }
+        return candidates
+    }
+
+    /// Local counterpart of `resolveCandidates` below, for the "From a
+    /// Recipe" picker — same dedup-against-what's-already-on-the-list
+    /// finishing step, just fed by `aggregateLocal` instead of a network
+    /// fetch. `@MainActor` only because `existingItems` (SwiftData model
+    /// objects) must be read on the main actor, same as `resolveCandidates`;
+    /// there's no actual `await` inside this one.
+    @MainActor
+    static func resolveLocalCandidates(
+        recipes: [Recipe],
+        existingItems: [GroupSharedGroceryItem]
+    ) -> [Candidate] {
+        let ingredientsByRecipeID = Dictionary(uniqueKeysWithValues: recipes.map { ($0.id, $0.ingredients) })
+        let candidates = aggregateLocal(ingredientsByRecipeID: ingredientsByRecipeID)
+        let existingKeys = Set(existingItems.map { GroceryListBuilder.canonicalKey(for: $0.name) })
+        return candidates
+            .filter { !existingKeys.contains($0.key) }
+            .map(\.value)
+            .sorted { $0.displayName < $1.displayName }
+    }
+
     /// Resolves whichever `plannedMeals` the caller already filtered down to
     /// the days/meals someone picked (mirroring `GroceryListBuilder
     /// .regenerate`'s own "filtering is the view's job, not the builder's"

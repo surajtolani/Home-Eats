@@ -11,15 +11,18 @@ import SwiftData
 /// button, and the whole review queue all inline) and an always-expanded
 /// "From Your Household Groceries" list, all visible on screen at once —
 /// "is not that good right now and very confusing." This collapses all of
-/// that behind one button and a short, three-option flow instead, while
+/// that behind one button and a short, four-option flow instead, while
 /// keeping every underlying capability: typing a plain item (`AddItemSearchView`,
 /// which still opens the existing full add-item form for anyone who wants
 /// to set a quantity/category/section up front), generating ingredients
 /// from planned meals (`CookingListDaysView` -> `ReviewIngredientsView`,
 /// the exact same `GroupGroceryListBuilder` resolution the old day-strip
-/// used), and quick-adding from your own personal "Household Groceries"
-/// catalog, now called "My Usuals" here to match the reference and tabbed
-/// by category (`MyUsualsPickerView`).
+/// used), picking straight from a recipe with no meal plan involved at all
+/// (`RecipePickerForGroceriesView` -> the same `ReviewIngredientsView` —
+/// direct user request for "just show me what a recipe needs" without
+/// having to plan a meal first), and quick-adding from your own personal
+/// "Household Groceries" catalog, now called "My Usuals" here to match the
+/// reference and tabbed by category (`MyUsualsPickerView`).
 ///
 /// **Role gating carries over unchanged**: every commit path here (`AddItemSearchView
 /// .submit`, `ReviewIngredientsView.commit`, `MyUsualsPickerView.commit`)
@@ -67,6 +70,13 @@ struct AddGroceriesSheet: View {
                             subtitle: "Add ingredients from meals you've planned"
                         )
                     }
+                    NavigationLink(value: AddGroceriesDestination.pickRecipes) {
+                        AddGroceriesOptionRow(
+                            icon: "book.closed.fill",
+                            title: "From a Recipe",
+                            subtitle: "Pick any recipe, no planning required"
+                        )
+                    }
                     NavigationLink(value: AddGroceriesDestination.myUsuals) {
                         AddGroceriesOptionRow(
                             icon: "bookmark.fill",
@@ -90,6 +100,8 @@ struct AddGroceriesSheet: View {
                     AddItemSearchView(groupID: groupID, isManager: isManager)
                 case .cookingListDays:
                     CookingListDaysView(groupID: groupID, isManager: isManager, isKnownOffline: isKnownOffline, path: $path)
+                case .pickRecipes:
+                    RecipePickerForGroceriesView(groupID: groupID, path: $path)
                 case .reviewIngredients(let candidates):
                     ReviewIngredientsView(groupID: groupID, isManager: isManager, candidates: candidates, path: $path)
                 case .myUsuals:
@@ -112,6 +124,7 @@ struct AddGroceriesSheet: View {
 private enum AddGroceriesDestination: Hashable {
     case addItem
     case cookingListDays
+    case pickRecipes
     case reviewIngredients([GroupGroceryListBuilder.Candidate])
     case myUsuals
     case confirmation(count: Int, isSuggestion: Bool)
@@ -434,6 +447,139 @@ private struct CookingListDaysView: View {
         )
         if candidates.isEmpty {
             errorMessage = "Nothing new to add from those meals \u{2014} their ingredients might already be on your list, or those recipes don't have any saved."
+        } else {
+            path.append(AddGroceriesDestination.reviewIngredients(candidates))
+        }
+    }
+}
+
+// MARK: - "From a Recipe"
+
+/// Direct user request: someone who just wants to grab what a recipe (or a
+/// few) needs, without first planning a meal for it — "From Your Cooking
+/// List" above only ever looks at what's on the calendar. Multi-select from
+/// the same personal recipe library `RecipesHomeView`'s "My Recipes"
+/// section shows (`source != .library || isSavedToCollection` — a
+/// browse-only library recipe not yet saved doesn't count as "yours" here
+/// either), then feeds straight into the exact same `ReviewIngredientsView`
+/// checkbox/quantity review step `CookingListDaysView` does — one review
+/// screen for both ways of getting there, not a second one reinvented for
+/// this path. Resolving ingredients here needs no network round trip at
+/// all (unlike `CookingListDaysView.generate()`, which fetches each
+/// distinct recipe from the backend by id): a `Recipe` in this list is
+/// already sitting locally in SwiftData with its own ingredients, so
+/// `GroupGroceryListBuilder.resolveLocalCandidates` just reads them
+/// directly.
+private struct RecipePickerForGroceriesView: View {
+    let groupID: String
+    @Binding var path: NavigationPath
+
+    @Query(sort: \Recipe.title) private var allRecipes: [Recipe]
+    @Query private var existingItems: [GroupSharedGroceryItem]
+
+    @State private var searchText = ""
+    @State private var selectedRecipeIDs: Set<UUID> = []
+    @State private var errorMessage: String?
+
+    init(groupID: String, path: Binding<NavigationPath>) {
+        self.groupID = groupID
+        self._path = path
+        let gid = groupID
+        _existingItems = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
+    }
+
+    /// Same "My Recipes" filter `RecipesHomeView` uses for its own
+    /// `myRecipes` section — see that view's own doc comment.
+    private var myRecipes: [Recipe] {
+        allRecipes.filter { $0.source != .library || $0.isSavedToCollection }
+    }
+
+    private var filteredRecipes: [Recipe] {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return myRecipes }
+        return myRecipes.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            searchField
+            List {
+                if myRecipes.isEmpty {
+                    Text("No recipes in My Recipes yet — add one from the Recipes tab first.")
+                        .foregroundStyle(.secondary)
+                } else if filteredRecipes.isEmpty {
+                    Text("No matches.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(filteredRecipes) { recipe in
+                        recipeRow(recipe)
+                    }
+                }
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(.secondary)
+                }
+            }
+            .listStyle(.plain)
+        }
+        .navigationTitle("From a Recipe")
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            Button {
+                proceedToReview()
+            } label: {
+                Text(selectedRecipeIDs.isEmpty ? "Next" : "Next: \(selectedRecipeIDs.count) Recipe\(selectedRecipeIDs.count == 1 ? "" : "s")")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.brandForest)
+            .controlSize(.large)
+            .disabled(selectedRecipeIDs.isEmpty)
+            .padding()
+            .background(.bar)
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search My Recipes", text: $searchText)
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding([.horizontal, .top], 12)
+    }
+
+    private func recipeRow(_ recipe: Recipe) -> some View {
+        let isSelected = selectedRecipeIDs.contains(recipe.id)
+        return Button {
+            errorMessage = nil
+            if isSelected {
+                selectedRecipeIDs.remove(recipe.id)
+            } else {
+                selectedRecipeIDs.insert(recipe.id)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(isSelected ? Color.brandForest : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(recipe.title).foregroundStyle(.primary)
+                    Text("\(recipe.ingredients.count) ingredient\(recipe.ingredients.count == 1 ? "" : "s")")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func proceedToReview() {
+        let selectedRecipes = myRecipes.filter { selectedRecipeIDs.contains($0.id) }
+        let candidates = GroupGroceryListBuilder.resolveLocalCandidates(
+            recipes: selectedRecipes,
+            existingItems: existingItems.filter { $0.syncState != .pendingDelete }
+        )
+        if candidates.isEmpty {
+            errorMessage = "Nothing new to add from \(selectedRecipes.count == 1 ? "that recipe" : "those recipes") — its ingredients might already be on your list."
         } else {
             path.append(AddGroceriesDestination.reviewIngredients(candidates))
         }
