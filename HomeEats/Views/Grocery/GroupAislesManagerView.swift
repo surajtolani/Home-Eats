@@ -23,7 +23,16 @@ import SwiftData
 /// notepad, not pre-grouped by category — so "No aisles yet" is the normal
 /// first-open state; a group seeded with the old ten category-mirroring
 /// starter aisles before that behavior was removed keeps them until
-/// someone deletes them here.
+/// someone deletes them (one at a time via swipe/drag-to-delete, or all at
+/// once via `removeStarterAisles()` below — a direct fix for exactly that
+/// migration case).
+///
+/// **Reorder/delete handles are always visible** (`editMode` permanently
+/// `.active`, same "real writable binding, not `.constant`" pattern as
+/// `GroupSharedGroceryListView.editMode`) — direct user report that this
+/// screen used to hide them behind a tap on "Edit" first, with nothing on
+/// screen hinting that was necessary: "there is no way to know it's
+/// movable" without already knowing to look for an Edit button.
 struct GroupAislesManagerView: View {
     let groupID: String
 
@@ -34,6 +43,7 @@ struct GroupAislesManagerView: View {
     @State private var newAisleName = ""
     @State private var renamingAisle: GroupStoreAisle?
     @State private var renameText = ""
+    @State private var editMode: EditMode = .active
 
     init(groupID: String) {
         self.groupID = groupID
@@ -52,6 +62,15 @@ struct GroupAislesManagerView: View {
         aisles.filter { $0.syncState != .pendingDelete }.sorted { $0.sortIndex < $1.sortIndex }
     }
 
+    /// Whether this group still has any of the old default-seeded starter
+    /// aisles (`linkedCategory != nil` — see this type's own top doc
+    /// comment) — drives the one-tap "Remove Starter Aisles" cleanup
+    /// section below, hidden entirely for a group that never had them (a
+    /// brand-new one) or has already deleted them all.
+    private var hasStarterAisles: Bool {
+        visibleAisles.contains { $0.linkedCategory != nil }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -65,6 +84,20 @@ struct GroupAislesManagerView: View {
                     Text("Add aisles in the order you walk through the store, then use the ⋯ on an item in My Layout to place it there. Anyone in the group can manage aisles.")
                         .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
+                }
+
+                if hasStarterAisles {
+                    Section {
+                        Button(role: .destructive) {
+                            removeStarterAisles()
+                        } label: {
+                            Text("Remove Starter Aisles")
+                        }
+                    } footer: {
+                        Text("This group still has aisles from an older version of My Layout that grouped everything by category automatically. Remove them to start with a blank layout — anything in one moves to Unsorted.")
+                            .font(.brandSubheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section {
@@ -88,29 +121,25 @@ struct GroupAislesManagerView: View {
                                 .tint(.brandForest)
                         }
                     }
-                    // `.onDelete` (not a `.swipeActions(role: .destructive)`
-                    // button) — same as the personal `AislesManagerView`:
-                    // this gives both a swipe-to-delete gesture AND the red
-                    // "-" circle once `EditButton()` is tapped, for free.
                     .onDelete { offsets in
                         for index in offsets { delete(visibleAisles[index]) }
                     }
                     .onMove { source, destination in
                         move(source: source, destination: destination)
                     }
+                } header: {
+                    Text("Your Sections")
                 } footer: {
-                    Text("Tap an aisle to rename it — including one of the starter aisles already grouping your list by category.")
+                    Text("Drag the ≡ handle to reorder, swipe to delete, or tap a name to rename it.")
                         .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
                 }
             }
+            .environment(\.editMode, $editMode)
             .navigationTitle("Group's Store Aisles")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    EditButton()
                 }
             }
             .alert("Rename Aisle", isPresented: Binding(
@@ -175,6 +204,29 @@ struct GroupAislesManagerView: View {
             modelContext.delete(aisle)
         } else {
             aisle.syncState = .pendingDelete
+        }
+        try? modelContext.save()
+        triggerSync()
+    }
+
+    /// One-tap cleanup for a group that still has the old default-seeded
+    /// starter aisles — direct fix for a real report that a group already
+    /// seeded before that behavior was removed still looked pre-grouped by
+    /// category, with no easy way to clear it short of deleting ten rows
+    /// one at a time. Deletes every remaining `linkedCategory != nil`
+    /// aisle the same way swiping one away does (`delete(_:)`, so any item
+    /// placed in one falls back to "Unsorted" the identical way a single
+    /// delete already does — see that field's own doc comment in
+    /// prisma/schema.prisma) — one `Task`, one `triggerSync()` call at the
+    /// end rather than one per row, so this doesn't fire a dozen redundant
+    /// syncs back to back.
+    private func removeStarterAisles() {
+        for aisle in visibleAisles where aisle.linkedCategory != nil {
+            if aisle.isLocalPlaceholderID {
+                modelContext.delete(aisle)
+            } else {
+                aisle.syncState = .pendingDelete
+            }
         }
         try? modelContext.save()
         triggerSync()

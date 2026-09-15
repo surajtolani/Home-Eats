@@ -41,39 +41,48 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// — see that property's own doc comment for the role-gating and "why keep
 /// the detailed sheet too" reasoning.
 ///
-/// **By Category / My Layout, each organized differently.** Briefly
-/// collapsed down to one grouping only — direct user feedback reversed that
-/// almost immediately, so the toggle (`viewMode`) is back. The two modes
-/// now genuinely differ in what they're for, not just in visuals:
-/// - **By Category** (`byCategorySections`) groups by `GroceryCategory`,
-///   always alphabetical within a category (no manual per-item reordering
-///   there), with category *sections themselves* drag-to-reorderable via
-///   the standard List reorder handle (`moveCategories(from:to:)`) — that
-///   order is a per-device display preference persisted locally in
-///   `UserDefaults` (`categoryOrder`, keyed by `groupID`), not synced to the
-///   group, since it's purely "what order do I like to shop in," not shared
-///   list data. An item can also move to a *different* category via its
-///   own row's "Move to Category" menu (`moveToCategoryMenu`) — a plain
-///   List's reorder handle can't actually drag a row across two different
-///   Sections (a real SwiftUI/platform limitation, not a corner cut here),
-///   so this is a tap-the-⋯-menu affordance, same mechanism as "My
-///   Layout"'s own cross-section move just below, not literal drag.
+/// **By Category / My Layout, each organized differently.** The two modes
+/// genuinely differ in what they're for, not just in visuals — and both
+/// underwent a second, corrective redesign after direct user reports that
+/// the first pass didn't actually work right (see each bullet below):
+/// - **By Category** (`byCategorySections`) groups by `GroceryCategory` —
+///   all ten categories always shown, in the enum's fixed order, even
+///   while empty, not just ones with something in them. This used to also
+///   let category *sections themselves* drag-to-reorder — removed outright
+///   after a direct bug report that the reorder handle "glitches and
+///   reverts": a plain SwiftUI `List`'s `.onMove` reordering `Section`s
+///   produced by a `ForEach` that's itself wrapped in this screen's
+///   `viewMode` conditional is a known-unreliable combination, not
+///   something worth continuing to fight. Items inside a category are
+///   always alphabetical (no manual per-item reordering there either).
+///   What IS real: an item can move to a *different* category two ways —
+///   drag it (`.draggable(item.id)`) onto a category header
+///   (`GroceryDropHeader`, a real drop target with visual highlight while
+///   targeted), or tap its own row's "Move to Category" ⋯ menu
+///   (`moveToCategoryMenu`) as a reliable, no-dragging-required
+///   alternative.
 /// - **My Layout** (`myLayoutSections`) groups by the group's own
-///   `GroupStoreAisle` rows instead — custom sections ("section breaks")
-///   anyone can add/rename/reorder via "Manage My Layout"
-///   (`GroupAislesManagerView`, reachable from the toggle row's own menu).
-///   A brand-new group starts with zero aisle sections at all (just
-///   "Unsorted") — direct user request ("there should be no categories...
-///   think of how a notepad works") — see the backend `GroupStoreAisle`
-///   model's own doc comment in prisma/schema.prisma for the removed
-///   default-seeding behavior that used to pre-populate ten category-named
-///   ones. Items are *manually* draggable within a section via the same
-///   List reorder handle (`moveWithinLayoutGroup`) and moveable *between*
-///   sections via each row's "Move to Aisle" menu (`moveToAisleMenu`,
-///   `moveToAisle`) — same cross-section-drag limitation as By Category's
-///   own "Move to Category" menu above. Unlike `categoryOrder`, this
-///   layout is genuinely group-shared (synced via `GroupSyncService`),
-///   matching the earlier "My Layout" design.
+///   `GroupStoreAisle` rows instead — custom sections anyone can add/
+///   rename/reorder via "Manage My Layout" (`GroupAislesManagerView`,
+///   reachable from the toggle row's own menu, which now keeps its reorder
+///   handles permanently visible instead of hidden behind an "Edit" tap —
+///   direct user report that there was "no way to know it's movable"
+///   without already knowing to look for one). A brand-new group starts
+///   with zero aisle sections at all (just "Unsorted") — direct user
+///   request ("there should be no categories... think of how a notepad
+///   works") — see the backend `GroupStoreAisle` model's own doc comment
+///   in prisma/schema.prisma for the removed default-seeding behavior that
+///   used to pre-populate ten category-named ones (a group seeded before
+///   that removal keeps its existing aisles until manually deleted via
+///   "Manage My Layout," which now has a one-tap "Remove Starter Aisles"
+///   action for exactly that cleanup). Items are draggable within a
+///   section via the List reorder handle (`moveWithinLayoutGroup` — a
+///   single `ForEach`/`Section`, not the cross-section case above, so this
+///   one IS reliable) and moveable *between* sections the same two ways as
+///   By Category: drag onto a section's `GroceryDropHeader`, or the
+///   row's own "Move to Aisle" ⋯ menu (`moveToAisleMenu`, `moveToAisle`).
+///   Unlike By Category's fixed order, this layout is genuinely
+///   group-shared (synced via `GroupSyncService`).
 ///
 /// **No "Staples" here.** A standing group "staples" template list
 /// (`GroupStaplesManagerView`, reachable from this screen's toolbar) used to
@@ -96,15 +105,16 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// `isChecked`/`orderIndex`/`aisleId`, the "routine, day-to-day use" bucket
 /// that field-by-field split draws on — see routes/groupGrocery.js's own
 /// doc comment on its PATCH route); only a `MANAGER` can add an item
-/// straight onto the real list, edit its name/category/quantity/section, or
-/// accept a suggestion; a `PARTICIPANT` can only suggest (create with
-/// `section: .suggested`) and can remove their own suggestion (or any
-/// `THIS_WEEK`/`STAPLES` item — routine maintenance, open to anyone).
-/// Managing "My Layout" aisles is open to any member too — see
-/// `GroupAislesManagerView`'s own doc comment. Reordering category sections
-/// in "By Category" (`moveCategories`) is a local-only display preference
-/// instead, open to anyone, with no server round trip at all. The quick-add
-/// field at the top of the list, and every path through
+/// straight onto the real list, edit its name/category/quantity/section
+/// (`MANAGER_ONLY_FIELDS` server-side — which is also why moving an item to
+/// a different *category* in "By Category," drag or menu, is `MANAGER`-only
+/// too, unlike moving it to a different *aisle* in "My Layout" — see
+/// `moveToCategory`'s own doc comment), or accept a suggestion; a
+/// `PARTICIPANT` can only suggest (create with `section: .suggested`) and
+/// can remove their own suggestion (or any `THIS_WEEK`/`STAPLES` item —
+/// routine maintenance, open to anyone). Managing "My Layout" aisles is
+/// open to any member too — see `GroupAislesManagerView`'s own doc comment.
+/// The quick-add field at the top of the list, and every path through
 /// `AddGroceriesSheet`, follow this exact same MANAGER-decides/
 /// PARTICIPANT-suggests split — see `quickAddField`'s and
 /// `GroupAddGroceriesFlow.swift`'s own doc comments.
@@ -128,11 +138,6 @@ struct GroupSharedGroceryListView: View {
     /// Backs `quickAddField` — see that property's own doc comment.
     @State private var quickAddText = ""
     @State private var viewMode: GroupGroceryViewMode = .byCategory
-    /// The display order of category *sections* in "By Category" — a
-    /// per-device preference, not group-shared data — see
-    /// `moveCategories(from:to:)`'s own doc comment. Loaded once from
-    /// `UserDefaults` in `init`, written back on every reorder.
-    @State private var categoryOrder: [GroceryCategory]
     /// Same "always active, real writable binding rather than `.constant`"
     /// reasoning as the personal `GroceryListView.editMode` — see that
     /// property's own doc comment.
@@ -146,7 +151,6 @@ struct GroupSharedGroceryListView: View {
         let gid = groupID
         _items = Query(filter: #Predicate<GroupSharedGroceryItem> { $0.groupID == gid })
         _allAisles = Query(filter: #Predicate<GroupStoreAisle> { $0.groupID == gid }, sort: \GroupStoreAisle.sortIndex)
-        _categoryOrder = State(initialValue: Self.loadCategoryOrder(groupID: groupID))
     }
 
     private var myRole: GroupRole? { group?.myRole(currentUserID: accountSession.currentUser?.id) }
@@ -207,19 +211,30 @@ struct GroupSharedGroceryListView: View {
         visibleItems.filter { $0.section == .thisWeek || $0.section == .staples }
     }
 
-    /// Categories sorted by `categoryOrder` (the per-device drag order —
-    /// see that property's own doc comment), falling back to
-    /// `GroceryCategory.sortIndex` for a category `categoryOrder` doesn't
-    /// know about yet (shouldn't happen once `loadCategoryOrder` has run,
-    /// but keeps this total either way). Items inside each category are
-    /// always alphabetical — no per-item manual ordering anymore.
+    /// Every `GroceryCategory`, always, in the enum's own fixed
+    /// `sortIndex` order — not just categories that currently have
+    /// something on the list. Direct user report that the previous
+    /// "categories drag-to-reorder, and only show up once something's in
+    /// them" design was confusing and its drag handle didn't reliably work
+    /// (a known real limitation: a plain SwiftUI `List`'s `.onMove` can't
+    /// reliably reorder `Section`s produced by a `ForEach` wrapped in
+    /// another conditional view builder the way this screen's `viewMode`
+    /// switch requires — the reorder would visually "glitch and revert").
+    /// A fixed, always-visible set of ten sections is simpler to
+    /// understand (every category is always exactly where you left it) and
+    /// — since every category is now guaranteed to exist as a section even
+    /// while empty — gives `byCategorySections`' drag-and-drop
+    /// (`.draggable`/`.dropDestination` on each header) somewhere to drop
+    /// an item even into a category with nothing in it yet. Items inside
+    /// each category are always alphabetical — no per-item manual
+    /// ordering.
     private var purchasableByCategory: [(GroceryCategory, [GroupSharedGroceryItem])] {
-        let displayIndex = Dictionary(uniqueKeysWithValues: categoryOrder.enumerated().map { ($1, $0) })
-        return Dictionary(grouping: purchasableItems, by: \.category)
-            .sorted { (displayIndex[$0.key] ?? $0.key.sortIndex) < (displayIndex[$1.key] ?? $1.key.sortIndex) }
-            .map { category, categoryItems in
-                (category, categoryItems.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
-            }
+        let grouped = Dictionary(grouping: purchasableItems, by: \.category)
+        return GroceryCategory.allCases.map { category in
+            let categoryItems = (grouped[category] ?? [])
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return (category, categoryItems)
+        }
     }
 
     /// "My Layout" only (see `myLayoutSections`) — "By Category" sorts
@@ -493,24 +508,34 @@ struct GroupSharedGroceryListView: View {
 
     // MARK: - By category view
 
-    /// Reassigns `item.category` — direct user request: "the by category -
-    /// the hamburger should allow you to move groceries to a different
-    /// category." A plain SwiftUI `List`'s `.onMove` reorder handle can't
-    /// actually drag a row across two different `Section`/`ForEach` pairs
-    /// (a real platform limitation — the same reason `moveCategories(from:to:)`
-    /// above only reorders whole category sections, never merges one item
-    /// out of its section into another's), so this is the same "tap the ⋯
-    /// menu next to the item" mechanism `moveToAisleMenu` already uses to
-    /// solve the identical problem in "My Layout" — not literal drag, but
-    /// the same capability. Any member may do this — moving a purchasable
-    /// item between categories is routine reorganizing, the same bucket as
-    /// `isChecked`/`orderIndex` (see this view's own top doc comment on role
-    /// gating).
+    /// Reassigns `item.category` — the actual move behind both the "Move to
+    /// Category" menu and dragging an item onto a category header
+    /// (`GroceryDropHeader`, below). **`MANAGER`-only** — unlike `aisleId`
+    /// (My Layout placement, any member), `category` is one of
+    /// routes/groupGrocery.js's `MANAGER_ONLY_FIELDS` (alongside `name`/
+    /// `quantityText`/`section`): a PARTICIPANT's own attempt to change it
+    /// would sync-reject silently, which is exactly the kind of "looks like
+    /// it moved, then reverts" bug this screen already had a real one of
+    /// (see `purchasableByCategory`'s own doc comment) — so the UI never
+    /// offers this at all to a non-`MANAGER` (see `byCategorySections`'
+    /// `isManager` branch), and this guards defensively too in case a role
+    /// change hasn't refreshed locally yet.
     private func moveToCategory(_ item: GroupSharedGroceryItem, category: GroceryCategory) {
+        guard isManager else { return }
         item.category = category
         markDirtyIfSynced(item)
         try? modelContext.save()
         Task { await runSync() }
+    }
+
+    /// Resolves a dragged item's id (see `GroceryDropHeader`/`row(for:)`'s
+    /// own `.draggable(item.id)`) back to the actual `GroupSharedGroceryItem`
+    /// and moves it — `visibleItems`, not just `purchasableItems`, so a drop
+    /// still resolves correctly in the rare case an item's section changed
+    /// out from under it between the drag starting and the drop landing.
+    private func handleCategoryDrop(itemID: String, category: GroceryCategory) {
+        guard let item = visibleItems.first(where: { $0.id == itemID }) else { return }
+        moveToCategory(item, category: category)
     }
 
     @ViewBuilder
@@ -532,91 +557,59 @@ struct GroupSharedGroceryListView: View {
         }
     }
 
+    /// Direct user feedback, twice over: the previous design only showed a
+    /// category once something was in it, drag-to-reorder the category
+    /// *sections themselves* didn't reliably work ("glitches and reverts"
+    /// — see `purchasableByCategory`'s own doc comment on why), and there
+    /// was no way to actually drag an item somewhere. This version drops
+    /// section reordering entirely (all ten categories always show, in a
+    /// fixed order — nothing to reorder) and instead makes moving an ITEM
+    /// real: for a `MANAGER` (the only role allowed to touch `category` at
+    /// all — see `moveToCategory`'s own doc comment), drag it (long-press,
+    /// same gesture `.draggable` uses everywhere in iOS — Files, Mail, ...)
+    /// onto a category's header to move it there, or use the "Move to
+    /// Category" ⋯ menu/long-press context menu as a reliable,
+    /// always-available alternative to dragging. A `PARTICIPANT` sees
+    /// neither — just the plain row and a non-interactive header — since
+    /// attempting either would only sync-reject.
     @ViewBuilder
     private var byCategorySections: some View {
-        if !purchasableByCategory.isEmpty {
-            ForEach(Array(purchasableByCategory.enumerated()), id: \.element.0) { index, entry in
-                let (category, categoryItems) = entry
-                Section {
-                    ForEach(categoryItems) { item in
-                        row(for: item, moveMenu: moveToCategoryMenu(for: item))
-                            .contextMenu { moveToCategoryMenu(for: item) }
-                    }
-                } header: {
-                    // Direct user request: category headers in a distinct
-                    // color (sage green) rather than the default List
-                    // section header style, so they read as the list's own
-                    // organizing structure rather than blending in with
-                    // regular row text. `.textCase(nil)` turns off the
-                    // default all-caps a List section header gets, same
-                    // override used elsewhere in this app for a custom
-                    // header style (e.g. `GroupSharedMealPlanView`'s slot
-                    // headers).
-                    Text(category.displayName)
-                        .font(.brandHeadline)
-                        .foregroundStyle(Color.brandSage)
-                        .textCase(nil)
-                } footer: {
-                    if index == purchasableByCategory.count - 1 {
-                        Text("Items within a category sort alphabetically — tap the ⋯ on an item to move it to a different category. Drag the ≡ handle on a category to reorder categories.")
-                            .font(.brandSubheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            // Reorders whole category *sections*, not items — direct user
-            // request to drop the old per-item "Move to Aisle" affordance
-            // and instead let the standard List reorder handle (≡, shown
-            // on the section/header row itself since this `.onMove` is on
-            // the `ForEach` that produces the `Section`s, not one inside
-            // them) drag entire categories up or down. See
-            // `moveCategories(from:to:)`'s own doc comment for where that
-            // order is persisted.
-            .onMove(perform: moveCategories)
-        } else {
+        if purchasableItems.isEmpty {
             Section {
                 Text("Nothing on your list yet. Type something above, or tap Prepopulate Groceries below.")
                     .foregroundStyle(.secondary)
             }
         }
-    }
-
-    /// Reorders `categoryOrder` — a per-device display preference, not
-    /// group-shared data (see this view's own top doc comment) — and
-    /// persists it to `UserDefaults` right away. `source`/`destination` are
-    /// indices into `purchasableByCategory` (only categories that currently
-    /// have items on the list), not all ten `GroceryCategory` cases, so this
-    /// reorders that visible subset in place and re-merges it back into the
-    /// full `categoryOrder` — any category not currently shown keeps its
-    /// prior relative position rather than being dropped or reset to the
-    /// end.
-    private func moveCategories(from source: IndexSet, to destination: Int) {
-        var displayed = purchasableByCategory.map(\.0)
-        displayed.move(fromOffsets: source, toOffset: destination)
-        let displayedSet = Set(displayed)
-        let remaining = categoryOrder.filter { !displayedSet.contains($0) }
-        categoryOrder = displayed + remaining
-        UserDefaults.standard.set(categoryOrder.map(\.rawValue), forKey: Self.categoryOrderKey(groupID: groupID))
-    }
-
-    private static func categoryOrderKey(groupID: String) -> String {
-        "groupGroceryCategoryOrder_\(groupID)"
-    }
-
-    /// Loads the per-device category display order — see `categoryOrder`'s
-    /// own doc comment. Any category missing from what's stored (nothing
-    /// stored yet, or a case added to `GroceryCategory` after this was last
-    /// saved) is appended at the end in the enum's own default
-    /// `sortIndex` order, so `categoryOrder` is always a full permutation of
-    /// `GroceryCategory.allCases`.
-    private static func loadCategoryOrder(groupID: String) -> [GroceryCategory] {
-        let stored = UserDefaults.standard.stringArray(forKey: categoryOrderKey(groupID: groupID))?
-            .compactMap(GroceryCategory.init(rawValue:)) ?? []
-        let storedSet = Set(stored)
-        let missing = GroceryCategory.allCases
-            .filter { !storedSet.contains($0) }
-            .sorted { $0.sortIndex < $1.sortIndex }
-        return stored + missing
+        ForEach(purchasableByCategory, id: \.0) { category, categoryItems in
+            Section {
+                if categoryItems.isEmpty {
+                    Text("Nothing here yet.").font(.brandCaption).foregroundStyle(.tertiary)
+                }
+                ForEach(categoryItems) { item in
+                    if isManager {
+                        row(for: item, moveMenu: moveToCategoryMenu(for: item))
+                            .contextMenu { moveToCategoryMenu(for: item) }
+                            .draggable(item.id)
+                    } else {
+                        row(for: item, moveMenu: EmptyView())
+                    }
+                }
+            } header: {
+                GroceryDropHeader(
+                    title: category.displayName,
+                    tint: Color.brandSage,
+                    isInteractive: isManager
+                ) { itemID in
+                    handleCategoryDrop(itemID: itemID, category: category)
+                }
+            } footer: {
+                if isManager && category == purchasableByCategory.last?.0 {
+                    Text("Items within a category sort alphabetically. Drag an item onto a category name to move it there, or tap the ⋯ on an item.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     // MARK: - "My Layout" view
@@ -624,19 +617,27 @@ struct GroupSharedGroceryListView: View {
     /// Where an item actually lands in "My Layout": an explicit choice
     /// (`item.aisleManuallySet == true`, including one that explicitly
     /// points at "Unsorted" — `aisleID == nil` with the flag still `true`)
-    /// always wins; absent that, it falls back to whichever
-    /// `GroupStoreAisle` mirrors the item's own `GroceryCategory` — the ten
-    /// starter aisles the backend seeds once per group (see
-    /// `AccountsAPIClient.getGroupGroceryAisles`'s own doc comment) — so "My
-    /// Layout" defaults to the same grouping "By Category" uses instead of
-    /// everything piling up in "Unsorted." Same reasoning as the personal
-    /// `GroceryListView.resolvedAisleID`, adapted for this model's
-    /// `aisleID`/`aisleManuallySet` living directly on the item (no separate
-    /// join table the way the personal `ItemAisleAssignment` is one) — see
+    /// always wins; absent that, it falls back to whichever `GroupStoreAisle`
+    /// mirrors the item's own `GroceryCategory` — only ever true for a group
+    /// that still has some of the old default-seeded starter aisles (see
+    /// `GroupStoreAisle`'s own doc comment in prisma/schema.prisma; a
+    /// brand-new group has no aisles with a `linkedCategory` at all, so this
+    /// simply never matches and everything starts in "Unsorted" instead, as
+    /// intended). Same reasoning as the personal `GroceryListView
+    /// .resolvedAisleID`, adapted for this model's `aisleID`/
+    /// `aisleManuallySet` living directly on the item (no separate join
+    /// table the way the personal `ItemAisleAssignment` is one) — see
     /// `GroupSharedGroceryItem.aisleID`'s own doc comment for why.
     private func resolvedAisleID(for item: GroupSharedGroceryItem) -> String? {
         if item.aisleManuallySet { return item.aisleID }
         return visibleAisles.first { $0.linkedCategory == item.category }?.id
+    }
+
+    /// Same role as `handleCategoryDrop` above, for "My Layout" — resolves a
+    /// dragged item's id back to the real row and reassigns its aisle.
+    private func handleAisleDrop(itemID: String, aisleID: String?) {
+        guard let item = visibleItems.first(where: { $0.id == itemID }) else { return }
+        moveToAisle(item, aisleID: aisleID)
     }
 
     @ViewBuilder
@@ -648,14 +649,17 @@ struct GroupSharedGroceryListView: View {
                 ForEach(unassigned) { item in
                     row(for: item, moveMenu: moveToAisleMenu(for: item))
                         .contextMenu { moveToAisleMenu(for: item) }
+                        .draggable(item.id)
                 }
                 .onMove { source, destination in
                     moveWithinLayoutGroup(unassigned, from: source, to: destination)
                 }
             } header: {
-                Text("Unsorted")
+                GroceryDropHeader(title: "Unsorted", tint: .primary) { itemID in
+                    handleAisleDrop(itemID: itemID, aisleID: nil)
+                }
             } footer: {
-                Text("Drag the ≡ handle to reorder. Tap the ⋯ on an item (or touch and hold it) to place it into an aisle below — any member can do this. Manage the group's aisles (add section breaks) from the toggle row's ⋯ menu above.")
+                Text("Drag the ≡ handle to reorder within a section, or drag an item onto a section name below to move it there. Tap the ⋯ on an item for the same move without dragging. Add your own sections from the toggle row's ⋯ menu above.")
                     .font(.brandSubheadline)
                     .foregroundStyle(.secondary)
             }
@@ -670,12 +674,15 @@ struct GroupSharedGroceryListView: View {
                 ForEach(aisleItems) { item in
                     row(for: item, moveMenu: moveToAisleMenu(for: item))
                         .contextMenu { moveToAisleMenu(for: item) }
+                        .draggable(item.id)
                 }
                 .onMove { source, destination in
                     moveWithinLayoutGroup(aisleItems, from: source, to: destination)
                 }
             } header: {
-                Text(aisle.name)
+                GroceryDropHeader(title: aisle.name, tint: .primary) { itemID in
+                    handleAisleDrop(itemID: itemID, aisleID: aisle.id)
+                }
             }
         }
     }
@@ -743,25 +750,12 @@ struct GroupSharedGroceryListView: View {
 
     // MARK: - Rows
 
-    /// "By Category" rows have no move menu — moving between aisles is
-    /// purely a "My Layout" concept, see this view's own top doc comment.
-    private func row(for item: GroupSharedGroceryItem) -> some View {
-        GroupGroceryItemRow(
-            item: item,
-            isManager: isManager,
-            onSetChecked: { checked in setChecked(item, checked) },
-            onSetQuantityCount: { count in setQuantityCount(item, count) },
-            onEdit: { editingItem = item },
-            onDelete: { delete(item) },
-            moveMenu: nil
-        )
-    }
-
-    /// "My Layout" rows only — `moveMenu` is rendered as an always-visible
-    /// ⋯ button on the row itself, not just the `.contextMenu` long-press
-    /// each call site also attaches — same "a permanently-active `EditMode`
-    /// list doesn't reliably surface a row's long-press context menu on top
-    /// of it" reasoning as the personal `GroceryListView.row(for:moveMenu:)`.
+    /// `moveMenu` — "Move to Category" in By Category, "Move to Aisle" in
+    /// My Layout — is rendered as an always-visible ⋯ button on the row
+    /// itself, not just the `.contextMenu` long-press each call site also
+    /// attaches — same "a permanently-active `EditMode` list doesn't
+    /// reliably surface a row's long-press context menu on top of it"
+    /// reasoning as the personal `GroceryListView.row(for:moveMenu:)`.
     private func row(for item: GroupSharedGroceryItem, moveMenu: some View) -> some View {
         GroupGroceryItemRow(
             item: item,
@@ -938,6 +932,61 @@ struct GroupSharedGroceryListView: View {
     }
 }
 
+// MARK: - Section headers
+
+/// A category/aisle section header that's also a drop target — drag an
+/// item (`.draggable(item.id)` on each row in `byCategorySections`/
+/// `myLayoutSections`) onto this and drop it to move that item here.
+/// Highlights while something's being dragged over it (`isTargeted`) so
+/// there's real visual feedback that dropping here will do something —
+/// direct user request, after "the 3 lines... doesn't really work" and "no
+/// way to know it's movable" reports, that these interactions need to be
+/// obviously discoverable rather than a hidden gesture nobody would find on
+/// their own. A `String` payload (an item's own `id`) needs no custom
+/// `Transferable` wrapper — `String` already conforms.
+private struct GroceryDropHeader: View {
+    let title: String
+    let tint: Color
+    /// `false` for a By Category header when the caller isn't a `MANAGER`
+    /// (see `byCategorySections`' own doc comment on why — `category` is
+    /// `MANAGER`-only server-side) — renders the plain title with no drop
+    /// target/highlight at all, rather than looking interactive and then
+    /// silently failing to sync. Always `true` for My Layout, where
+    /// `aisleId` is open to any member.
+    var isInteractive: Bool = true
+    let onDrop: (String) -> Void
+
+    @State private var isTargeted = false
+
+    var body: some View {
+        let label = Text(title)
+            .font(.brandHeadline)
+            .foregroundStyle(tint)
+            .textCase(nil)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        if isInteractive {
+            label
+                .background(
+                    isTargeted ? tint.opacity(0.15) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+                .contentShape(Rectangle())
+                .dropDestination(for: String.self) { droppedIDs, _ in
+                    guard let itemID = droppedIDs.first else { return false }
+                    onDrop(itemID)
+                    return true
+                } isTargeted: { targeted in
+                    isTargeted = targeted
+                }
+        } else {
+            label
+        }
+    }
+}
+
 // MARK: - Rows
 
 private struct GroupGroceryItemRow: View {
@@ -947,11 +996,10 @@ private struct GroupGroceryItemRow: View {
     let onSetQuantityCount: (Int) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
-    /// The "Move to Aisle" menu, shown inline right next to the item name —
-    /// "My Layout" rows only; `nil` for a "By Category" row, where moving
-    /// between aisles doesn't apply (see `GroupSharedGroceryListView.row(for:)`'s
-    /// two overloads).
-    let moveMenu: AnyView?
+    /// The "Move to Category"/"Move to Aisle" menu, shown inline right next
+    /// to the item name — see `GroupSharedGroceryListView.row(for:moveMenu:)`'s
+    /// own doc comment.
+    let moveMenu: AnyView
 
     var body: some View {
         HStack {
@@ -969,12 +1017,10 @@ private struct GroupGroceryItemRow: View {
                     Text(item.name.titleCasedForDisplay)
                         .strikethrough(item.isChecked)
                         .foregroundStyle(item.isChecked ? .secondary : .primary)
-                    if let moveMenu {
-                        moveMenu
-                            .labelStyle(.iconOnly)
-                            .font(.brandCaption)
-                            .foregroundStyle(.secondary)
-                    }
+                    moveMenu
+                        .labelStyle(.iconOnly)
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
                 }
                 if !item.quantityText.isEmpty {
                     Text(item.quantityText)
