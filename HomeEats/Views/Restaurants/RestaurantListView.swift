@@ -13,6 +13,11 @@ struct RestaurantListView: View {
     @State private var searchText = ""
     @StateObject private var searchModel = RestaurantSearchModel()
     @StateObject private var locationProvider = UserLocationProvider()
+    /// Search results already added to the personal library this search
+    /// session — see `addFromSearch`'s own doc comment for why this exists
+    /// (multi-add without losing the results list) and `SearchResultRow`'s
+    /// `isAdded` for how it's shown per row.
+    @State private var addedResultIDs: Set<String> = []
 
     private var isSearchActive: Bool {
         !searchText.trimmingCharacters(in: .whitespaces).isEmpty
@@ -78,6 +83,12 @@ struct RestaurantListView: View {
         }
         .onChange(of: searchText) { _, newValue in
             searchModel.search(newValue)
+            // A fresh search's results have nothing to do with whatever was
+            // added from the previous one — reset so a result that happens
+            // to reappear (searched again) doesn't show a stale checkmark.
+            if newValue.trimmingCharacters(in: .whitespaces).isEmpty {
+                addedResultIDs = []
+            }
         }
         .onAppear {
             locationProvider.requestIfNeeded()
@@ -127,6 +138,7 @@ struct RestaurantListView: View {
                 Button {
                     searchText = ""
                     searchModel.clear()
+                    addedResultIDs = []
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                 }
@@ -172,7 +184,7 @@ struct RestaurantListView: View {
                 Text("No matches found.").foregroundStyle(.secondary)
             } else {
                 ForEach(searchModel.results) { result in
-                    SearchResultRow(result: result) {
+                    SearchResultRow(result: result, isAdded: addedResultIDs.contains(result.id)) {
                         addFromSearch(result)
                     }
                 }
@@ -182,16 +194,22 @@ struct RestaurantListView: View {
         } footer: {
             Text(
                 GooglePlacesService.isConfigured
-                    ? "Powered by Google — includes rating, price, and cuisine. Tap the ⊕ on a result to add it."
-                    : "Powered by Apple's local search — free, no account needed. Tap the ⊕ on a result to add it."
+                    ? "Powered by Google — includes rating, price, and cuisine. Tap a result to see more, or the ⊕ to add it."
+                    : "Powered by Apple's local search — free, no account needed. Tap a result to see more, or the ⊕ to add it."
             )
         }
     }
 
+    /// Direct user request: adding a result used to clear the search
+    /// entirely, forcing a re-search to add a second one from the same
+    /// list. Now it just marks that one result added (`addedResultIDs`,
+    /// checked by `SearchResultRow`'s own `isAdded`) and leaves the rest of
+    /// the results in place. Re-adding an already-added result is a no-op —
+    /// there's no id to key an update against otherwise.
     private func addFromSearch(_ result: RestaurantSearchModel.Result) {
+        guard !addedResultIDs.contains(result.id) else { return }
         modelContext.insert(result.makeRestaurant())
-        searchText = ""
-        searchModel.clear()
+        addedResultIDs.insert(result.id)
     }
 }
 
@@ -213,30 +231,66 @@ extension RestaurantSearchModel.Result {
             longitude: coordinate?.longitude
         )
     }
+
+    /// The same "Italian · $$ · ★★★★☆" line `Restaurant.descriptorLine`
+    /// builds for a saved restaurant, computed here from a not-yet-saved
+    /// search result's own fields instead — used by `SearchResultRow` and
+    /// `RestaurantSearchResultDetailView` so a result previews with the
+    /// identical formatting it'll have once actually added.
+    var descriptorLine: String? {
+        var parts: [String] = []
+        if let cuisine, !cuisine.isEmpty { parts.append(cuisine) }
+        if let priceRange, !priceRange.isEmpty { parts.append(priceRange) }
+        if let rating, rating > 0 {
+            let rounded = Int(rating.rounded())
+            parts.append(String(repeating: "★", count: rounded) + String(repeating: "☆", count: max(0, 5 - rounded)))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }
 
+/// One search result row — tapping the name/thumbnail previews the full
+/// info (`RestaurantSearchResultDetailView`, same page a saved restaurant's
+/// own detail view shows); the trailing ⊕/checkmark is a separate tap
+/// target that adds without leaving the results list. Direct user request
+/// for both: search results used to be a dead-end row with just a name,
+/// address, and an add button.
 private struct SearchResultRow: View {
     let result: RestaurantSearchModel.Result
+    let isAdded: Bool
     let onAdd: () -> Void
 
     var body: some View {
         HStack {
-            RestaurantThumbnail(googlePhotoName: result.photoNames.first, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(result.name)
-                if let address = result.address {
-                    Text(address)
-                        .font(.brandCaption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            NavigationLink {
+                RestaurantSearchResultDetailView(result: result, isAdded: isAdded, onAdd: onAdd)
+            } label: {
+                HStack {
+                    RestaurantThumbnail(googlePhotoName: result.photoNames.first, size: 40)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(result.name)
+                        if let descriptorLine = result.descriptorLine {
+                            Text(descriptorLine)
+                                .font(.brandCaption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let address = result.address {
+                            Text(address)
+                                .font(.brandCaption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                 }
             }
             Spacer()
             Button(action: onAdd) {
-                Image(systemName: "plus.circle.fill")
+                Image(systemName: isAdded ? "checkmark.circle.fill" : "plus.circle.fill")
                     .font(.brandTitle2)
+                    .foregroundStyle(isAdded ? Color.brandForest : .primary)
             }
             .buttonStyle(.plain)
+            .disabled(isAdded)
         }
     }
 }
@@ -310,6 +364,9 @@ struct NaturalLanguageRestaurantSearchView: View {
     @State private var interpretedQuery: String?
     @State private var interpretedLocation: String?
     @State private var hasSearchedOnce = false
+    /// Standalone mode only (`onPick == nil`) — see `addFromSearch`'s own
+    /// doc comment for why this exists.
+    @State private var addedResultIDs: Set<String> = []
 
     private var canSearch: Bool {
         !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -381,7 +438,7 @@ struct NaturalLanguageRestaurantSearchView: View {
                 if !results.isEmpty {
                     Section("Results") {
                         ForEach(results) { result in
-                            SearchResultRow(result: result) {
+                            SearchResultRow(result: result, isAdded: addedResultIDs.contains(result.id)) {
                                 addFromSearch(result)
                             }
                         }
@@ -434,13 +491,25 @@ struct NaturalLanguageRestaurantSearchView: View {
         }
     }
 
+    /// `onPick` mode (picking a restaurant for one group meal slot) still
+    /// dismisses on pick — that flow really is "choose exactly one." The
+    /// standalone mode (`onPick == nil`, opened from the Restaurants tab's
+    /// own sparkles button) used to dismiss too, which meant adding a
+    /// second result from the same search meant closing this sheet, opening
+    /// it again, and re-typing the same query — direct user request to fix
+    /// that: it now just marks the result added (`addedResultIDs`) and
+    /// leaves the sheet open on the same results, so multiple results can
+    /// be added from one search. "Done" in the toolbar is how this mode
+    /// actually closes now.
     private func addFromSearch(_ result: RestaurantSearchModel.Result) {
         if let onPick {
             onPick(result)
-        } else {
-            modelContext.insert(result.makeRestaurant())
+            dismiss()
+            return
         }
-        dismiss()
+        guard !addedResultIDs.contains(result.id) else { return }
+        modelContext.insert(result.makeRestaurant())
+        addedResultIDs.insert(result.id)
     }
 }
 

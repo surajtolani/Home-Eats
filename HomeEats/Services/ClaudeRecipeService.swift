@@ -19,6 +19,15 @@ enum ClaudeRecipeServiceError: LocalizedError {
     case notConfigured
     case requestFailed
     case noRecipeFound
+    /// A non-2xx response that came with the backend's own `{ error }`
+    /// body — surfaced verbatim rather than folded into the generic
+    /// `.requestFailed` message. Direct user report that "Recommend a
+    /// Meal" seemed to just not work, with no way to tell *why* from the
+    /// old flat "couldn't reach the recipe assistant" message alone —
+    /// whether the deployment is missing `ANTHROPIC_API_KEY`, the Claude
+    /// call itself failed, or something else entirely all used to show the
+    /// exact same text. This shows the backend's real reason instead.
+    case serverMessage(String)
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +37,8 @@ enum ClaudeRecipeServiceError: LocalizedError {
             return "Couldn't reach the recipe assistant. Check your connection and try again."
         case .noRecipeFound:
             return "Couldn't find a recipe there. Try a clearer photo or a bit more detail in your notes."
+        case .serverMessage(let message):
+            return message
         }
     }
 }
@@ -105,6 +116,18 @@ enum ClaudeRecipeService {
         guard let http = response as? HTTPURLResponse else { throw ClaudeRecipeServiceError.requestFailed }
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 422 { throw ClaudeRecipeServiceError.noRecipeFound }
+            // Every non-2xx response from this backend's Claude-powered
+            // routes carries `{ error: "..." }` (see index.js's
+            // `anthropicClient`/route-level catch blocks) — surfacing that
+            // directly is far more actionable than a flat "couldn't reach"
+            // message, e.g. distinguishing a missing `ANTHROPIC_API_KEY`
+            // from an actual failed Claude call. Falls back to the generic
+            // message only if the body isn't in that shape at all (an
+            // upstream proxy error page, a truly unreachable server, etc).
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let serverMessage = object["error"] as? String, !serverMessage.isEmpty {
+                throw ClaudeRecipeServiceError.serverMessage(serverMessage)
+            }
             throw ClaudeRecipeServiceError.requestFailed
         }
         do {
