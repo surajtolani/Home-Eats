@@ -359,11 +359,14 @@ model Invite {
 enum RecipeVisibility {
   PRIVATE
   SHARED
-  // Deliberately no PUBLIC value yet — this phase is "private + shared with
-  // specific friends/groups only" (see backend/README.md); there's no
-  // public/community recipe library, and therefore nothing that would ever
-  // set a PUBLIC visibility. Adding one later is just adding a third value
-  // to this enum plus a route that can set it — not a rework of this model.
+  // Direct user request: "Library is a master recipe list for all users to
+  // see" — every signed-in user, not just accepted friends/group members
+  // (the only relationships SHARED ever covers). Set only by
+  // POST /recipe-library/:recipeId/publish, one-way like PRIVATE -> SHARED
+  // above (see that route's own doc comment) — there's no "unpublish" in
+  // v1, same reasoning as un-sharing never reverting SHARED back to
+  // PRIVATE.
+  PUBLIC
 }
 
 // A recipe someone owns. `instructions` is a native Postgres text array
@@ -395,6 +398,12 @@ model Recipe {
   sourceUrl    String?
   imageName    String?
   visibility   RecipeVisibility @default(PRIVATE)
+  // Only meaningful once `visibility` is PUBLIC — whether the publisher
+  // chose to be credited ("Added by <name>") or not ("Added anonymously")
+  // when they published it (direct user request: the publish confirmation
+  // asks which). `false` (named) is a harmless default for every other
+  // row, which never reads this field at all.
+  publishedAnonymously Boolean @default(false)
   // The iOS `Recipe.photoData`'s bytes, base64-encoded — stored as plain
   // text rather than a Postgres `bytea` column so `serializeRecipe(...)` in
   // routes/recipeLibrary.js can hand it straight to `res.json(...)` with no

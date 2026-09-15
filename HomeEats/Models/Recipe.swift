@@ -76,6 +76,14 @@ final class Recipe {
     /// `= 0` for SwiftData's lightweight migration to apply this field to
     /// existing rows), an optional needs no such default.
     var backendRecipeID: String?
+    /// Whether this recipe has been published to the master library (backend
+    /// `visibility: "PUBLIC"` — see `POST /recipe-library/:recipeId/publish`)
+    /// — a one-way flag, never cleared back to `false`, matching the
+    /// backend's own "PUBLIC never reverts" rule. Defaulted (not just in the
+    /// initializer) so adding this to existing `Recipe` rows stays a
+    /// lightweight SwiftData migration, same reasoning as `isFavorite`'s own
+    /// doc comment.
+    var isPublishedToLibrary: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -95,7 +103,8 @@ final class Recipe {
         isFavorite: Bool = false,
         createdAt: Date = .now,
         createdByMemberID: UUID? = nil,
-        backendRecipeID: String? = nil
+        backendRecipeID: String? = nil,
+        isPublishedToLibrary: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -115,6 +124,7 @@ final class Recipe {
         self.createdAt = createdAt
         self.createdByMemberID = createdByMemberID
         self.backendRecipeID = backendRecipeID
+        self.isPublishedToLibrary = isPublishedToLibrary
     }
 
     var totalMinutes: Int { prepMinutes + cookMinutes }

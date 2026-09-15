@@ -493,15 +493,18 @@ v1 (see the endpoint table above and the code comment on the unshare route)
 rather than silently re-deriving visibility from "is there still a share
 row" every time one is removed.
 
-**This is deliberately "private + shared with specific friends/groups only"
-— there is no public/community recipe library in this phase, and therefore
-no moderation/reporting system either** (nothing here is visible to anyone
-without an actual relationship to the owner: an accepted friend they
-explicitly shared with, or a fellow member of a group they explicitly
-shared with). The `RecipeVisibility` enum is written with a comment noting
-that a future `PUBLIC` value would be a natural addition — just a new enum
-value plus a route that can set it — not a schema rework, but nothing in
-this phase sets or reads one.
+**`PUBLIC`: a master recipe library, visible to every signed-in user.**
+Direct user request ("Library is a master recipe list for all users to
+see") — unlike `SHARED`, this needs no friend/group relationship at all.
+`POST /recipe-library/:recipeId/publish` (owner only, body `{ anonymous }`)
+moves a recipe to `PUBLIC`, one-way like `PRIVATE` → `SHARED` above (no
+"unpublish" in v1). `GET /recipe-library/master` returns every `PUBLIC`
+recipe, each with `addedBy` — the owner's public info, or `null` when
+`anonymous` was chosen at publish time (`Recipe.publishedAnonymously`) —
+the iOS client shows "Added by \<name\>" or "Added anonymously"
+accordingly. Still no moderation/reporting system in this v1 — anyone can
+publish anything they own, and there's no way to flag or remove someone
+else's published recipe.
 
 Sharing reuses Phase 1's anti-stranger rules exactly: sharing directly with
 a `userId` requires that person to already be an accepted friend of the

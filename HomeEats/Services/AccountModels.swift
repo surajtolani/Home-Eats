@@ -522,6 +522,60 @@ struct SharedRecipeEntry: Codable, Identifiable {
     }
 }
 
+/// One row of `GET /recipe-library/master` — the master recipe library
+/// ("Library is a master recipe list for all users to see," a direct user
+/// request), visible to any signed-in user regardless of friend/group
+/// relationship to whoever published it. Structurally identical to
+/// `SharedRecipeEntry` (same flattened-fields-plus-one-extra shape the
+/// backend sends), just with `addedBy` in place of `share` — see that
+/// type's own doc comment for why a distinct struct rather than reusing
+/// `RemoteRecipe` plus a nested wrapper.
+struct LibraryRecipeEntry: Codable, Identifiable {
+    let recipeID: String
+    let ownerID: String
+    let title: String
+    let summary: String?
+    let instructions: [String]
+    let servings: Int?
+    let prepMinutes: Int?
+    let cookMinutes: Int?
+    let visibility: String
+    let photoBase64: String?
+    let sourceURL: String?
+    let imageName: String?
+    let createdAt: Date
+    let updatedAt: Date
+    let ingredients: [RemoteIngredient]
+    /// The publisher's public info, or `nil` when they chose to publish
+    /// anonymously (`Recipe.publishedAnonymously` on the backend) — see
+    /// `addedByCaption` for how this renders.
+    let addedBy: PublicUser?
+
+    var id: String { recipeID }
+
+    /// "Added by Priya" or "Added anonymously" — used by
+    /// `RecipesHomeView`'s master-library row, same role as
+    /// `SharedRecipeEntry.sharedByCaption`.
+    var addedByCaption: String {
+        guard let addedBy else { return "Added anonymously" }
+        return "Added by \(addedBy.displayNameOrPhoneNumber)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case recipeID = "id"
+        case title, summary, instructions, servings, prepMinutes, cookMinutes, visibility, photoBase64, createdAt, updatedAt, ingredients, addedBy
+        case ownerID = "ownerId"
+        case sourceURL = "sourceUrl"
+        case imageName
+    }
+
+    /// `photoBase64` decoded to raw bytes — see `RemoteRecipe.photoData`'s
+    /// doc comment; same reasoning applies verbatim.
+    var photoData: Data? {
+        photoBase64.flatMap { Data(base64Encoded: $0) }
+    }
+}
+
 // MARK: - Personal restaurant library (routes/restaurants.js, mounted at
 // /restaurants/library) — the backend counterpart of the local `Restaurant`
 // SwiftData model, added so a restaurant survives a local-store reset. See

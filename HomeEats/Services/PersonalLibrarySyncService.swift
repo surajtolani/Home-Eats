@@ -245,3 +245,36 @@ extension SharedRecipeEntry {
         )
     }
 }
+
+extension LibraryRecipeEntry {
+    /// Builds a `Recipe` from this master-library entry, ready to insert as
+    /// the caller's own saved copy — same shape/reasoning as
+    /// `SharedRecipeEntry.makeLocalRecipe()` just above (`.shared` source,
+    /// not `.manual`: this is still someone else's original, not this
+    /// account's own work, even once saved — and `backendRecipeID:
+    /// recipeID` means "Add to Library"/"Share" (gated to `.manual`/
+    /// `.imported` sources — see `RecipesHomeView.recipeCard`'s own doc
+    /// comment) correctly never offer themselves on a saved library copy,
+    /// which isn't this account's recipe to publish or share further).
+    /// `isPublishedToLibrary: true` since this recipe, by definition, is
+    /// already in the library — showing that on a saved copy too avoids it
+    /// looking re-publishable if this app ever does surface the icon here.
+    func makeLocalRecipe() -> Recipe {
+        Recipe(
+            title: title,
+            source: .shared,
+            sourceURL: sourceURL,
+            summary: summary,
+            instructions: instructions,
+            ingredients: ingredients.map { RecipeIngredientEntry(name: $0.name, quantity: $0.quantity, unit: $0.unit) },
+            servings: servings ?? 4,
+            prepMinutes: prepMinutes ?? 0,
+            cookMinutes: cookMinutes ?? 0,
+            tags: ["Library"],
+            imageName: imageName,
+            photoData: photoData,
+            backendRecipeID: recipeID,
+            isPublishedToLibrary: true
+        )
+    }
+}

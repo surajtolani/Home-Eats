@@ -920,6 +920,27 @@ extension AccountsAPIClient {
     static func unshareRecipe(id recipeID: String, shareID: String) async throws {
         try await sendNoContent("DELETE", path: "recipe-library/\(recipeID)/share/\(shareID)")
     }
+
+    /// The master recipe library — every recipe any signed-in user has
+    /// published, regardless of friend/group relationship to them. Powers
+    /// `RecipesHomeView`'s "Library" section (alongside the bundled
+    /// `.library` recipes, which come from `SampleDataSeeder`, not this
+    /// call). See `LibraryRecipeEntry`'s own doc comment.
+    static func getMasterLibrary() async throws -> [LibraryRecipeEntry] {
+        struct Response: Decodable { let recipes: [LibraryRecipeEntry] }
+        let response: Response = try await send("GET", path: "recipe-library/master")
+        return response.recipes
+    }
+
+    /// Publishes this recipe to the master library — owner only, one-way
+    /// (see `POST /recipe-library/:recipeId/publish`'s own doc comment in
+    /// routes/recipeLibrary.js for why there's no "unpublish"). `anonymous`
+    /// is the publisher's choice, asked for at publish time by
+    /// `RecipesHomeView`'s confirmation dialog — `true` hides `addedBy` from
+    /// every future `getMasterLibrary()` caller.
+    static func publishRecipeToLibrary(id recipeID: String, anonymous: Bool) async throws {
+        try await sendNoContent("POST", path: "recipe-library/\(recipeID)/publish", body: ["anonymous": anonymous])
+    }
 }
 
 // MARK: - Personal restaurant library (routes/restaurants.js, mounted at

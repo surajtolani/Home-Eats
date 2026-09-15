@@ -314,6 +314,31 @@ router.get("/shared-with-me", asyncHandler(async (req, res) => {
   });
 }));
 
+// GET /recipe-library/master — every PUBLIC (library-published) recipe,
+// newest first, visible to ANY signed-in user regardless of friend/group
+// relationship to the publisher — direct user request: "Library is a
+// master recipe list for all users to see." Registered before the generic
+// GET /:recipeId below so Express doesn't swallow "master" as a
+// `:recipeId` value.
+//
+// `addedBy` is `null` when the publisher chose to stay anonymous
+// (`publishedAnonymously` — see that column's own doc comment in
+// prisma/schema.prisma and POST /:recipeId/publish below); the iOS client
+// shows "Added anonymously" in that case rather than guessing at a name.
+router.get("/master", asyncHandler(async (req, res) => {
+  const recipes = await prisma.recipe.findMany({
+    where: { visibility: "PUBLIC" },
+    include: { ...RECIPE_INGREDIENTS_INCLUDE, owner: true },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({
+    recipes: recipes.map((recipe) => ({
+      ...serializeRecipe(recipe),
+      addedBy: recipe.publishedAnonymously ? null : publicUser(recipe.owner),
+    })),
+  });
+}));
+
 // Loads a recipe and figures out whether the caller may see it: the owner,
 // a direct share target, or a member of a group it's shared with. Returns
 // `{ recipe: null }` for a nonexistent recipe (caller should 404) or
@@ -327,6 +352,10 @@ async function loadRecipeForViewer(recipeId, userId) {
   });
   if (!recipe) return { recipe: null, allowed: false };
   if (recipe.ownerId === userId) return { recipe, allowed: true };
+  // A PUBLIC (library-published) recipe is visible to every signed-in
+  // user, not just an owner/share relationship — see the RecipeVisibility
+  // doc comment in prisma/schema.prisma.
+  if (recipe.visibility === "PUBLIC") return { recipe, allowed: true };
 
   const directShare = await prisma.recipeShare.findFirst({
     where: { recipeId, sharedWithUserId: userId },
@@ -547,6 +576,40 @@ router.delete("/:recipeId/share/:shareId", asyncHandler(async (req, res) => {
 
   await prisma.recipeShare.delete({ where: { id: share.id } });
   res.status(204).end();
+}));
+
+const PublishSchema = z.object({ anonymous: z.boolean() }).strict();
+
+// POST /recipe-library/:recipeId/publish
+// Body: { anonymous } — owner only. Publishes this recipe to the master
+// library (visibility -> PUBLIC, one-way, same "never reverts" precedent
+// as PRIVATE -> SHARED — see DELETE /:recipeId/share/:shareId's own doc
+// comment) — direct user request, with the publisher choosing right at
+// publish time whether to be credited ("Added by <name>") or stay
+// anonymous. Callable again on an already-PUBLIC recipe purely to flip
+// that choice (there's only ever one "published" state per recipe to
+// track, unlike the many-rows-per-recipe RecipeShare model, so there's no
+// meaningful "already published" 409 the way POST /:recipeId/share has for
+// a duplicate share target).
+router.post("/:recipeId/publish", asyncHandler(async (req, res) => {
+  const recipe = await prisma.recipe.findUnique({ where: { id: req.params.recipeId } });
+  if (!recipe) {
+    return res.status(404).json({ error: "Recipe not found." });
+  }
+  if (recipe.ownerId !== req.userId) {
+    return res.status(403).json({ error: "Only the recipe's owner can add it to the library." });
+  }
+
+  const parsed = PublishSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+  }
+
+  const updated = await prisma.recipe.update({
+    where: { id: recipe.id },
+    data: { visibility: "PUBLIC", publishedAnonymously: parsed.data.anonymous },
+  });
+  res.json({ recipe: serializeRecipe(updated) });
 }));
 
 module.exports = router;

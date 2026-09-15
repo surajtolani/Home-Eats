@@ -34,6 +34,33 @@ struct RecipesHomeView: View {
     @State private var savedShareIDs: Set<String> = []
     @State private var showSignIn = false
 
+    // MARK: Master library (routes/recipeLibrary.js's GET/POST /recipe-library/master,/publish)
+    //
+    // Same "no local mirror, backend is the source of truth" reasoning as
+    // `sharedRecipes` above — see that property's own doc comment.
+    @State private var masterLibraryRecipes: [LibraryRecipeEntry] = []
+    @State private var isLoadingMasterLibrary = false
+    @State private var masterLibraryLoadError: String?
+    @State private var savedLibraryEntryIDs: Set<String> = []
+    /// Drives the Share sheet from a card's own icon (`recipeCard`'s doc
+    /// comment) — `item:`-based rather than a bare `Bool` since which
+    /// recipe to share is per-tap, not fixed like `RecipeDetailView`'s own
+    /// single `@Bindable var recipe`.
+    @State private var shareTargetRecipe: Recipe?
+    /// Drives the "Add to Library" confirmation dialog the same way.
+    @State private var publishTargetRecipe: Recipe?
+    @State private var publishErrorMessage: String?
+    /// Set right before presenting sign-in from a card's Share/Add-to-Library
+    /// icon while signed out, so the sign-in sheet's `onDismiss:` knows which
+    /// action to resume once it succeeds — same pattern as
+    /// `RecipeDetailView.pendingShareAfterSignIn`, generalized to cover two
+    /// possible actions instead of one.
+    @State private var pendingCardAction: PendingCardAction?
+    private enum PendingCardAction {
+        case share(Recipe)
+        case publish(Recipe)
+    }
+
     enum Section: String, CaseIterable, Identifiable {
         case mine = "My Recipes"
         case favorites = "Favorites"
@@ -158,6 +185,11 @@ struct RecipesHomeView: View {
                         ForEach(displayedRecipes) { recipe in
                             recipeCard(recipe)
                         }
+                        // The bundled built-in recipes above, then the
+                        // master library (community-published, "added by")
+                        // below — see `masterLibrarySectionContent`'s own
+                        // doc comment.
+                        masterLibrarySectionContent
                     } else {
                         // Swipe-to-delete only makes sense for "mine"/"favorites"
                         // — a Library recipe the user hasn't saved isn't theirs
@@ -220,12 +252,48 @@ struct RecipesHomeView: View {
         .sheet(item: $quickAddRecipe) { recipe in
             QuickAddToPlanSheet(recipe: recipe)
         }
-        .sheet(isPresented: $showSignIn) {
+        .sheet(item: $shareTargetRecipe) { recipe in
+            RecipeSharePickerSheet(recipe: recipe)
+        }
+        .confirmationDialog(
+            "Add to Library",
+            isPresented: Binding(get: { publishTargetRecipe != nil }, set: { if !$0 { publishTargetRecipe = nil } }),
+            titleVisibility: .visible,
+            presenting: publishTargetRecipe
+        ) { recipe in
+            Button("Add with My Name") { publish(recipe, anonymous: false) }
+            Button("Add Anonymously") { publish(recipe, anonymous: true) }
+            Button("Cancel", role: .cancel) {}
+        } message: { recipe in
+            Text("Everyone on Home Eats will be able to see \"\(recipe.title)\" in the Library.")
+        }
+        .alert(
+            "Couldn't add to Library",
+            isPresented: Binding(get: { publishErrorMessage != nil }, set: { if !$0 { publishErrorMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(publishErrorMessage ?? "")
+        }
+        .sheet(isPresented: $showSignIn, onDismiss: {
+            // Only continue into the pending Share/Add-to-Library action if
+            // sign-in actually succeeded — same reasoning as
+            // `RecipeDetailView.shareTapped()`'s identical `onDismiss:`.
+            if accountSession.isSignedIn, let pendingCardAction {
+                switch pendingCardAction {
+                case .share(let recipe): shareTargetRecipe = recipe
+                case .publish(let recipe): publishTargetRecipe = recipe
+                }
+            }
+            pendingCardAction = nil
+        }) {
             AccountSignInView()
         }
         .onChange(of: section) { _, newValue in
             if newValue == .shared {
                 Task { await loadSharedRecipes() }
+            } else if newValue == .library {
+                Task { await loadMasterLibrary() }
             }
         }
         // The signed-in identity can change out from under this view at any
@@ -242,8 +310,15 @@ struct RecipesHomeView: View {
             sharedRecipes = []
             savedShareIDs = []
             sharedLoadError = nil
-            if section == .shared && accountSession.isSignedIn {
-                Task { await loadSharedRecipes() }
+            masterLibraryRecipes = []
+            savedLibraryEntryIDs = []
+            masterLibraryLoadError = nil
+            if accountSession.isSignedIn {
+                if section == .shared {
+                    Task { await loadSharedRecipes() }
+                } else if section == .library {
+                    Task { await loadMasterLibrary() }
+                }
             }
         }
         .onChange(of: accountSession.isSignedIn) { _, isSignedIn in
@@ -253,10 +328,17 @@ struct RecipesHomeView: View {
                 // whenever `!accountSession.isSignedIn`, so clearing here is
                 // enough to avoid a stale list ever being visible — no
                 // separate signed-out state needed beyond that existing check.
+                // The master library has no equivalent signed-out state
+                // (bundled library recipes above it render regardless), so
+                // it's just cleared to empty, not re-rendered as anything.
                 sharedRecipes = []
                 savedShareIDs = []
                 sharedLoadError = nil
                 isLoadingShared = false
+                masterLibraryRecipes = []
+                savedLibraryEntryIDs = []
+                masterLibraryLoadError = nil
+                isLoadingMasterLibrary = false
             }
         }
         // Opportunistic personal-library sync on top of `RootView`'s own
@@ -359,6 +441,127 @@ struct RecipesHomeView: View {
         savedShareIDs.insert(entry.id)
     }
 
+    // MARK: Master library section
+
+    /// The community-published recipes appended below the bundled `.library`
+    /// grid in the "Library" segment — same "no local mirror, live fetch"
+    /// reasoning as `sharedSectionContent`, just requiring sign-in silently
+    /// rather than showing its own "Sign In" prompt (the bundled recipes
+    /// above render fine either way, so this section just contributes
+    /// nothing extra while signed out instead of interrupting the segment
+    /// with a second sign-in call to action).
+    @ViewBuilder
+    private var masterLibrarySectionContent: some View {
+        if accountSession.isSignedIn {
+            if isLoadingMasterLibrary {
+                ProgressView()
+            } else if let masterLibraryLoadError {
+                Text(masterLibraryLoadError).font(.brandCaption).foregroundStyle(.secondary)
+                Button("Retry") { Task { await loadMasterLibrary() } }
+                    .font(.brandCaption)
+            } else {
+                ForEach(masterLibraryRecipes) { entry in
+                    masterLibraryRow(entry)
+                }
+            }
+        }
+    }
+
+    private func masterLibraryRow(_ entry: LibraryRecipeEntry) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            SharedRecipeEntryThumbnail(photoData: entry.photoData)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.title).font(.brandHeadline)
+                Text(entry.addedByCaption)
+                    .font(.brandCaption)
+                    .foregroundStyle(.secondary)
+                if savedLibraryEntryIDs.contains(entry.id) {
+                    Label("Saved to My Recipes", systemImage: "checkmark.circle.fill")
+                        .font(.brandCaption)
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Save to My Recipes") { saveLibraryEntry(entry) }
+                        .font(.brandCaption)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func loadMasterLibrary() async {
+        isLoadingMasterLibrary = true
+        masterLibraryLoadError = nil
+        defer { isLoadingMasterLibrary = false }
+        do {
+            masterLibraryRecipes = try await AccountsAPIClient.getMasterLibrary()
+        } catch {
+            masterLibraryLoadError = error.localizedDescription
+        }
+    }
+
+    /// Same "materialize a wire entry into a local, saved `Recipe`" role as
+    /// `saveSharedRecipe` above — see `LibraryRecipeEntry.makeLocalRecipe()`'s
+    /// own doc comment (`PersonalLibrarySyncService.swift`).
+    private func saveLibraryEntry(_ entry: LibraryRecipeEntry) {
+        modelContext.insert(entry.makeLocalRecipe())
+        savedLibraryEntryIDs.insert(entry.id)
+    }
+
+    // MARK: Card actions (Share, Add to Library)
+    //
+    // Both gate on sign-in the same way `RecipeDetailView.shareTapped()`
+    // already does for its own Share button — see `pendingCardAction`'s own
+    // doc comment for how the sign-in sheet resumes whichever action was
+    // tapped once it succeeds.
+
+    private func shareTapped(_ recipe: Recipe) {
+        if accountSession.isSignedIn {
+            shareTargetRecipe = recipe
+        } else {
+            pendingCardAction = .share(recipe)
+            showSignIn = true
+        }
+    }
+
+    private func publishTapped(_ recipe: Recipe) {
+        guard !recipe.isPublishedToLibrary else { return }
+        if accountSession.isSignedIn {
+            publishTargetRecipe = recipe
+        } else {
+            pendingCardAction = .publish(recipe)
+            showSignIn = true
+        }
+    }
+
+    /// Publishes `recipe` to the master library — direct user request that
+    /// the confirmation dialog ask, right at publish time, whether to be
+    /// credited or stay anonymous (see `AccountsAPIClient
+    /// .publishRecipeToLibrary(id:anonymous:)`'s own doc comment). Creates
+    /// this recipe's backend counterpart first if it's never been synced at
+    /// all (`recipe.backendRecipeID == nil`) — same lazy-create-then-reuse
+    /// pattern as `RecipeSharePickerSheet.ensureBackendRecipeID()`, just not
+    /// factored into a shared helper since that one lives in a different
+    /// file scoped to its own sheet.
+    private func publish(_ recipe: Recipe, anonymous: Bool) {
+        publishTargetRecipe = nil
+        Task {
+            do {
+                let backendID: String
+                if let existing = recipe.backendRecipeID {
+                    backendID = existing
+                } else {
+                    let created = try await AccountsAPIClient.createRecipe(RecipeLibraryPayload(recipe: recipe))
+                    recipe.backendRecipeID = created.id
+                    backendID = created.id
+                }
+                try await AccountsAPIClient.publishRecipeToLibrary(id: backendID, anonymous: anonymous)
+                recipe.isPublishedToLibrary = true
+            } catch {
+                publishErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private var emptyStateTitle: String {
         switch section {
         case .mine: return "No Recipes Yet"
@@ -377,20 +580,27 @@ struct RecipesHomeView: View {
         }
     }
 
-    /// A photo card (image on top, title + details below) with two floating
+    /// A photo card (image on top, title + details below) with floating
     /// buttons over the image: a heart to favorite, a "+" to jump straight
-    /// to `QuickAddToPlanSheet`. Tapping the rest of the card opens the
+    /// to `QuickAddToPlanSheet`, and — direct user request, only for a
+    /// recipe this account actually created (`source == .manual || .imported`;
+    /// a bundled `.library` recipe or one saved from someone else's share
+    /// isn't this account's to share or publish further, and publishing one
+    /// would just 403 against the backend's own owner check — see
+    /// `LibraryRecipeEntry.makeLocalRecipe()`'s doc comment) — a share icon
+    /// and an "Add to Library" icon. Tapping the rest of the card opens the
     /// recipe — via a `NavigationLink` hidden in the background rather than
     /// wrapping the visible content directly, which is also what keeps
     /// List from drawing its usual chevron disclosure indicator on the row
     /// (that indicator is tied to the row's top-level content literally
-    /// being a `NavigationLink`, not to whether tapping it navigates).
-    /// The two buttons are separate `.overlay`s on the *outside* of this
-    /// whole stack, not nested inside the link's label — a `Button` nested
-    /// inside a `NavigationLink`'s label fires both the button's action and
-    /// the navigation on the same tap.
+    /// being a `NavigationLink`, not to whether tapping it navigates). Every
+    /// button is a separate `.overlay` on the *outside* of this whole
+    /// stack, not nested inside the link's label — a `Button` nested inside
+    /// a `NavigationLink`'s label fires both the button's action and the
+    /// navigation on the same tap.
     @ViewBuilder
     private func recipeCard(_ recipe: Recipe) -> some View {
+        let canShareOrPublish = recipe.source == .manual || recipe.source == .imported
         RecipeCardContent(recipe: recipe)
             .background {
                 // `.background` proposes the primary view's size to this
@@ -405,17 +615,35 @@ struct RecipesHomeView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .overlay(alignment: .topLeading) {
-                CircularIconButton(systemImage: "plus", tint: .white) {
-                    quickAddRecipe = recipe
+                VStack(spacing: 6) {
+                    CircularIconButton(systemImage: "plus", tint: .white) {
+                        quickAddRecipe = recipe
+                    }
+                    if canShareOrPublish {
+                        CircularIconButton(systemImage: "square.and.arrow.up", tint: .white) {
+                            shareTapped(recipe)
+                        }
+                    }
                 }
                 .padding(8)
             }
             .overlay(alignment: .topTrailing) {
-                CircularIconButton(
-                    systemImage: recipe.isFavorite ? "heart.fill" : "heart",
-                    tint: recipe.isFavorite ? .brandTerracotta : .white
-                ) {
-                    recipe.isFavorite.toggle()
+                VStack(spacing: 6) {
+                    CircularIconButton(
+                        systemImage: recipe.isFavorite ? "heart.fill" : "heart",
+                        tint: recipe.isFavorite ? .brandTerracotta : .white
+                    ) {
+                        recipe.isFavorite.toggle()
+                    }
+                    if canShareOrPublish {
+                        CircularIconButton(
+                            systemImage: recipe.isPublishedToLibrary ? "books.vertical.fill" : "books.vertical",
+                            tint: recipe.isPublishedToLibrary ? .brandSage : .white
+                        ) {
+                            publishTapped(recipe)
+                        }
+                        .accessibilityLabel(recipe.isPublishedToLibrary ? "Already in the Library" : "Add to Library")
+                    }
                 }
                 .padding(8)
             }
