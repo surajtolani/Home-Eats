@@ -1,0 +1,55 @@
+# Builds and runs the unit tests on a real macOS runner with a real Swift
+# compiler — the thing no Claude Code session working on this repo can do
+# itself, since Claude runs in a Linux sandbox with no Swift toolchain
+# available (Xcode/swiftc only exist on macOS). Without this, a change that
+# looks correct on a careful manual read of the diff can still fail to
+# compile, and nobody finds out until the next person opens Xcode locally.
+# This workflow is that missing compiler check, running automatically on
+# every push instead of only whenever someone happens to build by hand.
+#
+# CODE_SIGNING_ALLOWED=NO is the standard trick for a CI build against a
+# project that has a real DEVELOPMENT_TEAM set (see project.yml) — a
+# Simulator build/test run never needs an actual signing identity, and this
+# skips code-signing entirely rather than requiring this repo's real Apple
+# Developer credentials to exist as CI secrets.
+name: iOS Build
+
+on:
+  push:
+    branches:
+      - "claude/**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Picks whichever Xcode version is newest on this runner image,
+      # rather than hardcoding one exact version/path that a future runner
+      # image update could remove.
+      - name: Select latest available Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n1)"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The .xcodeproj itself is gitignored (see .gitignore) — this is the
+      # same step anyone pulling the repo locally has to run before opening
+      # it in Xcode; see project.yml for the actual project definition.
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build and run unit tests (iOS Simulator, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project HomeEats.xcodeproj \
+            -scheme HomeEats \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            CODE_SIGNING_ALLOWED=NO
