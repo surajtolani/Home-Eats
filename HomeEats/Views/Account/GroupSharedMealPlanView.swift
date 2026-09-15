@@ -1551,6 +1551,27 @@ private struct GroupAddMealSheet: View {
     @State private var selectedKind: MealKindChoice = .cook
     @State private var selectedAction: MealActionChoice
 
+    // Owned HERE, not inside `GroupRecipePickerContent`/`GroupRestaurantPickerContent`
+    // themselves — those two used to each carry this state as their own
+    // `@State`/`@StateObject`, which meant flipping the middle wheel
+    // between Cook/Dine Out/Order In tore down and rebuilt whichever
+    // content view's `switch` branch was no longer selected (a `switch`
+    // case is a distinct branch position in the composed view tree — moving
+    // away from one discards its subtree's state even between the two
+    // branches that both build the very same `GroupRestaurantPickerContent`
+    // type). In practice: a typed search, its results, and the recipe
+    // list's own network fetch all silently reset on every wheel nudge,
+    // including an unintended one while scrolling an adjacent wheel.
+    // Hoisting this up here and passing it down as read/write parameters
+    // instead keeps it alive across every flip, for the life of the sheet.
+    @State private var recipes: [(id: String, title: String)] = []
+    @State private var isLoadingRecipes = false
+    @State private var recipesErrorMessage: String?
+    @State private var recipeSearchText = ""
+    @State private var restaurantSearchText = ""
+    @StateObject private var restaurantSearchModel = GroupRestaurantSearchModel()
+    @StateObject private var locationProvider = UserLocationProvider()
+
     init(groupID: String, date: Date, initialSlot: MealSlot, isManager: Bool, currentUserID: String?) {
         self.groupID = groupID
         self.date = date
@@ -1628,11 +1649,22 @@ private struct GroupAddMealSheet: View {
 
                 switch selectedKind {
                 case .cook:
-                    GroupRecipePickerContent(onPick: { id, title in submitRecipe(id: id, title: title) })
+                    GroupRecipePickerContent(
+                        recipes: recipes, isLoading: isLoadingRecipes, errorMessage: recipesErrorMessage,
+                        searchText: $recipeSearchText,
+                        onRetry: { Task { await loadRecipes() } },
+                        onPick: { id, title in submitRecipe(id: id, title: title) }
+                    )
                 case .dineOut:
-                    GroupRestaurantPickerContent { name in submitRestaurant(name: name, isOrderIn: false) }
+                    GroupRestaurantPickerContent(
+                        searchText: $restaurantSearchText, searchModel: restaurantSearchModel, locationProvider: locationProvider,
+                        onSubmit: { name in submitRestaurant(name: name, isOrderIn: false) }
+                    )
                 case .orderIn:
-                    GroupRestaurantPickerContent { name in submitRestaurant(name: name, isOrderIn: true) }
+                    GroupRestaurantPickerContent(
+                        searchText: $restaurantSearchText, searchModel: restaurantSearchModel, locationProvider: locationProvider,
+                        onSubmit: { name in submitRestaurant(name: name, isOrderIn: true) }
+                    )
                 }
             }
             .navigationTitle("Add a Meal")
@@ -1642,34 +1674,63 @@ private struct GroupAddMealSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            // A PARTICIPANT's single-row "Suggest" wheel could otherwise be
-            // left pointing at a since-filtered-out `.add` if this sheet is
-            // ever reused for a still-MANAGER-when-opened, no-longer-MANAGER-
-            // now session (e.g. demoted by another member while this sheet
-            // sat open) — not a real scenario in practice today, but a cheap
-            // guard against `selectedAction` silently pointing at an option
-            // no longer offered.
+            .task { await loadRecipes() }
+            // Symmetric on purpose, not just the demotion half — `isManager`
+            // isn't frozen at presentation time (`GroupMealSheetContent`'s
+            // `.sheet(item:)` closure re-evaluates this sheet's `isManager`
+            // parameter whenever the presenting screen's body recomputes
+            // while this sheet stays open), and `loadGroup()` on the
+            // presenting screen resolves asynchronously — a MANAGER who taps
+            // "Add a Meal" in the brief window before that finishes gets
+            // `isManager: false` at `init`, defaulting `selectedAction` to
+            // `.suggest`; without the promotion half here too, it would stay
+            // stuck there even once `isManager` catches up to `true`, silently
+            // defaulting a manager's own sheet to "Suggest" instead of "Add".
             .onChange(of: isManager) { _, stillManager in
-                if !stillManager { selectedAction = .suggest }
+                selectedAction = stillManager ? .add : .suggest
             }
         }
     }
 
+    private func loadRecipes() async {
+        isLoadingRecipes = true
+        recipesErrorMessage = nil
+        defer { isLoadingRecipes = false }
+        do {
+            async let mine = AccountsAPIClient.getMyRecipes()
+            async let shared = AccountsAPIClient.getSharedRecipes()
+            let (mineResult, sharedResult) = try await (mine, shared)
+            var byID: [String: String] = [:]
+            for recipe in mineResult { byID[recipe.id] = recipe.title }
+            for entry in sharedResult { byID[entry.recipeID] = entry.title }
+            recipes = byID.map { (id: $0.key, title: $0.value) }.sorted { $0.title < $1.title }
+        } catch {
+            recipesErrorMessage = error.localizedDescription
+        }
+    }
+
     private func submitRecipe(id: String, title: String) {
-        insert(recipeID: id, recipeTitle: title)
+        // Only dismiss on an actual insert — `insert(...)` silently no-ops
+        // if `currentUserID` is somehow `nil` (structurally possible, if
+        // never expected in practice under this app's mandatory-sign-in
+        // gate), and closing the sheet anyway would make that failure look
+        // like a success with nothing on screen to explain why nothing was
+        // planned/suggested.
+        guard insert(recipeID: id, recipeTitle: title) else { return }
         dismiss()
     }
 
     private func submitRestaurant(name: String, isOrderIn: Bool) {
-        insert(restaurantName: name, isOrderIn: isOrderIn)
+        guard insert(restaurantName: name, isOrderIn: isOrderIn) else { return }
         dismiss()
     }
 
+    @discardableResult
     private func insert(
         recipeID: String? = nil, recipeTitle: String? = nil,
         restaurantName: String? = nil, isOrderIn: Bool = false
-    ) {
-        guard let currentUserID else { return }
+    ) -> Bool {
+        guard let currentUserID else { return false }
         switch selectedAction {
         case .add:
             let meal = GroupPlannedMeal(
@@ -1687,6 +1748,7 @@ private struct GroupAddMealSheet: View {
             modelContext.insert(suggestion)
         }
         try? modelContext.save()
+        return true
     }
 }
 
@@ -1749,6 +1811,18 @@ private struct GroupAddMealSheet: View {
 /// one that knows which of "add" or "suggest" this selection means and
 /// performs the actual insert, then dismisses the whole sheet itself.
 private struct GroupRestaurantPickerContent: View {
+    // `searchText`/`searchModel`/`locationProvider` are all owned by
+    // `GroupAddMealSheet`, not this view — see that type's own doc comment
+    // on its matching `@State`/`@StateObject` properties for why: this
+    // content view is torn down and rebuilt every time the middle wheel
+    // flips between Dine Out and Order In (both build this exact same type,
+    // but from different `switch` case branches, which don't share state),
+    // so anything genuinely owned here would reset — an in-progress search
+    // and its results included — on every flip. Passed down instead, they
+    // survive the flip untouched.
+    @Binding var searchText: String
+    @ObservedObject var searchModel: GroupRestaurantSearchModel
+    @ObservedObject var locationProvider: UserLocationProvider
     let onSubmit: (String) -> Void
 
     /// This device's own saved, personal restaurants — see this type's own
@@ -1758,9 +1832,6 @@ private struct GroupRestaurantPickerContent: View {
     /// whether a search is active, and this view matches that precedent
     /// exactly rather than inventing a different rule.
     @Query(sort: \Restaurant.name) private var savedRestaurants: [Restaurant]
-    @State private var searchText = ""
-    @StateObject private var searchModel = GroupRestaurantSearchModel()
-    @StateObject private var locationProvider = UserLocationProvider()
 
     private var isSearchActive: Bool {
         !searchText.trimmingCharacters(in: .whitespaces).isEmpty
@@ -1990,13 +2061,23 @@ private final class GroupRestaurantSearchModel: ObservableObject {
 /// `.searchable`, `onPick` alone with no internal `dismiss()`" reasoning as
 /// `GroupRestaurantPickerContent`'s own doc comment (this used to be a
 /// standalone sheet, `GroupRecipePickerSheet`, the same way that one was).
+///
+/// `recipes`/`isLoading`/`errorMessage` are passed in rather than owned
+/// here (this view used to load and hold them itself) — same reasoning as
+/// `GroupRestaurantPickerContent`'s own `searchText`/`searchModel`/
+/// `locationProvider`: `GroupAddMealSheet` swaps this view in and out of a
+/// `switch` on its middle wheel, which tears down and rebuilds whatever
+/// state a view here would otherwise own on every flip away from and back
+/// to "Cook" — including re-firing the network fetch this data comes from.
+/// `searchText` stays local `@State` here, unlike those three, since
+/// nothing else needs to read or reset it from outside.
 private struct GroupRecipePickerContent: View {
+    let recipes: [(id: String, title: String)]
+    let isLoading: Bool
+    let errorMessage: String?
+    @Binding var searchText: String
+    let onRetry: () -> Void
     let onPick: (String, String) -> Void
-
-    @State private var recipes: [(id: String, title: String)] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var searchText = ""
 
     private var filteredRecipes: [(id: String, title: String)] {
         guard !searchText.isEmpty else { return recipes }
@@ -2018,7 +2099,7 @@ private struct GroupRecipePickerContent: View {
                     HStack { Spacer(); ProgressView(); Spacer() }
                 } else if let errorMessage {
                     Text(errorMessage).foregroundStyle(.red)
-                    Button("Retry") { Task { await load() } }
+                    Button("Retry", action: onRetry)
                 } else if recipes.isEmpty {
                     ContentUnavailableView(
                         "No Recipes Yet",
@@ -2038,24 +2119,6 @@ private struct GroupRecipePickerContent: View {
                 }
             }
             .listStyle(.plain)
-        }
-        .task { await load() }
-    }
-
-    private func load() async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-        do {
-            async let mine = AccountsAPIClient.getMyRecipes()
-            async let shared = AccountsAPIClient.getSharedRecipes()
-            let (mineResult, sharedResult) = try await (mine, shared)
-            var byID: [String: String] = [:]
-            for recipe in mineResult { byID[recipe.id] = recipe.title }
-            for entry in sharedResult { byID[entry.recipeID] = entry.title }
-            recipes = byID.map { (id: $0.key, title: $0.value) }.sorted { $0.title < $1.title }
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 }
