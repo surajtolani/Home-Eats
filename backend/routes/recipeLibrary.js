@@ -15,6 +15,7 @@ const express = require("express");
 const { z } = require("zod");
 const { prisma } = require("../lib/prisma");
 const { asyncHandler } = require("../lib/asyncHandler");
+const { sendPush } = require("../lib/apns");
 
 const router = express.Router();
 
@@ -547,6 +548,47 @@ router.post("/:recipeId/share", asyncHandler(async (req, res) => {
   ]);
 
   res.status(201).json({ share });
+
+  // Push to whoever this just got shared with — same "after the response,
+  // fire-and-forget" shape as routes/friends.js's/routes/groups.js's own
+  // pushes (see routes/friends.js's POST /request doc comment for the full
+  // reasoning). Direct user report that sharing a recipe never notified the
+  // recipient(s) at all. A group share pushes to every member except the
+  // sharer themselves — same "everyone but me" scope `GroupSharedGroceryListView`'s
+  // suggestion queue and every other group-wide notice in this app already
+  // uses.
+  const me = await prisma.user.findUnique({ where: { id: req.userId } });
+  const sharerName = me?.displayName || me?.phoneNumber || "Someone";
+  if (userId) {
+    const deviceTokens = (await prisma.deviceToken.findMany({
+      where: { userId },
+      select: { token: true },
+    })).map((row) => row.token);
+    await sendPush({
+      deviceTokens,
+      title: "Recipe Shared With You",
+      body: `${sharerName} shared "${recipe.title}" with you on Home Eats.`,
+      payload: { type: "recipeShare", recipeId: recipe.id },
+    });
+  } else {
+    const [members, group] = await Promise.all([
+      prisma.groupMembership.findMany({
+        where: { groupId, userId: { not: req.userId } },
+        select: { userId: true },
+      }),
+      prisma.group.findUnique({ where: { id: groupId }, select: { name: true } }),
+    ]);
+    const deviceTokens = (await prisma.deviceToken.findMany({
+      where: { userId: { in: members.map((m) => m.userId) } },
+      select: { token: true },
+    })).map((row) => row.token);
+    await sendPush({
+      deviceTokens,
+      title: "Recipe Shared With Your Group",
+      body: `${sharerName} shared "${recipe.title}" with "${group?.name || "your group"}" on Home Eats.`,
+      payload: { type: "recipeShare", recipeId: recipe.id, groupId },
+    });
+  }
 }));
 
 // DELETE /recipe-library/:recipeId/share/:shareId — un-share, owner only.

@@ -299,6 +299,25 @@ router.post("/:friendshipId/accept", asyncHandler(async (req, res) => {
     return updatedFriendship;
   });
   res.json({ friendship: updated });
+
+  // Push to the original requester — same "after the response, fire-and-
+  // forget" reasoning as POST /request's own push above (see that route's
+  // doc comment). Direct user report that accepting a friend request never
+  // notified the person who sent it. Doesn't separately notify about any
+  // group membership `resolveInvitesForAcceptedFriendship` just granted as
+  // a side effect of this same acceptance — one push per user action, same
+  // as every other route in this file.
+  const me = await prisma.user.findUnique({ where: { id: req.userId } });
+  const deviceTokens = (await prisma.deviceToken.findMany({
+    where: { userId: updated.requesterId },
+    select: { token: true },
+  })).map((row) => row.token);
+  await sendPush({
+    deviceTokens,
+    title: "Friend Request Accepted",
+    body: `${me?.displayName || me?.phoneNumber || "Someone"} accepted your friend request.`,
+    payload: { type: "friendRequestAccepted" },
+  });
 }));
 
 // POST /friends/:friendshipId/decline — only the recipient may decline.

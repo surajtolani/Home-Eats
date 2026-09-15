@@ -25,6 +25,7 @@
 const express = require("express");
 const { prisma } = require("../lib/prisma");
 const { asyncHandler } = require("../lib/asyncHandler");
+const { sendPush } = require("../lib/apns");
 
 const router = express.Router();
 
@@ -182,6 +183,22 @@ router.post("/:inviteId/accept", asyncHandler(async (req, res) => {
   });
 
   res.json({ invite: updated });
+
+  // Push to the inviter — same "after the response, fire-and-forget" shape
+  // as routes/friends.js's own pushes (see that file's POST /request doc
+  // comment for the full reasoning). Direct user report that accepting a
+  // group invite never notified whoever sent it.
+  const [me, group, deviceTokens] = await Promise.all([
+    prisma.user.findUnique({ where: { id: req.userId } }),
+    prisma.group.findUnique({ where: { id: invite.groupId }, select: { name: true } }),
+    prisma.deviceToken.findMany({ where: { userId: invite.invitingUserId }, select: { token: true } }),
+  ]);
+  await sendPush({
+    deviceTokens: deviceTokens.map((row) => row.token),
+    title: "Group Invite Accepted",
+    body: `${me?.displayName || me?.phoneNumber || "Someone"} joined "${group?.name || "your group"}" on Home Eats.`,
+    payload: { type: "groupInviteAccepted", groupId: invite.groupId },
+  });
 }));
 
 // POST /invites/:inviteId/decline — recipient only, same check as accept.
