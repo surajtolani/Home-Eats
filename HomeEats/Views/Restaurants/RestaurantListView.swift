@@ -335,6 +335,8 @@ struct NaturalLanguageRestaurantSearchView: View {
                     Text("Describe what you're looking for")
                 } footer: {
                     Text("Cuisine, vibe, or occasion, and a specific area if you have one in mind — \"quiet date-night spot near the harbor,\" \"quick kid-friendly lunch downtown.\"")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
                 Section {
                     Button {

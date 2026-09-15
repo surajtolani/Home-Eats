@@ -179,95 +179,118 @@ struct GroupSharedGroceryListView: View {
     }
 
     var body: some View {
-        List {
-            Section {
-            } header: {
-                groceryListTitleHeader
-            }
+        VStack(spacing: 0) {
+            groceryListTitleHeader
+                .padding(.horizontal)
 
-            // The By Category/My Layout toggle AND the "+"/"Manage My
-            // Layout" actions together — the "row below" the shared static
-            // `GroupTopBar` (see that type's own doc comment for the
-            // top-bar redesign this implements). Both actions used to be
-            // `.topBarTrailing` toolbar items in this view's own `.toolbar`
-            // — moved here instead, per direct user request that the top
-            // bar itself stay static with only the group switcher/
-            // notifications/account icons on it, and "all the other things
-            // ... or anything else" go in a row underneath. Placed directly
-            // under the title — ahead of the quick-add search bar below,
-            // which used to come first — per a later, separate direct user
+            // The By Category/My Layout toggle AND "Manage My Layout"
+            // together — the "row below" the shared static `GroupTopBar`
+            // (see that type's own doc comment for the top-bar redesign
+            // this implements). Both actions used to be `.topBarTrailing`
+            // toolbar items in this view's own `.toolbar` — moved here
+            // instead, per direct user request that the top bar itself
+            // stay static with only the group switcher/notifications/
+            // account icons on it, and "all the other things ... or
+            // anything else" go in a row underneath. Placed directly under
+            // the title — ahead of the quick-add search bar below, which
+            // used to come first — per a later, separate direct user
             // request: "the 'by category, my layout and the + and ...'
             // should be above the 'add an item' search bar and closer to
             // the grocery list title."
-            Section {
-                HStack(spacing: 8) {
-                    Picker("View", selection: $viewMode) {
-                        ForEach(GroupGroceryViewMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
+            HStack(spacing: 8) {
+                Picker("View", selection: $viewMode) {
+                    ForEach(GroupGroceryViewMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
                     }
-                    .pickerStyle(.segmented)
-
-                    // The standalone "+" that used to live here (opening
-                    // `AddGroupGroceryItemSheet` directly) is gone — direct
-                    // user request to declutter this row down to just the
-                    // view-mode toggle and "Manage My Layout." Nothing is
-                    // lost: that same detailed form is still one tap further
-                    // away, via `addGroceriesButton` below -> "Add an Item"
-                    // -> "Add a Custom Item" (see `AddItemSearchView`'s own
-                    // doc comment in GroupAddGroceriesFlow.swift).
-                    Menu {
-                        Button {
-                            presentAfterMenuDismiss { showAislesManager = true }
-                        } label: {
-                            Label("Manage My Layout", systemImage: "square.grid.2x2")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
-                .listRowSeparator(.hidden)
-            }
+                .pickerStyle(.segmented)
 
-            Section {
-                quickAddField
-                    .listRowSeparator(.hidden)
+                // The standalone "+" that used to live here (opening
+                // `AddGroupGroceryItemSheet` directly) is gone — direct
+                // user request to declutter this row down to just the
+                // view-mode toggle and "Manage My Layout." Nothing is
+                // lost: that same detailed form is still one tap further
+                // away, via `addGroceriesButton` below -> "Add an Item"
+                // -> "Add a Custom Item" (see `AddItemSearchView`'s own
+                // doc comment in GroupAddGroceriesFlow.swift).
+                Menu {
+                    Button {
+                        presentAfterMenuDismiss { showAislesManager = true }
+                    } label: {
+                        Label("Manage My Layout", systemImage: "square.grid.2x2")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
+            .padding(.horizontal)
+            .padding(.top, 4)
+
+            quickAddField
+                .padding(.horizontal)
+                .padding(.vertical, 10)
 
             if !suggestedItems.isEmpty {
                 suggestedBanner
+                    .padding(.horizontal)
+                    .padding(.bottom, 10)
             }
+
+            // Direct user request: a visible border/card around the actual
+            // list of grocery items specifically, distinct from the title/
+            // toggle/search chrome above it and the "Add Groceries" CTA
+            // below — `.clipShape` rounds the `List`'s own row content to
+            // match the `.overlay` stroke drawn on top of it (without it,
+            // the List's square row corners would poke past the rounded
+            // border at each corner).
+            List {
+                if viewMode == .byCategory {
+                    byCategorySections
+                } else {
+                    myLayoutSections
+                }
+            }
+            // `.plain`, not the default inset-grouped style — direct user
+            // report of "an unnecessary lot of extra space at the top below
+            // 'grocery list'": the default List style reserves noticeably
+            // more padding above a List's first section header than
+            // `.plain` does, on top of wrapping every section in its own
+            // inset card. Matches every other main-tab List-based screen in
+            // this app (`RecipesHomeView`, `CalendarPlanView`,
+            // `GroupSharedMealPlanView` all already use `.plain`).
+            .listStyle(.plain)
+            // Needs to sit on the `List` itself, not the outer `VStack` —
+            // pull-to-refresh only has something to attach its gesture to
+            // where the actual scrollable content lives, now that the
+            // title/toggle/search/banner chrome above it is a plain,
+            // non-scrolling `VStack` row.
+            .refreshable { await runSync() }
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+            )
+            .padding(.horizontal)
 
             addGroceriesButton
-
-            if viewMode == .byCategory {
-                byCategorySections
-            } else {
-                myLayoutSections
-            }
+                .padding(.horizontal)
+                .padding(.vertical, 12)
         }
-        // `.plain`, not the default inset-grouped style — direct user
-        // report of "an unnecessary lot of extra space at the top below
-        // 'grocery list'": the default List style reserves noticeably more
-        // padding above a List's first section header than `.plain` does,
-        // on top of wrapping every section in its own inset card. Matches
-        // every other main-tab List-based screen in this app
-        // (`RecipesHomeView`, `CalendarPlanView`, `GroupSharedMealPlanView`
-        // all already use `.plain`) — this screen and the personal
-        // `GroceryListView` were the two left on the default by oversight.
-        .listStyle(.plain)
         // `.syncStatusOverlay` (see `SyncStatusBanner.swift`) floats this at
-        // the BOTTOM of the `List`, as a true overlay rather than a `Section`
-        // inserted into/removed from the list's own content — this used to
-        // be a `Section` right here, and a quantity bump, checkbox tap, or
-        // vote briefly flipping `hasPendingChanges` on and off (usually well
-        // under a second, until the immediate follow-up sync clears it)
-        // shifted every row below it, the same "screen skips/jumps" bug
+        // the BOTTOM of the whole screen, as a true overlay rather than
+        // occupying real layout space — this used to be a `Section` right
+        // in the `List`, and a quantity bump, checkbox tap, or vote briefly
+        // flipping `hasPendingChanges` on and off (usually well under a
+        // second, until the immediate follow-up sync clears it) shifted
+        // every row below it, the same "screen skips/jumps" bug
         // `GroupSharedMealPlanView` had — see that shared type's own doc
         // comment for the full reasoning, including why bottom rather than
-        // top.
+        // top. Attached to the outer `VStack` (not just the bordered
+        // `List` above) now that the screen has non-list chrome below the
+        // list too (`addGroceriesButton`) — it should float over the whole
+        // screen's bottom edge, not just the list card's.
         .syncStatusOverlay(isVisible: hasPendingChanges || isKnownOffline, message: statusMessage)
         .environment(\.editMode, $editMode)
         .navigationTitle(group?.name ?? groupName)
@@ -277,7 +300,6 @@ struct GroupSharedGroceryListView: View {
             await runSync()
             await runPeriodicSyncLoop()
         }
-        .refreshable { await runSync() }
         .sheet(isPresented: $showAddGroceriesSheet) {
             AddGroceriesSheet(groupID: groupID, isManager: isManager, isKnownOffline: isKnownOffline)
         }
@@ -323,25 +345,32 @@ struct GroupSharedGroceryListView: View {
     /// unification as before, just reachable by tapping through to
     /// `SuggestedItemsReviewView` instead of always sitting open inline.
     private var suggestedBanner: some View {
-        Section {
-            Button {
-                showSuggestedReview = true
-            } label: {
-                HStack {
-                    Image(systemName: "text.badge.checkmark")
-                        .foregroundStyle(Color.brandSage)
+        Button {
+            showSuggestedReview = true
+        } label: {
+            HStack {
+                Image(systemName: "text.badge.checkmark")
+                    .foregroundStyle(Color.brandSage)
+                VStack(alignment: .leading, spacing: 1) {
                     Text("\(suggestedItems.count) item\(suggestedItems.count == 1 ? "" : "s") suggested — tap to review")
                         .font(.brandSubheadline)
                         .foregroundStyle(.primary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
+                    // Direct user question: what this banner even means —
+                    // added a one-line explanation of where it comes from,
+                    // rather than leaving the count to speak for itself.
+                    Text("Waiting on a manager's Accept before it's on the real list.")
                         .font(.brandCaption)
                         .foregroundStyle(.secondary)
                 }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.brandCaption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            .listRowSeparator(.hidden)
+            .padding(10)
+            .background(Color.brandSage.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
         }
+        .buttonStyle(.plain)
     }
 
     /// The single entry point for every way to add something onto this
@@ -350,21 +379,16 @@ struct GroupSharedGroceryListView: View {
     /// for the full "why one button now, not three always-open sections"
     /// reasoning.
     private var addGroceriesButton: some View {
-        Section {
-            Button {
-                showAddGroceriesSheet = true
-            } label: {
-                Label("Add Groceries", systemImage: "plus.circle.fill")
-                    .font(.brandSubheadline.bold())
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.brandForest)
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 12, trailing: 16))
+        Button {
+            showAddGroceriesSheet = true
+        } label: {
+            Label("Add Groceries", systemImage: "plus.circle.fill")
+                .font(.brandSubheadline.bold())
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
         }
+        .buttonStyle(.borderedProminent)
+        .tint(Color.brandForest)
     }
 
     // MARK: - By category view
@@ -387,6 +411,8 @@ struct GroupSharedGroceryListView: View {
                 } footer: {
                     if index == purchasableByCategory.count - 1 {
                         Text("Drag the ≡ handle to reorder. Tap the ⋯ on an item (or touch and hold it) to move it to a different aisle in My Layout — any member can do this. Manage the group's aisles from the toolbar.")
+                            .font(.brandSubheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -450,6 +476,8 @@ struct GroupSharedGroceryListView: View {
                 Text("Unsorted")
             } footer: {
                 Text("Tap the ⋯ on an item (or touch and hold it) to place it into an aisle below.")
+                    .font(.brandSubheadline)
+                    .foregroundStyle(.secondary)
             }
         }
 
@@ -621,6 +649,12 @@ struct GroupSharedGroceryListView: View {
                 .foregroundStyle(Color.brandForest)
             }
         }
+        // Same boxed look as `RecipesHomeView`/`RestaurantListView`'s own
+        // search fields — direct user request to make this consistent with
+        // the other tabs' search boxes instead of a bare, background-less
+        // row.
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// Inserts a `.pendingCreate` row straight from `quickAddText` — same
@@ -1072,6 +1106,8 @@ struct AddGroupGroceryItemSheet: View {
                 } footer: {
                     if !isManager {
                         Text("This goes into Suggested for a manager to review.")
+                            .font(.brandSubheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

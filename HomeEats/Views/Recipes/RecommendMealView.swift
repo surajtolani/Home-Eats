@@ -43,6 +43,8 @@ struct RecommendMealView: View {
                     Text("What do you have? (optional)")
                 } footer: {
                     Text("Leave this blank for general dinner ideas, or list what's in your fridge or pantry, comma separated.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
                 Section {
                     Button {
@@ -70,6 +72,8 @@ struct RecommendMealView: View {
                     // "working, just slow this once."
                     if isLoading {
                         Text("This can take up to a minute the first time, while the server wakes up.")
+                            .font(.brandSubheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 if let errorMessage {
@@ -116,6 +120,8 @@ struct RecommendMealView: View {
                         Text("Ideas")
                     } footer: {
                         Text("Tap an idea to see its full ingredients, instructions, and add it from there.")
+                            .font(.brandSubheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

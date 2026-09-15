@@ -43,6 +43,8 @@ struct FamilyMembersView: View {
                 }
             } footer: {
                 Text("Tap a person to edit them. The checkmark shows who's currently active on this device — switch it from the badge in any tab's toolbar.")
+                    .font(.brandSubheadline)
+                    .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("Family")

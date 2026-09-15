@@ -178,6 +178,8 @@ private struct AddItemSearchView: View {
                 }
             } footer: {
                 Text("Press Return to add it \u{2014} keep typing to add more, one after another.")
+                    .font(.brandSubheadline)
+                    .foregroundStyle(.secondary)
             }
 
             if !recentlyAdded.isEmpty {
@@ -197,6 +199,8 @@ private struct AddItemSearchView: View {
                 }
             } footer: {
                 Text("Can't find what you're looking for, or want to set a quantity or category up front? Add a custom item instead.")
+                    .font(.brandSubheadline)
+                    .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("Add an Item")

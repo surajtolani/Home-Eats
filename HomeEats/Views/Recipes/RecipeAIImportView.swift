@@ -71,6 +71,8 @@ struct RecipeAIImportView: View {
                     Text("Or Type Notes")
                 } footer: {
                     Text("A photo, notes, or both — whatever you've got works. \"Grandma's pancakes: 2 cups flour, 2 eggs, 1.5 cups milk, cook on a griddle\" is plenty.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
                 if let errorMessage {
                     Section {

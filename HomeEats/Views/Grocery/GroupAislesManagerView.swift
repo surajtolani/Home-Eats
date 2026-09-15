@@ -64,6 +64,8 @@ struct GroupAislesManagerView: View {
                     }
                 } footer: {
                     Text("Add aisles in the order you walk through the store, then use the ⋯ on an item in My Layout to place it there. Anyone in the group can manage aisles.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {
@@ -99,6 +101,8 @@ struct GroupAislesManagerView: View {
                     }
                 } footer: {
                     Text("Tap an aisle to rename it — including one of the starter aisles already grouping your list by category.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Group's Store Aisles")

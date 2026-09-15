@@ -70,6 +70,8 @@ struct RecipeEditorView: View {
                     Text("Ingredients")
                 } footer: {
                     Text("One ingredient per line, e.g. \"2 cups flour\" or \"1 tsp salt\".")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
                 Section {
                     TextEditor(text: $instructionsText)
@@ -78,6 +80,8 @@ struct RecipeEditorView: View {
                     Text("Instructions")
                 } footer: {
                     Text("One step per line.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle(existing == nil ? "New Recipe" : "Edit Recipe")

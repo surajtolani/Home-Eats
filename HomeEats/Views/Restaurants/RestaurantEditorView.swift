@@ -51,6 +51,8 @@ struct RestaurantEditorView: View {
                     Text("Restaurant")
                 } footer: {
                     Text("Adding an address shows a map and lets you open the spot directly in Google Maps for reviews and photos.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
                 Section {
                     Picker("Price", selection: $priceRange) {
@@ -65,6 +67,8 @@ struct RestaurantEditorView: View {
                     Text("Your Rating & Price")
                 } footer: {
                     Text("These are your household's own notes, not pulled from Google — Apple's free place search (what the search bar above uses) doesn't expose ratings or price level.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Notes") {
                     TextEditor(text: $notes)
