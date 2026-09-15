@@ -91,19 +91,24 @@ jobs:
       # Xcode 16's test-plan validation checking for the host app binary's
       # *existence* eagerly, rather than trusting the build graph to
       # produce it first the way a from-scratch CI checkout needs it to.
-      # Building the `HomeEats` *target* directly first (not the `HomeEats`
-      # *scheme*, which per project.yml's `schemes.HomeEats.build` also
-      # includes `HomeEatsTests: [test]` — using the scheme here would
-      # still pull the test target into this same validation) sidesteps
-      # that check entirely: by the time `build-for-testing` runs,
-      # `HomeEats.app` already exists on disk at exactly the path
-      # `TEST_HOST` names.
+      #
+      # This step builds the app on its own first, so `HomeEats.app`
+      # already exists on disk at exactly the path `TEST_HOST` names by
+      # the time the test target's own build starts. `-scheme HomeEats`
+      # here (not `-target HomeEats`, tried first — reverted, since
+      # `-derivedDataPath` requires `-scheme`/`-testProductsPath`/
+      # `-xctestrun` and rejects a bare `-target`) still only builds the
+      # app: per project.yml's `schemes.HomeEats.build`, `HomeEatsTests`
+      # is scoped to the `test` action only, not `build`, so this plain
+      # `xcodebuild build` (the "build" action) never touches it or its
+      # test-host validation at all — only `build-for-testing`/`test`
+      # (the "test" action, next) do.
       - name: Build app target first (iOS Simulator, unsigned)
         run: |
           set -o pipefail
           xcodebuild build \
             -project HomeEats.xcodeproj \
-            -target HomeEats \
+            -scheme HomeEats \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
