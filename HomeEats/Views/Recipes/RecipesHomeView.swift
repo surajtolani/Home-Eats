@@ -56,6 +56,11 @@ struct RecipesHomeView: View {
     /// `RecipeDetailView.pendingShareAfterSignIn`, generalized to cover two
     /// possible actions instead of one.
     @State private var pendingCardAction: PendingCardAction?
+    /// Backs `searchFieldRow`'s `TextField` — same "no way to dismiss the
+    /// keyboard" fix as `RestaurantListView.isSearchFieldFocused`, applied
+    /// here too since this screen copies that exact search-field pattern
+    /// (see `searchFieldRow`'s own doc comment).
+    @FocusState private var isSearchFieldFocused: Bool
     private enum PendingCardAction {
         case share(Recipe)
         case publish(Recipe)
@@ -89,9 +94,13 @@ struct RecipesHomeView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search recipes", text: $searchText)
+                .focused($isSearchFieldFocused)
+                .submitLabel(.search)
+                .onSubmit { isSearchFieldFocused = false }
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
+                    isSearchFieldFocused = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                 }
@@ -229,6 +238,10 @@ struct RecipesHomeView: View {
                 }
             }
             .listStyle(.plain)
+            // Same "no way to dismiss the keyboard" fix as
+            // `RestaurantListView`'s identical `List` modifier — see that
+            // one's own doc comment.
+            .scrollDismissesKeyboard(.immediately)
         }
         .navigationTitle("Recipes")
         .navigationBarTitleDisplayMode(.inline)

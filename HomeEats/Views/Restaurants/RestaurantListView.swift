@@ -18,6 +18,12 @@ struct RestaurantListView: View {
     /// (multi-add without losing the results list) and `SearchResultRow`'s
     /// `isAdded` for how it's shown per row.
     @State private var addedResultIDs: Set<String> = []
+    /// Backs `searchFieldRow`'s `TextField` — see `body`'s
+    /// `.scrollDismissesKeyboard`/`.onSubmit` for why this exists: direct
+    /// user report that there was no way to dismiss the keyboard after
+    /// typing a search and get back to scrolling the results/restaurant
+    /// list below it.
+    @FocusState private var isSearchFieldFocused: Bool
 
     private var isSearchActive: Bool {
         !searchText.trimmingCharacters(in: .whitespaces).isEmpty
@@ -80,6 +86,14 @@ struct RestaurantListView: View {
                 }
             }
             .listStyle(.plain)
+            // Direct user report: nothing on this screen dismissed the
+            // keyboard once it was up, so there was no way to get back to
+            // scrolling the results/your restaurant list below it.
+            // `.immediately` (not `.interactively`) matches the plain "swipe
+            // down to dismiss" gesture users expect from Messages/Mail —
+            // the list itself still scrolls normally either way, this only
+            // changes what a scroll gesture does to a focused keyboard.
+            .scrollDismissesKeyboard(.immediately)
         }
         .onChange(of: searchText) { _, newValue in
             searchModel.search(newValue)
@@ -134,11 +148,15 @@ struct RestaurantListView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search for a restaurant to add", text: $searchText)
+                .focused($isSearchFieldFocused)
+                .submitLabel(.search)
+                .onSubmit { isSearchFieldFocused = false }
             if isSearchActive {
                 Button {
                     searchText = ""
                     searchModel.clear()
                     addedResultIDs = []
+                    isSearchFieldFocused = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                 }

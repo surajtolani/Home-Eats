@@ -142,6 +142,11 @@ struct GroupSharedGroceryListView: View {
     /// reasoning as the personal `GroceryListView.editMode` — see that
     /// property's own doc comment.
     @State private var editMode: EditMode = .active
+    /// Backs `quickAddField`'s `TextField` — same "no way to dismiss the
+    /// keyboard" fix as `RestaurantListView.isSearchFieldFocused`, applied
+    /// here too since this field copies that same search-bar-styled
+    /// `TextField` pattern.
+    @FocusState private var isQuickAddFocused: Bool
 
     init(groupID: String, groupName: String) {
         self.groupID = groupID
@@ -312,6 +317,10 @@ struct GroupSharedGroceryListView: View {
             // this app (`RecipesHomeView`, `CalendarPlanView`,
             // `GroupSharedMealPlanView` all already use `.plain`).
             .listStyle(.plain)
+            // Same "no way to dismiss the keyboard" fix as
+            // `RestaurantListView`'s identical `List` modifier — see that
+            // one's own doc comment.
+            .scrollDismissesKeyboard(.immediately)
             // Needs to sit on the `List` itself, not the outer `VStack` —
             // pull-to-refresh only has something to attach its gesture to
             // where the actual scrollable content lives, now that the
@@ -831,6 +840,7 @@ struct GroupSharedGroceryListView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
             TextField(isManager ? "Add an item" : "Suggest an item", text: $quickAddText)
+                .focused($isQuickAddFocused)
                 .submitLabel(.done)
                 .onSubmit { submitQuickAdd() }
             if !quickAddText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
