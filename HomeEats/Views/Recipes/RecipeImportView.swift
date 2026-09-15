@@ -7,11 +7,30 @@ import SwiftData
 struct RecipeImportView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    /// Read-only, purely to back `duplicateMatch` below.
+    @Query private var allRecipes: [Recipe]
 
     @State private var urlText: String = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var importedRecipe: Recipe?
+    /// Backs the "Add Anyway?" confirmation dialog — see `duplicateMatch`'s
+    /// own doc comment.
+    @State private var showDuplicateConfirm = false
+
+    /// Direct user request: "Recipes... should not be able to be added
+    /// twice." Matches by `sourceURL` first — the same page imported
+    /// again, exact URL and all, is unambiguously the same recipe — then
+    /// falls back to title, same as `RecipeEditorView.duplicateMatch`; see
+    /// `RecipeDuplicateChecker`'s own doc comment for the full rule.
+    private var duplicateMatch: Recipe? {
+        guard let importedRecipe else { return nil }
+        return RecipeDuplicateChecker.existingMatch(
+            title: importedRecipe.title,
+            sourceURL: importedRecipe.sourceURL,
+            in: allRecipes
+        )
+    }
 
     var body: some View {
         NavigationStack {
@@ -46,7 +65,7 @@ struct RecipeImportView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if importedRecipe != nil {
-                        Button("Save") { saveImported() }
+                        Button("Save") { attemptSaveImported() }
                     } else {
                         Button {
                             Task { await fetchPreview() }
@@ -61,6 +80,16 @@ struct RecipeImportView: View {
                     }
                 }
             }
+            .alert(
+                "Already in Your Recipes",
+                isPresented: $showDuplicateConfirm,
+                presenting: duplicateMatch
+            ) { _ in
+                Button("Cancel", role: .cancel) {}
+                Button("Add Anyway") { saveImported() }
+            } message: { match in
+                Text("You already have a recipe called \"\(match.title)\". Add another one with the same name?")
+            }
         }
     }
 
@@ -72,6 +101,14 @@ struct RecipeImportView: View {
             importedRecipe = try await RecipeImportService.importRecipe(from: urlText)
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "Something went wrong importing that link."
+        }
+    }
+
+    private func attemptSaveImported() {
+        if duplicateMatch != nil {
+            showDuplicateConfirm = true
+        } else {
+            saveImported()
         }
     }
 

@@ -10,6 +10,8 @@ struct RecipeAIImportView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var activeUserSession: ActiveUserSession
+    /// Read-only, purely to back `duplicateMatch` below.
+    @Query private var allRecipes: [Recipe]
 
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var imageData: Data?
@@ -18,6 +20,18 @@ struct RecipeAIImportView: View {
     @State private var errorMessage: String?
     @State private var draft: RecipeDraft?
     @State private var showCamera = false
+    /// Backs the "Add Anyway?" confirmation dialog — see
+    /// `RecipeDuplicateChecker`'s own doc comment.
+    @State private var showDuplicateConfirm = false
+
+    /// Direct user request: "Recipes... should not be able to be added
+    /// twice." A photo/notes import has no `sourceURL`, so this always
+    /// falls back to a title match — see `RecipeDuplicateChecker`'s own
+    /// doc comment.
+    private var duplicateMatch: Recipe? {
+        guard let draft else { return nil }
+        return RecipeDuplicateChecker.existingMatch(title: draft.title, sourceURL: nil, in: allRecipes)
+    }
 
     private var canExtract: Bool {
         imageData != nil || !notesText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -99,7 +113,7 @@ struct RecipeAIImportView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if draft != nil {
-                        Button("Save") { saveDraft() }
+                        Button("Save") { attemptSaveDraft() }
                     } else if isExtracting {
                         ProgressView()
                     } else {
@@ -131,6 +145,16 @@ struct RecipeAIImportView: View {
                 }
                 .ignoresSafeArea()
             }
+            .alert(
+                "Already in Your Recipes",
+                isPresented: $showDuplicateConfirm,
+                presenting: duplicateMatch
+            ) { _ in
+                Button("Cancel", role: .cancel) {}
+                Button("Add Anyway") { saveDraft() }
+            } message: { match in
+                Text("You already have a recipe called \"\(match.title)\". Add another one with the same name?")
+            }
         }
     }
 
@@ -142,6 +166,14 @@ struct RecipeAIImportView: View {
             draft = try await ClaudeRecipeService.extractRecipe(imageData: imageData, notesText: notesText)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func attemptSaveDraft() {
+        if duplicateMatch != nil {
+            showDuplicateConfirm = true
+        } else {
+            saveDraft()
         }
     }
 

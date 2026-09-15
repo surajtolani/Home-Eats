@@ -12,6 +12,8 @@ struct RecipeEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var activeUserSession: ActiveUserSession
+    /// Read-only, purely to back `duplicateMatch` below.
+    @Query private var allRecipes: [Recipe]
 
     @State private var title: String
     @State private var summary: String
@@ -23,6 +25,19 @@ struct RecipeEditorView: View {
     @State private var instructionsText: String
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var photoData: Data?
+    /// Backs the "Add Anyway?" confirmation dialog — see `duplicateMatch`'s
+    /// own doc comment.
+    @State private var showDuplicateConfirm = false
+
+    /// Direct user request: "Recipes... should not be able to be added
+    /// twice." Only meaningful for a brand-new recipe (`existing == nil`)
+    /// — editing an existing one obviously keeps its own title. Delegates
+    /// to `RecipeDuplicateChecker` — see that type's own doc comment for
+    /// the exact matching rule.
+    private var duplicateMatch: Recipe? {
+        guard existing == nil else { return nil }
+        return RecipeDuplicateChecker.existingMatch(title: title, sourceURL: nil, in: allRecipes)
+    }
 
     init(existing: Recipe? = nil) {
         self.existing = existing
@@ -91,7 +106,7 @@ struct RecipeEditorView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
+                    Button("Save") { attemptSave() }
                         .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
@@ -102,6 +117,24 @@ struct RecipeEditorView: View {
                     }
                 }
             }
+            .alert(
+                "Already in Your Recipes",
+                isPresented: $showDuplicateConfirm,
+                presenting: duplicateMatch
+            ) { _ in
+                Button("Cancel", role: .cancel) {}
+                Button("Add Anyway") { save() }
+            } message: { match in
+                Text("You already have a recipe called \"\(match.title)\". Add another one with the same name?")
+            }
+        }
+    }
+
+    private func attemptSave() {
+        if duplicateMatch != nil {
+            showDuplicateConfirm = true
+        } else {
+            save()
         }
     }
 

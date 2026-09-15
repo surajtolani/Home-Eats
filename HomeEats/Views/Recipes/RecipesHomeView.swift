@@ -15,6 +15,7 @@ struct RecipesHomeView: View {
     @State private var showAIImportSheet = false
     @State private var showRecommendSheet = false
     @State private var quickAddRecipe: Recipe?
+    @State private var showDuplicates = false
 
     // MARK: Shared (backend recipe-sharing) state
     //
@@ -249,6 +250,17 @@ struct RecipesHomeView: View {
             ToolbarItem(placement: .principal) {
                 BrandHeaderBanner()
             }
+            // Direct user request: "There should be a way to eliminate
+            // duplications." See `DuplicateRecipesView`'s own doc comment
+            // for what this opens.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showDuplicates = true
+                } label: {
+                    Image(systemName: "checkmark.circle.trianglebadge.exclamationmark")
+                }
+                .accessibilityLabel("Find Duplicate Recipes")
+            }
         }
         .sheet(isPresented: $showManualEditor) {
             RecipeEditorView()
@@ -258,6 +270,9 @@ struct RecipesHomeView: View {
         }
         .sheet(isPresented: $showRecommendSheet) {
             RecommendMealView()
+        }
+        .sheet(isPresented: $showDuplicates) {
+            DuplicateRecipesView()
         }
         .sheet(isPresented: $showImportSheet) {
             RecipeImportView()
@@ -415,7 +430,14 @@ struct RecipesHomeView: View {
     /// that detail view's toolbar.
     @ViewBuilder
     private func sharedRecipeCard(_ entry: SharedRecipeEntry) -> some View {
+        // `savedShareIDs` alone only covers a save made *this session* —
+        // also true if a past session already saved this exact recipe
+        // (`Recipe.backendRecipeID == entry.recipeID`), so reopening
+        // "Shared" later still shows it as saved rather than offering a
+        // save that would now just no-op. Direct user request: "Recipes...
+        // should not be able to be added twice."
         let isSaved = savedShareIDs.contains(entry.id)
+            || allRecipes.contains { $0.backendRecipeID == entry.recipeID }
         SharedEntryCardContent(entry: entry)
             .background {
                 NavigationLink("") {
@@ -468,8 +490,13 @@ struct RecipesHomeView: View {
     /// time; see that method's own doc comment for the full
     /// photo/sourceURL/backend-id reasoning, which applies verbatim here.
     private func saveSharedRecipe(_ entry: SharedRecipeEntry) {
-        modelContext.insert(entry.makeLocalRecipe())
         savedShareIDs.insert(entry.id)
+        // Defensive backstop for `sharedRecipeCard`'s own `isSaved` check
+        // above — that already hides this action once a match exists, this
+        // just makes sure a stale render/race can't still insert a second
+        // copy.
+        guard !allRecipes.contains(where: { $0.backendRecipeID == entry.recipeID }) else { return }
+        modelContext.insert(entry.makeLocalRecipe())
     }
 
     // MARK: Master library section
@@ -512,7 +539,14 @@ struct RecipesHomeView: View {
     /// has no path that doesn't already assume a persisted local recipe.
     @ViewBuilder
     private func masterLibraryCard(_ entry: LibraryRecipeEntry) -> some View {
+        // Same "also true across sessions, not just this one" reasoning as
+        // `sharedRecipeCard`'s own `isSaved` — see that one's doc comment.
+        // `entry.id` already equals `entry.recipeID` (`LibraryRecipeEntry
+        // .id`), so this is really the same check as the `backendRecipeID`
+        // one below, worded to make that identity explicit rather than
+        // relying on it silently.
         let isSaved = savedLibraryEntryIDs.contains(entry.id)
+            || allRecipes.contains { $0.backendRecipeID == entry.recipeID }
         LibraryEntryCardContent(entry: entry)
             .background {
                 // Same "flexible hidden NavigationLink behind the card"
@@ -560,8 +594,11 @@ struct RecipesHomeView: View {
     /// `saveSharedRecipe` above — see `LibraryRecipeEntry.makeLocalRecipe()`'s
     /// own doc comment (`PersonalLibrarySyncService.swift`).
     private func saveLibraryEntry(_ entry: LibraryRecipeEntry) {
-        modelContext.insert(entry.makeLocalRecipe())
         savedLibraryEntryIDs.insert(entry.id)
+        // Same defensive backstop as `saveSharedRecipe` — see its own doc
+        // comment.
+        guard !allRecipes.contains(where: { $0.backendRecipeID == entry.recipeID }) else { return }
+        modelContext.insert(entry.makeLocalRecipe())
     }
 
     // MARK: Card actions (Share, Add to Library)
