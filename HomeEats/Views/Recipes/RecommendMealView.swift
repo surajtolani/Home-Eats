@@ -22,6 +22,7 @@ struct RecommendMealView: View {
 
     @State private var ingredientsText = ""
     @State private var isLoading = false
+    @State private var isLoadingMore = false
     @State private var errorMessage: String?
     @State private var suggestions: [RecipeDraft] = []
     @State private var addedTitles: Set<String> = []
@@ -58,6 +59,18 @@ struct RecommendMealView: View {
                         }
                     }
                     .disabled(isLoading || !ClaudeRecipeService.isConfigured)
+                } footer: {
+                    // Direct user report: this feature seemed to "not work."
+                    // The backend is a free-tier Render deployment that
+                    // spins down after inactivity (see backend/README.md) —
+                    // waking it back up, plus a real Claude generation for
+                    // several full recipes, can genuinely take a while on a
+                    // cold first request. Without this, a long wait with
+                    // only a bare spinner reads as broken/hung rather than
+                    // "working, just slow this once."
+                    if isLoading {
+                        Text("This can take up to a minute the first time, while the server wakes up.")
+                    }
                 }
                 if let errorMessage {
                     Section {
@@ -78,6 +91,27 @@ struct RecommendMealView: View {
                                 SuggestionRow(draft: draft, isAdded: addedTitles.contains(draft.title))
                             }
                         }
+                        // Direct user request: a way to see ideas beyond the
+                        // first batch, not just the initial handful. Asks
+                        // the backend for a fresh batch that excludes every
+                        // title already shown (`excludeTitles`) rather than
+                        // risking Claude repeating (or lightly rewording)
+                        // one already on screen, and appends rather than
+                        // replaces so earlier ideas stay put.
+                        Button {
+                            Task { await loadMoreSuggestions() }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if isLoadingMore {
+                                    ProgressView()
+                                } else {
+                                    Text("Show More Ideas")
+                                }
+                                Spacer()
+                            }
+                        }
+                        .disabled(isLoadingMore || !ClaudeRecipeService.isConfigured)
                     } header: {
                         Text("Ideas")
                     } footer: {
@@ -99,15 +133,42 @@ struct RecommendMealView: View {
         errorMessage = nil
         isLoading = true
         defer { isLoading = false }
-        let ingredients = ingredientsText
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
         do {
-            suggestions = try await ClaudeRecipeService.recommendMeals(ingredients: ingredients)
+            suggestions = try await ClaudeRecipeService.recommendMeals(ingredients: currentIngredients)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// "Show More Ideas" — a fresh batch appended to what's already showing,
+    /// excluding every title already on screen so it's a genuinely new set
+    /// rather than a repeat (see `ClaudeRecipeService.recommendMeals`'s own
+    /// `excludeTitles` doc comment). The `existingTitles` filter below is a
+    /// belt-and-suspenders backstop for the rare case Claude repeats one
+    /// anyway despite being asked not to — without it, a repeated title
+    /// would collide with `RecipeDraft.id` (`title`, see that type's own
+    /// doc comment), which `ForEach` requires to be unique.
+    private func loadMoreSuggestions() async {
+        errorMessage = nil
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        do {
+            let more = try await ClaudeRecipeService.recommendMeals(
+                ingredients: currentIngredients,
+                excludeTitles: suggestions.map(\.title)
+            )
+            let existingTitles = Set(suggestions.map(\.title))
+            suggestions.append(contentsOf: more.filter { !existingTitles.contains($0.title) })
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private var currentIngredients: [String] {
+        ingredientsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     private func add(_ draft: RecipeDraft) {

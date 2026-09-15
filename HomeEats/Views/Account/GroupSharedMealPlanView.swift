@@ -885,27 +885,37 @@ struct GroupDaySlotsView: View {
         group?.members.first(where: { $0.id == userID })?.displayNameOrPhoneNumber ?? "Someone"
     }
 
-    /// One single "Add a Meal" entry point for the whole day, not one per
-    /// slot — direct user feedback: `GroupAddMealSheet`'s own first wheel
-    /// already lets you pick breakfast/lunch/dinner/other, so a separate
-    /// button in every slot section just to reach the same sheet was
-    /// redundant with a picker that already exists right there once it's
-    /// open. Shown whenever the day already has at least one planned meal
-    /// or suggestion (`emptyDayState` below is the day's *own* "Add a Meal"
-    /// entry point when it has nothing yet, so this one only needs to cover
-    /// "add another") — a slot can hold more than one decided meal, so
-    /// there's always a reason to keep offering it once the day isn't
-    /// completely empty.
+    /// One single "Add Another Meal" entry point for the whole day, not one
+    /// per slot — direct user feedback: `GroupAddMealSheet`'s own first
+    /// wheel already lets you pick breakfast/lunch/dinner/other, so a
+    /// separate button in every slot section just to reach the same sheet
+    /// was redundant with a picker that already exists right there once
+    /// it's open. Shown whenever the day already has at least one planned
+    /// meal or suggestion (`emptyDayState` below is the day's *own* "Add a
+    /// Meal" entry point when it has nothing yet, so this one only needs to
+    /// cover "add another" — hence the different label) — a slot can hold
+    /// more than one decided meal, so there's always a reason to keep
+    /// offering it once the day isn't completely empty. Centered, with its
+    /// own pill background — direct user request, so it reads as a clear
+    /// standalone action rather than a plain text row blending into the
+    /// slot sections around it.
     private var addMealSection: some View {
         Section {
-            Button {
-                activeSheet = .pickMeal(defaultSlotForAdd)
-            } label: {
-                Label("Add a Meal", systemImage: "plus.circle.fill")
-                    .font(.brandSubheadline.bold())
-                    .foregroundStyle(Color.brandForest)
+            HStack {
+                Spacer(minLength: 0)
+                Button {
+                    activeSheet = .pickMeal(defaultSlotForAdd)
+                } label: {
+                    Label("Add Another Meal", systemImage: "plus.circle.fill")
+                        .font(.brandSubheadline.bold())
+                        .foregroundStyle(Color.brandForest)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.brandForest.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             .listRowSeparator(.hidden)
             .daySwipeGesture(onSwipeChangeDay)
@@ -1073,8 +1083,19 @@ struct GroupDaySlotsView: View {
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
             }
         } header: {
+            // Direct user request: make a slot's own header ("Breakfast,"
+            // "Dinner," etc.) more pronounced once it actually has
+            // something under it — a plain `Section` header otherwise
+            // renders small, uppercase, and secondary-gray by default,
+            // which read as too quiet once this row only shows up for
+            // slots with real content (see `populatedSlots` above).
+            // `.textCase(nil)` cancels that automatic all-caps transform;
+            // the explicit bold, larger, primary-colored font overrides the
+            // rest.
             HStack(spacing: 4) {
                 Label(slot.displayName, systemImage: slot.symbolName)
+                    .font(.brandSubheadline.bold())
+                    .foregroundStyle(Color.primary)
                 if hasPendingInSlot {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.brandCaption2)
@@ -1082,6 +1103,7 @@ struct GroupDaySlotsView: View {
                         .help("Not synced yet")
                 }
             }
+            .textCase(nil)
         }
     }
 

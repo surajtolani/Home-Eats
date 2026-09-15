@@ -62,10 +62,15 @@ enum ClaudeRecipeService {
 
     /// "What can I make with X, Y, Z" (or "recommend a meal" with an empty
     /// ingredient list — the backend suggests generally approachable
-    /// weeknight dinners in that case).
-    static func recommendMeals(ingredients: [String]) async throws -> [RecipeDraft] {
+    /// weeknight dinners in that case). `excludeTitles` is `RecommendMealView`'s
+    /// "Show More Ideas" — the titles already on screen, so this asks for a
+    /// genuinely new batch rather than risking the same (or a barely-reworded)
+    /// suggestion twice.
+    static func recommendMeals(ingredients: [String], excludeTitles: [String] = []) async throws -> [RecipeDraft] {
         struct Response: Decodable { let recipes: [RecipeDraft] }
-        let response: Response = try await post(path: "recipes/recommend", body: ["ingredients": ingredients])
+        var body: [String: Any] = ["ingredients": ingredients]
+        if !excludeTitles.isEmpty { body["excludeTitles"] = excludeTitles }
+        let response: Response = try await post(path: "recipes/recommend", body: body)
         return response.recipes
     }
 
@@ -77,6 +82,17 @@ enum ClaudeRecipeService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Well beyond `URLSession`'s 60s default. This backend is a
+        // free-tier Render deployment that spins down after inactivity and
+        // takes real time to wake back up (see backend/README.md) — on top
+        // of that, a genuine Claude generation for several full recipes
+        // (ingredients, instructions, and all) isn't instant either. Both
+        // together can plausibly exceed 60s on a cold first request, which
+        // would otherwise time out and surface as a plain "couldn't reach
+        // the server" error indistinguishable from an actual outage —
+        // likely what was behind reports of "Recommend a Meal" seeming to
+        // just not work.
+        request.timeoutInterval = 120
 
         let data: Data
         let response: URLResponse

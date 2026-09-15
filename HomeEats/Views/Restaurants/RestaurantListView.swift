@@ -114,7 +114,11 @@ struct RestaurantListView: View {
     /// full toolbar width with nothing else in it, so there's no way to
     /// place a button beside it there; a plain `TextField` in the same
     /// `HStack` as those two buttons is what actually makes "next to the
-    /// search bar" possible.
+    /// search bar" possible. The extra `Spacer().frame(width: 6)` between
+    /// the sparkles and plus buttons — direct user request for more
+    /// breathing room specifically between those two (same change made to
+    /// `RecipesHomeView.searchFieldRow`) — widens just that one gap; every
+    /// other pair in this row keeps the plain 8pt `HStack` spacing.
     private var searchFieldRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -138,6 +142,7 @@ struct RestaurantListView: View {
             .buttonStyle(.plain)
             .disabled(!GooglePlacesService.isConfigured || !ClaudeRecipeService.isConfigured)
             .accessibilityLabel("Ask for a Restaurant")
+            Spacer().frame(width: 6)
             Button {
                 showEditor = true
             } label: {

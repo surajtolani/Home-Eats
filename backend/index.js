@@ -700,19 +700,28 @@ app.post("/recipes/extract", async (req, res) => {
 });
 
 // POST /recipes/recommend
-// Body: { ingredients: string[] } — "what can I make with X, Y, Z" (or
-// "recommend a meal" with nothing on hand yet, an empty/short list). Returns
-// a handful of recipe ideas the app inserts the same way as any other
-// imported recipe.
+// Body: { ingredients: string[], excludeTitles?: string[] } — "what can I
+// make with X, Y, Z" (or "recommend a meal" with nothing on hand yet, an
+// empty/short list). Returns a handful of recipe ideas the app inserts the
+// same way as any other imported recipe. `excludeTitles` is the app's
+// "Show More Ideas" button (RecommendMealView) re-calling this with the
+// titles already shown, so a second batch is genuinely new suggestions
+// rather than Claude just repeating (or trivially rewording) the first one.
 app.post("/recipes/recommend", async (req, res) => {
   const client = anthropicClient(res);
   if (!client) return;
 
   const ingredients = Array.isArray(req.body?.ingredients) ? req.body.ingredients : [];
+  const excludeTitles = Array.isArray(req.body?.excludeTitles)
+    ? req.body.excludeTitles.filter((title) => typeof title === "string" && title.trim())
+    : [];
 
-  const prompt = ingredients.length
+  let prompt = ingredients.length
     ? `Suggest 4 recipes a home cook could make using mainly these ingredients (they can assume basic pantry staples like salt, oil, and water in addition): ${ingredients.join(", ")}.`
     : "Suggest 4 varied, approachable weeknight dinner recipes for a home cook, using common ingredients.";
+  if (excludeTitles.length) {
+    prompt += ` Suggest 4 different recipes than these already-seen ones — don't repeat or lightly reword any of them: ${excludeTitles.join(", ")}.`;
+  }
 
   try {
     const response = await client.messages.parse({

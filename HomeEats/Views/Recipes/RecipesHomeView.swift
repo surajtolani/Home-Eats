@@ -50,6 +50,14 @@ struct RecipesHomeView: View {
     /// beside it there; a plain `TextField` in the same `HStack` as the
     /// menu is what actually makes "next to the search bar" possible —
     /// same fix as `RestaurantListView.searchFieldRow`'s identical change.
+    /// "Recommend a Meal" used to be the last item in the "+" menu below;
+    /// direct user request to split it out into its own sparkles icon
+    /// instead, matching `RestaurantListView.searchFieldRow`'s own
+    /// sparkles ("Ask for a Restaurant") + plus pair exactly. The extra
+    /// `Spacer().frame(width: 6)` between the two (also added to
+    /// `RestaurantListView.searchFieldRow`, same request) widens just that
+    /// one gap — every other pair in this row keeps the plain 8pt
+    /// `HStack` spacing.
     private var searchFieldRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -64,6 +72,14 @@ struct RecipesHomeView: View {
                 .foregroundStyle(.secondary)
             }
             Divider().frame(height: 18)
+            Button {
+                showRecommendSheet = true
+            } label: {
+                Image(systemName: "sparkles")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Recommend a Meal")
+            Spacer().frame(width: 6)
             Menu {
                 Button {
                     presentAfterMenuDismiss { showManualEditor = true }
@@ -79,12 +95,6 @@ struct RecipesHomeView: View {
                     presentAfterMenuDismiss { showAIImportSheet = true }
                 } label: {
                     Label("Add from Photo or Notes", systemImage: "camera.viewfinder")
-                }
-                Divider()
-                Button {
-                    presentAfterMenuDismiss { showRecommendSheet = true }
-                } label: {
-                    Label("Recommend a Meal", systemImage: "sparkles")
                 }
             } label: {
                 Image(systemName: "plus.circle.fill")
