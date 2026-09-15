@@ -156,36 +156,33 @@ struct GroupDetailView: View {
     // they are, not the number tied to their account" reasoning as
     // `FriendsListView.friendRow`; see its own doc comment.
     //
-    // **Promote/demote (Phase 5)** used to live in `.contextMenu` (long-press)
-    // ONLY, on the reasoning that this row was already fairly packed and
-    // promote/demote a rarer action than Leave/Remove — but a real user
-    // report ("I don't see the option to do this right now") confirmed
-    // long-press-only isn't actually discoverable here, the same lesson
-    // this app already learned the hard way on the grocery list's own
-    // "Move to Aisle" menu (see `GroupSharedGroceryListView`'s doc comment:
-    // "shown as its own always-tappable button rather than relying solely
-    // on `.contextMenu`"). Now also an explicit `Menu` (an ellipsis icon,
-    // shown only when there's actually something to change — a MANAGER
-    // looking at someone other than themselves) built from the exact same
-    // `roleChangeMenuItems(for:)`, right in the row; `.contextMenu` stays
-    // too as a bonus for anyone who already knows to long-press, same
-    // "not redundant, different habits" reasoning that row's swipe actions
-    // and always-visible icon coexist for.
+    // **Promote/demote (Phase 5)**: direct user request replaced a
+    // standalone "..." menu button next to "Remove" with the role title
+    // itself, shown right next to the member's name — tapping IT opens the
+    // promote/demote menu, rather than a separate icon elsewhere in the
+    // row. `roleBadge(for:)` below is now always shown (every member has a
+    // role worth labeling, not just a Manager) and becomes the `Menu`'s
+    // own label for a MANAGER looking at someone other than themselves —
+    // same `roleChangeMenuItems(for:)` content the old ellipsis button
+    // used to open. `.contextMenu` stays too as a bonus for anyone who
+    // already knows to long-press, same "not redundant, different habits"
+    // reasoning that row's swipe actions and an always-visible tappable
+    // control already coexist for elsewhere in this app (see
+    // `GroupSharedGroceryListView`'s "Move to Aisle" menu doc comment).
     private func memberRow(_ member: GroupMember) -> some View {
-        HStack {
+        let isSelf = member.id == accountSession.currentUser?.id
+        return HStack {
             HStack(spacing: 6) {
                 Text(member.displayNameOrPhoneNumber)
-                // Phase 3's role, surfaced here so it's visible without
-                // a separate screen — matches `GET /groups/:groupId`
-                // now including `role` per member (see
-                // backend/README.md's "Group roles" section).
-                if member.role == .manager {
-                    Text("Manager")
-                        .font(.brandCaption2.bold())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.brandForest.opacity(0.15)))
-                        .foregroundStyle(Color.brandForest)
+                if isManager && !isSelf {
+                    Menu {
+                        roleChangeMenuItems(for: member)
+                    } label: {
+                        roleBadge(for: member)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    roleBadge(for: member)
                 }
             }
             Spacer()
@@ -198,7 +195,6 @@ struct GroupDetailView: View {
             // here to match — a `PARTICIPANT` no longer sees a "Remove" they
             // could never actually use (it used to be shown to everyone and
             // just 403 for a non-manager tapping it on someone else).
-            let isSelf = member.id == accountSession.currentUser?.id
             if isSelf {
                 Button("Leave", role: .destructive) {
                     Task { await remove(member.id) }
@@ -210,19 +206,37 @@ struct GroupDetailView: View {
                 }
                 .buttonStyle(.borderless)
             }
-            if isManager && !isSelf {
-                Menu {
-                    roleChangeMenuItems(for: member)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-            }
         }
         .contextMenu {
             roleChangeMenuItems(for: member)
         }
+    }
+
+    /// "Manager"/"Member" capsule — Phase 3's role, surfaced here so it's
+    /// visible without a separate screen (matches `GET /groups/:groupId`
+    /// including `role` per member — see backend/README.md's "Group
+    /// roles" section). Always shown now (used to be Manager-only, with a
+    /// Participant getting no badge at all) — direct user request, since
+    /// this is also now the tappable target `memberRow` wraps in a `Menu`
+    /// for a MANAGER viewing someone else; a small chevron hints that it's
+    /// interactive in that case. "Member," not the backend's own
+    /// "Participant," to match how the user themselves refers to the role.
+    private func roleBadge(for member: GroupMember) -> some View {
+        let isSelf = member.id == accountSession.currentUser?.id
+        return HStack(spacing: 2) {
+            Text(member.role == .manager ? "Manager" : "Member")
+            if isManager && !isSelf {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8))
+            }
+        }
+        .font(.brandCaption2.bold())
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(
+            Capsule().fill(member.role == .manager ? Color.brandForest.opacity(0.15) : Color.secondary.opacity(0.12))
+        )
+        .foregroundStyle(member.role == .manager ? Color.brandForest : Color.secondary)
     }
 
     /// A `MANAGER` viewing a `PARTICIPANT` (never themselves — you can't

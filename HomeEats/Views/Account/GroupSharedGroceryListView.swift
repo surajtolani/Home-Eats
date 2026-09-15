@@ -244,13 +244,15 @@ struct GroupSharedGroceryListView: View {
             // it, the List's square row corners would poke past the
             // rounded border at each corner).
             List {
-                suggestedItemsSection
-
                 if viewMode == .byCategory {
                     byCategorySections
                 } else {
                     myLayoutSections
                 }
+
+                // Direct user request: below the real grocery items, not
+                // above them.
+                suggestedItemsSection
             }
             // `.plain`, not the default inset-grouped style — direct user
             // report of "an unnecessary lot of extra space at the top below
@@ -338,13 +340,15 @@ struct GroupSharedGroceryListView: View {
     /// shipped was that it wasn't obvious what "N items suggested" even
     /// meant or where it came from, and asked for it back inline in the
     /// real list instead, each row showing who suggested it with add/
-    /// remove actions right there — closer to how this queue worked before
-    /// the "one list, one Add Groceries button" redesign, just without the
-    /// day-strip/Generate controls that moved into `AddGroceriesSheet`.
-    /// `@ViewBuilder` (not a plain `if` at the `List`'s own call site, the
-    /// way `suggestedBanner` used to be conditioned) so the section itself
-    /// — including its header/footer — simply doesn't render when there's
-    /// nothing pending, rather than rendering an empty section shell.
+    /// remove actions right there. Titled "Items Suggested by Group
+    /// Members" (was "Suggested Grocery Items") and placed BELOW the real
+    /// `byCategorySections`/`myLayoutSections` content (was above) — both
+    /// direct follow-up requests, so the real, already-decided list reads
+    /// first and this pending-review queue reads as a distinct, secondary
+    /// thing underneath it. `@ViewBuilder` (not a plain `if` at the
+    /// `List`'s own call site) so the section itself — including its
+    /// header/footer — simply doesn't render when there's nothing pending,
+    /// rather than rendering an empty section shell.
     @ViewBuilder
     private var suggestedItemsSection: some View {
         if !suggestedItems.isEmpty {
@@ -396,7 +400,7 @@ struct GroupSharedGroceryListView: View {
                     }
                 }
             } header: {
-                Text("Suggested Grocery Items")
+                Text("Items Suggested by Group Members")
             } footer: {
                 Text(isManager
                     ? "Anyone can suggest an item for you to review — tap + to add it to the real list, or the x to remove it."
