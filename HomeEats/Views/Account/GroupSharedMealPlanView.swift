@@ -1098,7 +1098,12 @@ private extension View {
 /// `recipeID`/`restaurantName` is ever set (mirrors the backend's own
 /// "exactly one of recipeId/restaurantName" rule — see `GroupPlannedMeal
 /// .recipeID`'s own doc comment).
-struct GroupPlanNavigationTarget: Identifiable, Equatable {
+///
+/// `Hashable`, not just `Equatable` — `.navigationDestination(item:)`'s
+/// binding type requires `Hashable` (it's used as a `NavigationPath`
+/// element under the hood), and every stored property here is already
+/// `Hashable` (`String?`), so Swift synthesizes the conformance for free.
+struct GroupPlanNavigationTarget: Identifiable, Hashable {
     let recipeID: String?
     let cachedRecipeTitle: String?
     let restaurantName: String?

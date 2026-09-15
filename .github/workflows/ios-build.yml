@@ -12,11 +12,11 @@
 # DEVELOPMENT_TEAM set (see project.yml) — a Simulator build/test run never
 # needs an actual signing identity, and this skips code-signing entirely
 # rather than requiring this repo's real Apple Developer credentials to
-# exist as CI secrets. CODE_SIGNING_ALLOWED=NO alone wasn't quite enough
-# on this project's first CI run — `xcodebuild test` failed with "Could not
-# find test host for HomeEatsTests" (a known interaction between partial
-# signing overrides and how the test bundle locates its host app binary);
-# the fuller trio resolves it.
+# exist as CI secrets. See the "Build for testing"/"Run unit tests" steps'
+# own comment below for why the actual test run is split into two explicit
+# xcodebuild invocations rather than a single `xcodebuild test` — the
+# signing trio alone wasn't the whole fix for this project's "Could not
+# find test host" failure.
 name: iOS Build
 
 on:
@@ -81,11 +81,34 @@ jobs:
           echo "Using device '$DEVICE_NAME' on runtime $RUNTIME_ID"
           echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Build and run unit tests (iOS Simulator, unsigned)
+      # Split into two explicit steps rather than one `xcodebuild test` —
+      # a single `test` invocation failed twice in a row with "Could not
+      # find test host for HomeEatsTests", even with the full no-signing
+      # trio above, apparently because `test` alone doesn't reliably force
+      # a full, explicit build of the HomeEats app target (HomeEatsTests'
+      # host — see project.yml) into DerivedData before checking for it.
+      # `build-for-testing` builds everything the test bundle needs and
+      # stages it in DerivedData as its own distinct, explicit step;
+      # `test-without-building` then just runs against what's already
+      # there. `-derivedDataPath build` pins both to the same location
+      # explicitly rather than relying on xcodebuild's default (a hash of
+      # the project path) staying identical across the two invocations.
+      - name: Build for testing (iOS Simulator, unsigned)
         run: |
           set -o pipefail
-          xcodebuild test \
+          xcodebuild build-for-testing \
             -project HomeEats.xcodeproj \
             -scheme HomeEats \
             -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project HomeEats.xcodeproj \
+            -scheme HomeEats \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device_name }},OS=latest" \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
