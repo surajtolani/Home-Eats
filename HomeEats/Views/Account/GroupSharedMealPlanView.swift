@@ -791,17 +791,18 @@ struct GroupDaySlotsView: View {
     /// comment for the full "why a `@Binding` here, not a hidden
     /// `NavigationLink` in row content" story.
     @Binding var pushedTarget: GroupPlanNavigationTarget?
-    /// Fired on a horizontal swipe anywhere in this view's rows, with `-1`/
+    /// Fired on a horizontal swipe on one of this view's rows, with `-1`/
     /// `+1` for the direction — the Calendar mode's inline day panel wires
     /// this to `GroupSharedMealPlanView.moveSelectedDate`; the pushed
     /// `GroupDayDetailView` (a fixed single day, nothing to swipe to) passes
-    /// a no-op instead. Applied per-row (via `.daySwipeGesture(_:)` below)
-    /// rather than once to some wrapping container — `List`/`Section`
-    /// backs each row with its own separate cell, so a gesture attached
-    /// anywhere but the individual row content would only ever fire for
-    /// whichever one row happened to receive it, same reasoning as why
-    /// `selectedDayHeader`'s original swipe gesture had to live on that row
-    /// itself rather than on the `List` as a whole.
+    /// a no-op instead. Applied per-row (via `.daySwipeGesture(_:)` below,
+    /// only on rows without their own `.swipeActions` — see that modifier's
+    /// own doc comment for why) rather than once to some wrapping
+    /// container — `List`/`Section` backs each row with its own separate
+    /// cell, so a gesture attached anywhere but the individual row content
+    /// would only ever fire for whichever one row happened to receive it,
+    /// same reasoning as why `selectedDayHeader`'s original swipe gesture
+    /// had to live on that row itself rather than on the `List` as a whole.
     let onSwipeChangeDay: (Int) -> Void
     /// Called after every local write (decide, suggest, vote, remove,
     /// withdraw) to kick off a background push/pull cycle — this view has
@@ -907,6 +908,19 @@ struct GroupDaySlotsView: View {
             || suggestions(for: slot).contains { $0.syncState != .synced }
 
         Section {
+            // Neither of these two rows carries `.daySwipeGesture` — both
+            // have their own `.swipeActions(edge: .trailing)` (Remove, on
+            // `GroupPlannedMealRow`/`GroupSuggestionRow` below), which is a
+            // horizontal drag on this exact same row driven by `List`'s own
+            // UIKit-level pan recognizer, a different layer than SwiftUI's
+            // `Gesture` system — `.simultaneousGesture` only guarantees
+            // non-exclusivity with *other SwiftUI gestures*, not with that
+            // recognizer. Adding the day-swipe gesture here too risked the
+            // exact same leftward drag that reveals "Remove" also being
+            // read as "go to the next day," fighting or double-firing
+            // unpredictably. The "Add a Meal" row below has no
+            // `.swipeActions` at all, so it's a safe place for the day-swipe
+            // gesture to live without that particular conflict.
             ForEach(meals(for: slot)) { meal in
                 GroupPlannedMealRow(
                     meal: meal, memberName: memberName(meal.decidedByUserID), isManager: isManager,
@@ -914,7 +928,6 @@ struct GroupDaySlotsView: View {
                     onRemove: { removePlannedMeal(meal) }
                 )
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
-                .daySwipeGesture(onSwipeChangeDay)
             }
             ForEach(suggestions(for: slot)) { suggestion in
                 GroupSuggestionRow(
@@ -928,7 +941,6 @@ struct GroupDaySlotsView: View {
                     onRemove: { withdrawSuggestion(suggestion) }
                 )
                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 0, trailing: 16))
-                .daySwipeGesture(onSwipeChangeDay)
             }
 
             // A single "Add a Meal" affordance, replacing what used to be
@@ -1040,19 +1052,31 @@ struct GroupDaySlotsView: View {
 }
 
 /// Same horizontal-swipe-changes-day gesture as `selectedDayHeader`'s own,
-/// factored out so every row `GroupDaySlotsView.slotSection` renders can
-/// carry it too — direct user request ("can you add functionality to swipe
-/// left and right to move from one day to another?"): the header's own
-/// small swipe target wasn't the whole story, since most of the day panel's
+/// factored out so more of `GroupDaySlotsView.slotSection`'s rows can carry
+/// it too — direct user request ("can you add functionality to swipe left
+/// and right to move from one day to another?"): the header's own small
+/// swipe target wasn't the whole story, since most of the day panel's
 /// actual height is these rows, not the header. `.simultaneousGesture`, not
-/// `.gesture` — this row still sits inside a scrollable `List`, and a plain
-/// `.gesture` would claim every touch that starts here exclusively,
-/// including an attempt to scroll (or a `Button` tap, or a `.swipeActions`
-/// reveal) starting from this exact row. `minimumDistance: 20` plus the
-/// horizontal-vs-vertical check below is what lets a normal tap/scroll/
-/// swipe-action pass through untouched — only a drag that's both long
-/// enough and clearly more horizontal than vertical actually changes the
-/// day.
+/// `.gesture` — a row this is applied to still sits inside a scrollable
+/// `List`, and a plain `.gesture` would claim every touch that starts here
+/// exclusively, including an attempt to scroll or a `Button` tap starting
+/// from this exact row. `minimumDistance: 20` plus the horizontal-vs-
+/// vertical check below is what lets a normal tap/scroll pass through
+/// untouched — only a drag that's both long enough and clearly more
+/// horizontal than vertical actually changes the day.
+///
+/// **Deliberately NOT applied to every row** — only to rows with no
+/// `.swipeActions` of their own (see `slotSection`'s own comment above its
+/// `ForEach`s). `.swipeActions` reveal is driven by `List`'s own UIKit-level
+/// pan recognizer, a different layer `.simultaneousGesture` has no
+/// visibility into — it can only guarantee non-exclusivity with *other
+/// SwiftUI gestures* in the same view, not with that recognizer. Putting
+/// this gesture on a row that also has `.swipeActions` risked the same
+/// leftward drag that reveals "Remove" also reading as "go to the next
+/// day," fighting or double-firing unpredictably; narrowing this to
+/// swipe-action-free rows avoids that class of conflict entirely rather
+/// than trying to tune distance/velocity thresholds against a recognizer
+/// this code can't actually negotiate with.
 private extension View {
     func daySwipeGesture(_ onSwipe: @escaping (Int) -> Void) -> some View {
         simultaneousGesture(
@@ -1564,22 +1588,33 @@ private struct GroupAddMealSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Each `Picker` gets an explicit `.frame(maxWidth: .infinity)`
+                // — without it, a `UIPickerView`-backed wheel embedded this
+                // way sizes itself off its own row content ("Dine Out" is a
+                // lot wider than "Lunch"), which could visibly unbalance
+                // the three "equal side-by-side wheels, like the iOS timer"
+                // columns the request asked for. The explicit frame forces
+                // all three to split the `HStack`'s width evenly regardless
+                // of how long any one column's longest row happens to be.
                 HStack(spacing: 0) {
                     Picker("Meal", selection: $selectedSlot) {
                         ForEach(MealSlot.allCases.sorted { $0.sortIndex < $1.sortIndex }) { slot in
                             Text(slot.displayName).tag(slot)
                         }
                     }
+                    .frame(maxWidth: .infinity)
                     Picker("Type", selection: $selectedKind) {
                         ForEach(MealKindChoice.allCases) { kind in
                             Text(kind.rawValue).tag(kind)
                         }
                     }
+                    .frame(maxWidth: .infinity)
                     Picker("Action", selection: $selectedAction) {
                         ForEach(actionChoices) { action in
                             Text(action.rawValue).tag(action)
                         }
                     }
+                    .frame(maxWidth: .infinity)
                 }
                 .pickerStyle(.wheel)
                 .frame(height: 150)
