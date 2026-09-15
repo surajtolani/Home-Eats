@@ -464,14 +464,31 @@ struct GroupSharedMealPlanView: View {
                     .padding(.vertical, 4)
 
                 ForEach(days, id: \.self) { day in
-                    NavigationLink {
-                        GroupDayDetailView(
-                            groupID: groupID, date: day, isManager: isManager,
-                            currentUserID: accountSession.currentUser?.id, group: group, isKnownOffline: isKnownOffline,
-                            onLocalWrite: { Task { await runSync() } },
-                            onError: { message in actionErrorMessage = message }
-                        )
-                    } label: {
+                    // User feedback: "under weekly view, please delete the
+                    // arrows on the right - since you can click on the
+                    // actual day and it goes to the same place, cleaner
+                    // layout." SwiftUI has no modifier to hide just a
+                    // `NavigationLink`'s chevron (there's no
+                    // `navigationLinkIndicatorVisibility` API) — the actual
+                    // way to drop it is to keep the link itself invisible
+                    // and hit-testable via `.opacity(0)` (unlike `.hidden()`,
+                    // this doesn't remove it from hit-testing) layered under
+                    // the real, chevron-free row content in a `ZStack`. Tapping
+                    // anywhere on the row still triggers the same push to
+                    // `GroupDayDetailView` as before.
+                    ZStack {
+                        NavigationLink {
+                            GroupDayDetailView(
+                                groupID: groupID, date: day, isManager: isManager,
+                                currentUserID: accountSession.currentUser?.id, group: group, isKnownOffline: isKnownOffline,
+                                onLocalWrite: { Task { await runSync() } },
+                                onError: { message in actionErrorMessage = message }
+                            )
+                        } label: {
+                            EmptyView()
+                        }
+                        .opacity(0)
+
                         GroupAgendaDayRow(
                             date: day,
                             meals: meals(on: day),
@@ -485,20 +502,6 @@ struct GroupSharedMealPlanView: View {
             }
         }
         .listStyle(.plain)
-        // User feedback: "under weekly view, please delete the arrows on
-        // the right - since you can click on the actual day and it goes to
-        // the same place, cleaner layout." Each row above is already a
-        // `NavigationLink` to the exact same destination `GroupDayDetailView`
-        // push — the trailing chevron `List` draws on top of a
-        // `NavigationLink` row is pure redundant decoration here, not a
-        // second, different way to navigate. `.navigationLinkIndicatorVisibility(.hidden)`
-        // (iOS 16.4+, well within this project's 17.0 deployment target —
-        // see project.yml) hides just that chevron while leaving the whole
-        // row exactly as tappable as before; it does NOT touch `weekHeader`'s
-        // own chevrons just above (those are real week-to-week navigation,
-        // `weekOffset -= 1`/`+= 1` — a completely different, non-redundant
-        // control the user's feedback wasn't about).
-        .navigationLinkIndicatorVisibility(.hidden)
     }
 
     // MARK: - Shared helpers
