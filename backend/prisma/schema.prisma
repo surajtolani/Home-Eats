@@ -864,32 +864,17 @@ model GroupGroceryItem {
 // A group's "My Layout" — a household-defined arrangement of the shared
 // list into the aisles of their actual store, independent of the fixed
 // `GroceryCategory` list — same idea as iOS `StoreAisle`, just scoped to a
-// `Group` instead of one phone's local storage. `linkedCategory` is set
-// only for the ten starter aisles this feature seeds once per group (see
-// the seeding note below); renaming a starter aisle keeps its automatic
-// membership since matching is by `linkedCategory`, not `name` — same
-// reasoning as the iOS doc comment on this field.
-//
-// **Default seeding, and how it differs from iOS's mechanism (read this
-// before wiring up the iOS side later):** locally, `SampleDataSeeder` seeds
-// the ten starter aisles once, up front, the moment the app launches for
-// the first time — there's a single on-device process with an obvious
-// "first launch" moment to hook. A multi-tenant backend has no equivalent
-// moment for "this group's first use" to hook automatically (there's
-// deliberately no seeding added to `POST /groups` in routes/groups.js — see
-// this task's own constraints on which files may change). Instead,
-// `GET /groups/:groupId/grocery/aisles` seeds this group's ten starter
-// aisles the first time *it* is called for a group with zero
-// `GroupStoreAisle` rows — same "only while completely empty" guard as
-// `seedDefaultLayoutAislesIfNeeded`, just lazily triggered by the first
-// read instead of by process launch. Practically this means: a group whose
-// "My Layout" tab is never opened has zero aisle rows (fine — nothing reads
-// them), and the *first* `GET .../grocery/aisles` call for a group
-// populates the same ten aisles iOS would have seeded on first launch, in
-// the same order. This is the one piece of this feature that a later
-// iOS-wiring task needs to actually call (not just read the response of)
-// for the "My Layout" tab to open pre-grouped instead of empty — flagged
-// here and in backend/README.md.
+// `Group` instead of one phone's local storage. A brand-new group starts
+// with zero rows here — direct user request: "there should be no
+// categories" in My Layout, "think of how a notepad works... organize it
+// by their own layout." `linkedCategory` exists purely for backward
+// compatibility with a group that already had the old default-seeded ten
+// starter aisles (one per `GroceryCategory`) before that seeding was
+// removed (see `GET /groups/:groupId/grocery/aisles` in
+// routes/groupGroceryAisles.js) — a fresh aisle created after that removal
+// never sets it. Where it IS still set, renaming that aisle keeps its
+// automatic membership since matching is by `linkedCategory`, not `name` —
+// same reasoning as the iOS doc comment on this field.
 model GroupStoreAisle {
   id             String           @id @default(uuid())
   groupId        String

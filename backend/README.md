@@ -463,7 +463,7 @@ response has the shape `{ "error": "..." }`.
 | PATCH | `/groups/:groupId/grocery/:id/accept` | **MANAGER only** | — | Moves a `SUGGESTED` item to `THIS_WEEK`. `403` for a `PARTICIPANT`, `409` if the item isn't currently `SUGGESTED`. |
 | PATCH | `/groups/:groupId/grocery/:id` | required (any member); field-gated by role | Any subset of `{ name, category, quantityText, section, isChecked, orderIndex, quantityCount, aisleId }` | **Asymmetric on purpose** — see "Group grocery list" below. Any member may set `isChecked`/`orderIndex`/`quantityCount`/`aisleId` (routine day-to-day list use, including "My Layout" placement and adjusting how many to buy). Only a `MANAGER` may set `name`/`category`/`quantityText`/`section` (editing what's on the list). A request from a `PARTICIPANT` that touches even one manager-only field is rejected wholesale (`403`) — nothing is partially applied. `aisleId` may be `null` (explicitly "Unsorted") or a `GroupStoreAisle` id belonging to this same group (`400` if it names an aisle in another group, or one that doesn't exist); sending it at all — including `null` — also sets `aisleManuallySet: true` on the item (see "My Layout" below). |
 | DELETE | `/groups/:groupId/grocery/:id` | depends on the item's current `section` | — | `SUGGESTED`: **MANAGER, or the item's own original suggester** (rejecting a suggestion) — anyone else gets `403`. `THIS_WEEK`/`STAPLES`: **any member** (routine list maintenance — "we bought it" / "we don't need it") — no extra check. |
-| GET | `/groups/:groupId/grocery/aisles` | required (member) | — | `{ aisles: [...] }` — every `GroupStoreAisle` for the group, sorted by `sortIndex`. Seeds ten starter aisles (one per `GroceryCategory`) the first time this is called for a group with none yet — see "My Layout" below. |
+| GET | `/groups/:groupId/grocery/aisles` | required (member) | — | `{ aisles: [...] }` — every `GroupStoreAisle` for the group, sorted by `sortIndex`. A brand-new group starts with none at all — see "My Layout" below. |
 | POST | `/groups/:groupId/grocery/aisles` | required (any member) | `{ name }` | Creates a custom aisle, appended to the end of the walking order (`sortIndex` = current max + 1). `linkedCategory` is always `null` for a manually-created aisle — only the seeded starters get one. |
 | PATCH | `/groups/:groupId/grocery/aisles/:id` | required (any member) | Any subset of `{ name, sortIndex }` | Rename and/or reposition — including a starter aisle, same as the local app. `404` if the aisle doesn't belong to this group. |
 | DELETE | `/groups/:groupId/grocery/aisles/:id` | required (any member) | — | Deletes the aisle. Every `GroupGroceryItem` that was manually placed there has both `aisleId` reset to `null` **and** `aisleManuallySet` reset to `false` (not just the former) — so those items fall back to their category's default aisle again, not "explicitly Unsorted". |
@@ -682,23 +682,19 @@ true`) — a client should ignore `aisleId` entirely while
 fallback itself, same "client groups/filters locally" philosophy as `GET
 /groups/:groupId/grocery` not pre-splitting by category/section.
 
-**Default seeding — read this before wiring up the iOS side.** Locally,
-`SampleDataSeeder` seeds ten starter aisles (one per `GroceryCategory`,
-matching "By Category"'s own grouping and ordering) once, at first app
-launch — a single on-device process has an obvious "first launch" hook. A
-multi-tenant backend has no equivalent moment, and this task's constraints
-rule out adding seeding to `POST /groups` in `routes/groups.js`. Instead,
-**`GET /groups/:groupId/grocery/aisles` seeds a group's ten starter
-aisles the first time it's called for a group with zero `GroupStoreAisle`
-rows** — same "only while completely empty" guard as the iOS seeder, just
-lazily triggered by the first read instead of by process launch. A group
-whose "My Layout" is never opened simply has zero aisle rows (nothing
-reads them); the first call for a given group populates the same ten
-aisles, in the same order, iOS would have. **This means a later iOS-wiring
-task needs to actually call `GET .../grocery/aisles` (not just read some
-other response) for "My Layout" to open pre-grouped instead of empty** —
-if that call is skipped, every group will appear to start with everything
-in "Unsorted" again, exactly the bug this feature exists to avoid.
+**No default seeding — a group's My Layout starts empty.** This route used
+to auto-seed ten starter aisles (one per `GroceryCategory`, matching "By
+Category"'s own grouping) the first time it was called for a group with
+none yet, mirroring what `SampleDataSeeder` does locally on first app
+launch — removed per direct user feedback ("there should be no categories"
+in My Layout; "think of how a notepad works... organize it by their own
+layout"): since this route runs on every periodic sync cycle, that seeding
+meant every group's My Layout showed those ten category-named sections
+immediately, looking identical to "By Category" rather than the blank
+canvas it's meant to be. A group already seeded before this change keeps
+its existing aisles (this only stops seeding new ones); any member can
+remove ones they don't want via "Manage My Layout," same as any other
+aisle.
 
 Aisle CRUD (create/rename/reposition/delete) and item-to-aisle placement
 (`PATCH .../grocery/:id`'s `aisleId`) are both **open to any member**, not

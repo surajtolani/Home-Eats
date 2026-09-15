@@ -52,18 +52,28 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 ///   order is a per-device display preference persisted locally in
 ///   `UserDefaults` (`categoryOrder`, keyed by `groupID`), not synced to the
 ///   group, since it's purely "what order do I like to shop in," not shared
-///   list data.
+///   list data. An item can also move to a *different* category via its
+///   own row's "Move to Category" menu (`moveToCategoryMenu`) — a plain
+///   List's reorder handle can't actually drag a row across two different
+///   Sections (a real SwiftUI/platform limitation, not a corner cut here),
+///   so this is a tap-the-⋯-menu affordance, same mechanism as "My
+///   Layout"'s own cross-section move just below, not literal drag.
 /// - **My Layout** (`myLayoutSections`) groups by the group's own
 ///   `GroupStoreAisle` rows instead — custom sections ("section breaks")
 ///   anyone can add/rename/reorder via "Manage My Layout"
-///   (`GroupAislesManagerView`, reachable from the toggle row's own menu),
-///   with items *manually* draggable within a section via the same
+///   (`GroupAislesManagerView`, reachable from the toggle row's own menu).
+///   A brand-new group starts with zero aisle sections at all (just
+///   "Unsorted") — direct user request ("there should be no categories...
+///   think of how a notepad works") — see the backend `GroupStoreAisle`
+///   model's own doc comment in prisma/schema.prisma for the removed
+///   default-seeding behavior that used to pre-populate ten category-named
+///   ones. Items are *manually* draggable within a section via the same
 ///   List reorder handle (`moveWithinLayoutGroup`) and moveable *between*
 ///   sections via each row's "Move to Aisle" menu (`moveToAisleMenu`,
-///   `moveToAisle`) — there's no drag-between-sections in a plain SwiftUI
-///   `List`, so that's still a menu rather than a second drag gesture.
-///   Unlike `categoryOrder`, this layout is genuinely group-shared (synced
-///   via `GroupSyncService`), matching the earlier "My Layout" design.
+///   `moveToAisle`) — same cross-section-drag limitation as By Category's
+///   own "Move to Category" menu above. Unlike `categoryOrder`, this
+///   layout is genuinely group-shared (synced via `GroupSyncService`),
+///   matching the earlier "My Layout" design.
 ///
 /// **No "Staples" here.** A standing group "staples" template list
 /// (`GroupStaplesManagerView`, reachable from this screen's toolbar) used to
@@ -483,6 +493,45 @@ struct GroupSharedGroceryListView: View {
 
     // MARK: - By category view
 
+    /// Reassigns `item.category` — direct user request: "the by category -
+    /// the hamburger should allow you to move groceries to a different
+    /// category." A plain SwiftUI `List`'s `.onMove` reorder handle can't
+    /// actually drag a row across two different `Section`/`ForEach` pairs
+    /// (a real platform limitation — the same reason `moveCategories(from:to:)`
+    /// above only reorders whole category sections, never merges one item
+    /// out of its section into another's), so this is the same "tap the ⋯
+    /// menu next to the item" mechanism `moveToAisleMenu` already uses to
+    /// solve the identical problem in "My Layout" — not literal drag, but
+    /// the same capability. Any member may do this — moving a purchasable
+    /// item between categories is routine reorganizing, the same bucket as
+    /// `isChecked`/`orderIndex` (see this view's own top doc comment on role
+    /// gating).
+    private func moveToCategory(_ item: GroupSharedGroceryItem, category: GroceryCategory) {
+        item.category = category
+        markDirtyIfSynced(item)
+        try? modelContext.save()
+        Task { await runSync() }
+    }
+
+    @ViewBuilder
+    private func moveToCategoryMenu(for item: GroupSharedGroceryItem) -> some View {
+        Menu {
+            ForEach(GroceryCategory.allCases) { category in
+                Button {
+                    moveToCategory(item, category: category)
+                } label: {
+                    if item.category == category {
+                        Label(category.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(category.displayName)
+                    }
+                }
+            }
+        } label: {
+            Label("Move to Category", systemImage: "arrow.left.arrow.right")
+        }
+    }
+
     @ViewBuilder
     private var byCategorySections: some View {
         if !purchasableByCategory.isEmpty {
@@ -490,7 +539,8 @@ struct GroupSharedGroceryListView: View {
                 let (category, categoryItems) = entry
                 Section {
                     ForEach(categoryItems) { item in
-                        row(for: item)
+                        row(for: item, moveMenu: moveToCategoryMenu(for: item))
+                            .contextMenu { moveToCategoryMenu(for: item) }
                     }
                 } header: {
                     // Direct user request: category headers in a distinct
@@ -508,7 +558,7 @@ struct GroupSharedGroceryListView: View {
                         .textCase(nil)
                 } footer: {
                     if index == purchasableByCategory.count - 1 {
-                        Text("Items within a category sort alphabetically. Drag the ≡ handle on a category to reorder categories.")
+                        Text("Items within a category sort alphabetically — tap the ⋯ on an item to move it to a different category. Drag the ≡ handle on a category to reorder categories.")
                             .font(.brandSubheadline)
                             .foregroundStyle(.secondary)
                     }

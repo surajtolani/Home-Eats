@@ -61,80 +61,22 @@ function serializeAisle(aisle) {
   };
 }
 
-// Same category list/order as routes/groupGrocery.js's GROCERY_CATEGORIES —
-// duplicated for the same "each route file is self-contained" reason, kept
-// in the exact same order (which matches the iOS `GroceryCategory` enum's
-// declaration order, and therefore its `sortIndex`/`allCases` order too) so
-// the seeded aisles below land in the same walking order iOS would give
-// them.
-const GROCERY_CATEGORIES = [
-  "PRODUCE",
-  "DAIRY_AND_EGGS",
-  "MEAT_AND_SEAFOOD",
-  "BAKERY",
-  "PANTRY",
-  "FROZEN",
-  "BEVERAGES",
-  "SNACKS",
-  "HOUSEHOLD",
-  "OTHER",
-];
-
-// Mirrors `GroceryCategory.displayName` in
-// HomeEats/Models/GroceryCategory.swift exactly — this is the one piece of
-// display logic this backend duplicates from iOS (everywhere else, display
-// strings/symbols stay entirely client-side, per the GroupGroceryItem doc
-// comment's "guess/symbolName/sortIndex display logic stays client-side"
-// precedent) because the seeded aisle *rows* need a real `name` value the
-// moment they're created, not just at render time.
-const CATEGORY_DISPLAY_NAMES = {
-  PRODUCE: "Produce",
-  DAIRY_AND_EGGS: "Dairy & Eggs",
-  MEAT_AND_SEAFOOD: "Meat & Seafood",
-  BAKERY: "Bakery",
-  PANTRY: "Pantry",
-  FROZEN: "Frozen",
-  BEVERAGES: "Beverages",
-  SNACKS: "Snacks",
-  HOUSEHOLD: "Household",
-  OTHER: "Other",
-};
-
-// Seeds this group's ten starter aisles — one per GroceryCategory, in
-// GROCERY_CATEGORIES order — the FIRST time they're looked at for a group
-// with zero GroupStoreAisle rows so far. See GroupStoreAisle's doc comment
-// in prisma/schema.prisma for why this is lazily triggered by the first
-// read rather than at group-creation time the way iOS's `SampleDataSeeder`
-// seeds them at app-launch time. Idempotent and cheap after the first call,
-// same "only runs while completely empty" guard as
-// `seedDefaultLayoutAislesIfNeeded` — a household that's already added even
-// one custom aisle of their own is never touched by this again.
-async function ensureDefaultAislesSeeded(groupId) {
-  const existingCount = await prisma.groupStoreAisle.count({ where: { groupId } });
-  if (existingCount > 0) return;
-
-  // `createMany` (not a loop of individual `create` calls) so this is one
-  // round trip and, more importantly, can't leave a partially-seeded set of
-  // aisles behind if it fails partway through.
-  await prisma.groupStoreAisle.createMany({
-    data: GROCERY_CATEGORIES.map((category, index) => ({
-      groupId,
-      name: CATEGORY_DISPLAY_NAMES[category],
-      sortIndex: index,
-      linkedCategory: category,
-    })),
-  });
-}
-
 // GET /groups/:groupId/grocery/aisles — every aisle for the group, sorted
-// walking-order (lowest sortIndex first). Seeds the ten category-mirroring
-// starter aisles first if this group has none yet — see
-// ensureDefaultAislesSeeded above and GroupStoreAisle's doc comment in
-// prisma/schema.prisma for why this is where that seeding happens.
+// walking-order (lowest sortIndex first). A brand-new group starts with
+// zero aisles — direct user request: "there should be no categories" in My
+// Layout, "think of how a notepad works... organize it by their own
+// layout." This used to auto-seed ten starter aisles mirroring
+// GroceryCategory the first time a group's aisles were ever looked at
+// (`ensureDefaultAislesSeeded`, removed), which — since this route runs
+// every ~25s via `GroupSharedGroceryListView`'s own sync loop — meant every
+// group's My Layout showed those ten category-named sections immediately,
+// looking identical to "By Category" rather than a blank canvas. A group
+// that already had these seeded before this change keeps them (this only
+// stops seeding new ones going forward) — any member can remove ones they
+// don't want via "Manage My Layout" (any aisle, starter or custom, deletes
+// the same way — see PATCH/DELETE below).
 router.get("/", asyncHandler(async (req, res) => {
   if (!(await requireMembership(req, res))) return;
-
-  await ensureDefaultAislesSeeded(req.params.groupId);
 
   const aisles = await prisma.groupStoreAisle.findMany({
     where: { groupId: req.params.groupId },
@@ -153,9 +95,9 @@ const CreateAisleSchema = z
 // doc comment for the authorization reasoning). Lands at the end of the
 // group's current walking order, same "append, don't ask where" behavior
 // as the local `AislesManagerView.addAisle`. A freshly created aisle is
-// always a genuinely custom one — `linkedCategory` stays null, since the
-// only aisles ever seeded with one are the ten starters from
-// ensureDefaultAislesSeeded above.
+// always a genuinely custom one — `linkedCategory` stays null, only ever
+// set on a starter aisle from a group seeded before this route stopped
+// auto-seeding (see GET / above).
 router.post("/", asyncHandler(async (req, res) => {
   if (!(await requireMembership(req, res))) return;
 
@@ -185,8 +127,9 @@ router.post("/", asyncHandler(async (req, res) => {
 // as a fully custom one, same as the local `AislesManagerView` (tapping
 // ANY row, starter or custom, opens the same rename alert; drag-reorder
 // works on the whole list together). `linkedCategory` is never settable
-// here — it's an internal marker only ensureDefaultAislesSeeded ever sets,
-// same as iOS never exposing it as an editable field either.
+// here — it was only ever set by the now-removed default-seeding step (see
+// GET / above) on a group's pre-existing starter aisles, same as iOS never
+// exposing it as an editable field either.
 const UpdateAisleSchema = z
   .object({
     name: z.string().trim().min(1, "name can't be empty.").max(200).optional(),

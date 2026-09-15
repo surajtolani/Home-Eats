@@ -18,13 +18,12 @@ import SwiftData
 ///
 /// **Local-first**: every action here writes to the local SwiftData store
 /// first and returns instantly, whether online or off; `GroupSyncService`
-/// pushes/pulls in the background. The first ten rows are usually the
-/// starter aisles the backend seeds once per group, mirroring
-/// `GroceryCategory` — see `AccountsAPIClient.getGroupGroceryAisles`'s own
-/// doc comment for why this screen (and `GroupSharedGroceryListView`'s own
-/// sync loop, which calls that same endpoint every cycle) is what makes
-/// them already present by the time this screen is opened, rather than
-/// starting empty.
+/// pushes/pulls in the background. A brand-new group starts with zero
+/// aisles here — direct user request that My Layout read as a blank
+/// notepad, not pre-grouped by category — so "No aisles yet" is the normal
+/// first-open state; a group seeded with the old ten category-mirroring
+/// starter aisles before that behavior was removed keeps them until
+/// someone deletes them here.
 struct GroupAislesManagerView: View {
     let groupID: String
 
