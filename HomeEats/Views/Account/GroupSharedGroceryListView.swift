@@ -695,10 +695,19 @@ struct GroupSharedGroceryListView: View {
     /// even after Phase 4 added aisle support). Reordering here no longer
     /// affects "By Category" (that view sorts alphabetically now,
     /// independent of `orderIndex`), so this is purely a "My Layout" concern.
+    ///
+    /// Only touches rows whose `orderIndex` actually changed (`where`
+    /// clause below) — same guard `GroupAislesManagerView.move` already
+    /// uses for the identical whole-list-rewrite reorder. Without it, every
+    /// item in the section gets marked `.pendingUpdate` and PATCHed on every
+    /// drag, not just the ones that actually moved — needless churn that
+    /// also widens the window for `sync`'s per-group single-flight
+    /// coalescing (see that method's own doc comment) to have something to
+    /// coalesce in the first place.
     private func moveWithinLayoutGroup(_ groupItems: [GroupSharedGroceryItem], from source: IndexSet, to destination: Int) {
         var reordered = groupItems
         reordered.move(fromOffsets: source, toOffset: destination)
-        for (index, item) in reordered.enumerated() {
+        for (index, item) in reordered.enumerated() where item.orderIndex != Double(index) {
             item.orderIndex = Double(index)
             markDirtyIfSynced(item)
         }

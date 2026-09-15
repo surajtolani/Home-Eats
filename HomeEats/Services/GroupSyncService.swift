@@ -255,10 +255,39 @@ enum GroupSyncService {
     /// local-first is that a sync failure is just "try again later," never
     /// a hard error the UI has to handle specially, and local reads/writes
     /// must keep working regardless of whether this succeeds.
+    ///
+    /// **Single-flight per `groupID`**: every local write in the grocery/
+    /// meal-plan screens fires its own untracked `Task { await
+    /// GroupSyncService.sync(...) }` on top of the 25s periodic loop and
+    /// `.refreshable` — with no coordination between them, two of those
+    /// calls overlapping (trivial with drag-and-drop, which can trigger
+    /// several moves in quick succession) each independently `fetch()` the
+    /// same still-`.pendingCreate` row before either's `POST` response
+    /// lands, so both push it — the second response's `applyRemote`
+    /// overwrites `row.id` out from under the first, and the next pull
+    /// re-inserts the now-untracked first server row as a "new" local one:
+    /// a visible duplicate. A `groupID`-keyed in-flight `Task` closes this
+    /// at the entry point rather than in every caller: a `sync` call for a
+    /// group that's already mid-cycle awaits and returns that same task's
+    /// result instead of starting a second, overlapping one — every caller
+    /// still gets a `SyncOutcome` reflecting the most recent local state by
+    /// the time it resolves, since nothing here returns early or drops a
+    /// call, it only coalesces genuinely-concurrent ones.
+    private static var inFlightSyncs: [String: Task<SyncOutcome, Never>] = [:]
+
     static func sync(groupID: String, modelContext: ModelContext) async -> SyncOutcome {
-        let pushSucceeded = await push(groupID: groupID, modelContext: modelContext)
-        let pullSucceeded = await pull(groupID: groupID, modelContext: modelContext)
-        return SyncOutcome(pushSucceeded: pushSucceeded, pullSucceeded: pullSucceeded)
+        if let existing = inFlightSyncs[groupID] {
+            return await existing.value
+        }
+        let task = Task<SyncOutcome, Never> {
+            let pushSucceeded = await push(groupID: groupID, modelContext: modelContext)
+            let pullSucceeded = await pull(groupID: groupID, modelContext: modelContext)
+            return SyncOutcome(pushSucceeded: pushSucceeded, pullSucceeded: pullSucceeded)
+        }
+        inFlightSyncs[groupID] = task
+        let outcome = await task.value
+        inFlightSyncs[groupID] = nil
+        return outcome
     }
 
     struct SyncOutcome {
