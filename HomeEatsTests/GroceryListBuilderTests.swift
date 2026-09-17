@@ -504,4 +504,27 @@ final class GroceryListBuilderTests: XCTestCase {
             GroceryListBuilder.canonicalKey(for: "tomato")
         )
     }
+
+    /// Direct user question: two recipes phrasing the same ingredient in a
+    /// different word order used to land as two separate grocery list
+    /// lines. See `GroceryListBuilder.canonicalKey`'s own doc comment.
+    func testCanonicalKeyMergesReorderedWords() {
+        XCTAssertEqual(
+            GroceryListBuilder.canonicalKey(for: "chicken thighs, cut up"),
+            GroceryListBuilder.canonicalKey(for: "thighs chicken")
+        )
+    }
+
+    /// Same fix, for a modifier word leading the phrase instead of a
+    /// trailing comma clause.
+    func testCanonicalKeyMergesLeadingAndTrailingModifiers() {
+        XCTAssertEqual(
+            GroceryListBuilder.canonicalKey(for: "minced garlic"),
+            GroceryListBuilder.canonicalKey(for: "garlic minced")
+        )
+        XCTAssertEqual(
+            GroceryListBuilder.canonicalKey(for: "minced garlic"),
+            GroceryListBuilder.canonicalKey(for: "garlic, minced")
+        )
+    }
 }

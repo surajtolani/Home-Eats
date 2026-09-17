@@ -228,23 +228,59 @@ enum GroceryListBuilder {
         return result
     }
 
-    /// Normalizes an ingredient/staple name so simple plurals and casing
-    /// don't produce duplicate lines (e.g. "onion" and "Onions").
+    /// Normalizes an ingredient/staple name so simple plurals, casing, word
+    /// order, and modifier placement don't produce duplicate lines for what
+    /// is really the same purchasable item — direct user question: recipes
+    /// phrase the same ingredient different ways ("chicken thighs, cut up"
+    /// vs. "thighs chicken," "minced garlic" vs. "garlic minced"), and
+    /// those used to land as two separate grocery list lines instead of
+    /// one combined quantity, since nothing normalized word order or a
+    /// modifier's position in the phrase.
+    ///
+    /// Splits into words first and singularizes/filters/sorts each one
+    /// individually, rather than the simpler "just singularize the whole
+    /// joined string's own trailing suffix" this used to do — that only
+    /// ever singularized whichever word happened to land last, which
+    /// itself depends on word order: "chicken thighs" (trailing word
+    /// "thighs" -> "thigh") and "thighs chicken" (trailing word "chicken,"
+    /// never touching "thighs" at all) would otherwise still end up as two
+    /// different keys ("chicken thigh" vs. "chicken thighs") even after
+    /// sorting, defeating the whole point of normalizing word order in the
+    /// first place.
     static func canonicalKey(for rawName: String) -> String {
-        var key = rawName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if let parenIndex = key.firstIndex(of: "(") {
-            key = String(key[key.startIndex..<parenIndex]).trimmingCharacters(in: .whitespaces)
+        var trimmed = rawName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parenIndex = trimmed.firstIndex(of: "(") {
+            trimmed = String(trimmed[trimmed.startIndex..<parenIndex]).trimmingCharacters(in: .whitespaces)
         }
-        if key.hasSuffix("ies"), key.count > 4 {
-            key = String(key.dropLast(3)) + "y"
-        } else if key.hasSuffix("oes"), key.count > 4 {
-            key = String(key.dropLast(2))
-        } else if key.hasSuffix("es"), key.count > 4, key.hasSuffix("shes") || key.hasSuffix("ches") || key.hasSuffix("xes") {
-            key = String(key.dropLast(2))
-        } else if key.hasSuffix("s"), !key.hasSuffix("ss"), key.count > 3 {
-            key = String(key.dropLast())
+        // A comma is treated as a plain word boundary here too, in case
+        // this raw name never went through `IngredientNameCleaner
+        // .groceryName`'s own trailing-comma-clause handling first.
+        let words = trimmed
+            .replacingOccurrences(of: ",", with: " ")
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !IngredientNameCleaner.modifierWords.contains($0) }
+            .map(singularizedWord)
+            .sorted()
+        return words.isEmpty ? trimmed : words.joined(separator: " ")
+    }
+
+    /// Same simple plural-suffix rules this method always used, just
+    /// applied to one word at a time instead of only the trailing word of
+    /// a whole joined string — see `canonicalKey`'s own doc comment for
+    /// why that distinction matters once word order is being normalized
+    /// too.
+    private static func singularizedWord(_ word: String) -> String {
+        if word.hasSuffix("ies"), word.count > 4 {
+            return String(word.dropLast(3)) + "y"
+        } else if word.hasSuffix("oes"), word.count > 4 {
+            return String(word.dropLast(2))
+        } else if word.hasSuffix("es"), word.count > 4, word.hasSuffix("shes") || word.hasSuffix("ches") || word.hasSuffix("xes") {
+            return String(word.dropLast(2))
+        } else if word.hasSuffix("s"), !word.hasSuffix("ss"), word.count > 3 {
+            return String(word.dropLast())
         }
-        return key
+        return word
     }
 
     private struct IngredientAggregate {

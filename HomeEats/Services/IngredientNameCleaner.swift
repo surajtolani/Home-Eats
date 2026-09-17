@@ -21,14 +21,20 @@ enum IngredientNameCleaner {
         #",?\s+if desired\.?$"#
     ]
 
-    /// Prep/action words that, right after a comma, mean everything from
-    /// there on is a trailing instruction to cut ("chicken breast, diced" ->
-    /// "chicken breast") rather than part of the ingredient name itself. A
-    /// comma can just as easily separate two leading descriptors instead
-    /// ("skinless, boneless chicken thighs") — only cutting when the text
-    /// right after the comma actually starts with one of these is what
-    /// keeps that case intact instead of truncating down to "Skinless".
-    private static let prepWordsAfterComma: Set<String> = [
+    /// Prep/action words — reused two ways: right after a comma here, they
+    /// mean everything from there on is a trailing instruction to cut
+    /// ("chicken breast, diced" -> "chicken breast") rather than part of
+    /// the ingredient name itself (a comma can just as easily separate two
+    /// leading descriptors instead, "skinless, boneless chicken thighs" —
+    /// only cutting when the text right after the comma actually starts
+    /// with one of these is what keeps that case intact instead of
+    /// truncating down to "Skinless"). Also reused by `GroceryListBuilder
+    /// .canonicalKey`, which strips these from *anywhere* in the name (not
+    /// just right after a comma) before matching — see that method's own
+    /// doc comment for why a leading modifier ("minced garlic" vs. "garlic
+    /// minced") needs the same treatment as a trailing one for two
+    /// differently-worded lines to actually merge on the grocery list.
+    static let modifierWords: Set<String> = [
         "diced", "sliced", "chopped", "minced", "peeled", "seeded", "crushed",
         "grated", "melted", "softened", "beaten", "drained", "rinsed",
         "shredded", "julienned", "cubed", "halved", "quartered", "trimmed",
@@ -85,7 +91,7 @@ enum IngredientNameCleaner {
             let firstWord = afterComma
                 .prefix(while: { $0.isLetter })
                 .lowercased()
-            if prepWordsAfterComma.contains(firstWord) {
+            if modifierWords.contains(firstWord) {
                 result = String(result[result.startIndex..<commaIndex])
             }
         }
