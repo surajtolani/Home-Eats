@@ -57,6 +57,25 @@ extension View {
     @ViewBuilder
     func syncStatusOverlay(isVisible: Bool, message: String) -> some View {
         self
+            // A permanent bit of clearance below the last row of real
+            // content — NOT conditional on `isVisible` (unlike the overlay
+            // itself just below), so this reservation can never itself
+            // pop in/out and reintroduce the exact "screen jumps on every
+            // vote" bug this type's own doc comment describes. Direct user
+            // report: even as a non-layout-shifting overlay, the banner
+            // could still visually sit right on top of the last row of
+            // real content while it was showing — especially bad
+            // somewhere it can stay up 15-30 seconds on a slow connection
+            // (poor reception) rather than flash briefly. This gap is
+            // sized for the banner's own height (see `SyncStatusBanner`'s
+            // font/padding) with a little extra breathing room, and
+            // works because a `List`/`ScrollView` inside `self`
+            // automatically insets its own scrollable content to stay
+            // clear of a `.safeAreaInset` applied to an ancestor, the same
+            // way it would for a custom tab bar.
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: 36)
+            }
             .overlay(alignment: .bottom) {
                 if isVisible {
                     SyncStatusBanner(message: message)
