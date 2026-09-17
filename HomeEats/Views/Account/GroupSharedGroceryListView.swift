@@ -46,21 +46,25 @@ private enum GroupGroceryViewMode: String, CaseIterable, Identifiable {
 /// underwent a second, corrective redesign after direct user reports that
 /// the first pass didn't actually work right (see each bullet below):
 /// - **By Category** (`byCategorySections`) groups by `GroceryCategory` —
-///   all ten categories always shown, in the enum's fixed order, even
-///   while empty, not just ones with something in them. This used to also
-///   let category *sections themselves* drag-to-reorder — removed outright
-///   after a direct bug report that the reorder handle "glitches and
-///   reverts": a plain SwiftUI `List`'s `.onMove` reordering `Section`s
-///   produced by a `ForEach` that's itself wrapped in this screen's
-///   `viewMode` conditional is a known-unreliable combination, not
+///   only categories with something on the list, in the enum's fixed
+///   order; an empty category simply doesn't appear (direct user request:
+///   "if there isn't an item in a category, I wouldn't show the
+///   category... only pop up if there is something in it or if something
+///   gets added" — see `purchasableByCategory`'s own doc comment). This
+///   used to also let category *sections themselves* drag-to-reorder —
+///   removed outright after a direct bug report that the reorder handle
+///   "glitches and reverts": a plain SwiftUI `List`'s `.onMove` reordering
+///   `Section`s produced by a `ForEach` that's itself wrapped in this
+///   screen's `viewMode` conditional is a known-unreliable combination, not
 ///   something worth continuing to fight. Items inside a category are
 ///   always alphabetical (no manual per-item reordering there either).
 ///   What IS real: an item can move to a *different* category two ways —
 ///   drag it (`.draggable(item.id)`) onto a category header
 ///   (`GroceryDropHeader`, a real drop target with visual highlight while
-///   targeted), or tap its own row's "Move to Category" ⋯ menu
-///   (`moveToCategoryMenu`) as a reliable, no-dragging-required
-///   alternative.
+///   targeted) if that category is already showing, or tap its own row's
+///   "Move to Category" ⋯ menu (`moveToCategoryMenu`, which always lists
+///   every category regardless of what's currently shown) either way —
+///   the only path into a category with nothing in it yet.
 /// - **My Layout** (`myLayoutSections`) groups by the group's own
 ///   `GroupStoreAisle` rows instead — custom sections anyone can add/
 ///   rename/reorder via "Manage My Layout" (`GroupAislesManagerView`,
@@ -216,29 +220,26 @@ struct GroupSharedGroceryListView: View {
         visibleItems.filter { $0.section == .thisWeek || $0.section == .staples }
     }
 
-    /// Every `GroceryCategory`, always, in the enum's own fixed
-    /// `sortIndex` order — not just categories that currently have
-    /// something on the list. Direct user report that the previous
-    /// "categories drag-to-reorder, and only show up once something's in
-    /// them" design was confusing and its drag handle didn't reliably work
-    /// (a known real limitation: a plain SwiftUI `List`'s `.onMove` can't
-    /// reliably reorder `Section`s produced by a `ForEach` wrapped in
-    /// another conditional view builder the way this screen's `viewMode`
-    /// switch requires — the reorder would visually "glitch and revert").
-    /// A fixed, always-visible set of ten sections is simpler to
-    /// understand (every category is always exactly where you left it) and
-    /// — since every category is now guaranteed to exist as a section even
-    /// while empty — gives `byCategorySections`' drag-and-drop
-    /// (`.draggable`/`.dropDestination` on each header) somewhere to drop
-    /// an item even into a category with nothing in it yet. Items inside
-    /// each category are always alphabetical — no per-item manual
-    /// ordering.
+    /// Every `GroceryCategory` that currently has at least one item on it,
+    /// in the enum's own fixed `sortIndex` order — direct user request:
+    /// "if there isn't an item in a category, I wouldn't show the
+    /// category. Categories should only pop up if there is something in it
+    /// or if something gets added." This used to always show all ten
+    /// categories, even empty ones — originally so `byCategorySections`'
+    /// drag-and-drop had a header to drop onto for a category with nothing
+    /// in it yet, but the "Move to Category" ⋯ menu (`moveToCategoryMenu`,
+    /// listing every `GroceryCategory` regardless of what's currently
+    /// shown) already covers that exact case without needing an empty
+    /// section on screen — dragging just stops being how you move
+    /// something into a category with nothing in it yet, the menu is.
+    /// Items inside each category are always alphabetical — no per-item
+    /// manual ordering.
     private var purchasableByCategory: [(GroceryCategory, [GroupSharedGroceryItem])] {
         let grouped = Dictionary(grouping: purchasableItems, by: \.category)
-        return GroceryCategory.allCases.map { category in
-            let categoryItems = (grouped[category] ?? [])
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            return (category, categoryItems)
+        return GroceryCategory.allCases.compactMap { category in
+            guard let categoryItems = grouped[category], !categoryItems.isEmpty else { return nil }
+            let sorted = categoryItems.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return (category, sorted)
         }
     }
 
@@ -566,21 +567,22 @@ struct GroupSharedGroceryListView: View {
         }
     }
 
-    /// Direct user feedback, twice over: the previous design only showed a
-    /// category once something was in it, drag-to-reorder the category
-    /// *sections themselves* didn't reliably work ("glitches and reverts"
-    /// — see `purchasableByCategory`'s own doc comment on why), and there
-    /// was no way to actually drag an item somewhere. This version drops
-    /// section reordering entirely (all ten categories always show, in a
-    /// fixed order — nothing to reorder) and instead makes moving an ITEM
+    /// Direct user feedback, several rounds over: the previous design let
+    /// category *sections themselves* drag-to-reorder, which didn't
+    /// reliably work ("glitches and reverts" — a known real SwiftUI
+    /// limitation, not something worth continuing to fight); this version
+    /// drops section reordering entirely and instead makes moving an ITEM
     /// real: for a `MANAGER` (the only role allowed to touch `category` at
     /// all — see `moveToCategory`'s own doc comment), drag it (long-press,
     /// same gesture `.draggable` uses everywhere in iOS — Files, Mail, ...)
     /// onto a category's header to move it there, or use the "Move to
     /// Category" ⋯ menu/long-press context menu as a reliable,
-    /// always-available alternative to dragging. A `PARTICIPANT` sees
-    /// neither — just the plain row and a non-interactive header — since
-    /// attempting either would only sync-reject.
+    /// always-available alternative to dragging — including into a
+    /// category with nothing in it yet, which (per `purchasableByCategory`'s
+    /// own doc comment) has no header on screen to drag onto in the first
+    /// place. A `PARTICIPANT` sees neither — just the plain row and a
+    /// non-interactive header — since attempting either would only
+    /// sync-reject.
     @ViewBuilder
     private var byCategorySections: some View {
         if purchasableItems.isEmpty {
@@ -591,9 +593,6 @@ struct GroupSharedGroceryListView: View {
         }
         ForEach(purchasableByCategory, id: \.0) { category, categoryItems in
             Section {
-                if categoryItems.isEmpty {
-                    Text("Nothing here yet.").font(.brandCaption).foregroundStyle(.tertiary)
-                }
                 ForEach(categoryItems) { item in
                     if isManager {
                         row(for: item, moveMenu: moveToCategoryMenu(for: item))
