@@ -413,21 +413,20 @@ struct RecipesHomeView: View {
         }
     }
 
-    /// A photo card matching `recipeCard`/`masterLibraryCard`'s own
-    /// formatting (see either's doc comment) and, same as every other
-    /// recipe card on this screen, tappable to preview it before saving —
-    /// direct user report that this used to be a plain `HStack` row where
-    /// the untargeted "Save to My Recipes" `Button` (no `.buttonStyle
-    /// (.plain)`) ended up as the row's only tap target under the hood, so
-    /// tapping *anywhere* in the row — not just that button's own text —
+    /// A `MediaTileRow` matching `recipeCard`/`masterLibraryCard`'s own
+    /// formatting (see either's doc comment) and, same as every other tile
+    /// on this screen, tappable to preview it before saving — direct user
+    /// report that this used to be a plain `HStack` row where the
+    /// untargeted "Save to My Recipes" `Button` (no `.buttonStyle(.plain)`)
+    /// ended up as the row's only tap target under the hood, so tapping
+    /// *anywhere* in the row — not just that button's own text —
     /// immediately saved it, with no way to preview it first. Opens
     /// `SharedRecipeDetailView` (the "Shared" counterpart to
     /// `LibraryRecipeDetailView` — see that type's own doc comment for why
     /// a read-only detail view built off the wire entry, not
     /// `RecipeDetailView`, which needs an already-persisted `Recipe`);
-    /// "Save to My Recipes" is now its own explicit, separately-tappable
-    /// button, both here (`.buttonStyle(.plain)`, unlike before) and in
-    /// that detail view's toolbar.
+    /// "Save to My Recipes" is now the tile's floating accessory badge,
+    /// both here and in that detail view's toolbar.
     @ViewBuilder
     private func sharedRecipeCard(_ entry: SharedRecipeEntry) -> some View {
         // `savedShareIDs` alone only covers a save made *this session* —
@@ -438,33 +437,35 @@ struct RecipesHomeView: View {
         // should not be able to be added twice."
         let isSaved = savedShareIDs.contains(entry.id)
             || allRecipes.contains { $0.backendRecipeID == entry.recipeID }
-        SharedEntryCardContent(entry: entry)
-            .background {
-                NavigationLink("") {
-                    SharedRecipeDetailView(entry: entry, isSaved: isSaved) {
-                        saveSharedRecipe(entry)
-                    }
+        MediaTileRow(
+            title: entry.title,
+            metaItems: sharedEntryMetaItems(entry),
+            thumbnail: { EntryPhoto(photoData: entry.photoData) },
+            accessoryIcon: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
+            accessoryTint: isSaved ? .brandSage : .brandForest,
+            onAccessoryTap: isSaved ? nil : { saveSharedRecipe(entry) }
+        )
+        .background {
+            NavigationLink("") {
+                SharedRecipeDetailView(entry: entry, isSaved: isSaved) {
+                    saveSharedRecipe(entry)
                 }
-                .opacity(0)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .overlay(alignment: .topTrailing) {
-                Group {
-                    if isSaved {
-                        CircularIconButton(systemImage: "checkmark.circle.fill", tint: .brandSage) {}
-                            .allowsHitTesting(false)
-                            .accessibilityLabel("Saved to My Recipes")
-                    } else {
-                        CircularIconButton(systemImage: "square.and.arrow.down", tint: .white) {
-                            saveSharedRecipe(entry)
-                        }
-                        .accessibilityLabel("Save to My Recipes")
-                    }
-                }
-                .padding(8)
-            }
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            .listRowSeparator(.hidden)
+            .opacity(0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
+    }
+
+    private func sharedEntryMetaItems(_ entry: SharedRecipeEntry) -> [(icon: String, text: String)] {
+        var items: [(icon: String, text: String)] = []
+        if entry.totalMinutes > 0 {
+            items.append((icon: "clock", text: "\(entry.totalMinutes) min"))
+        }
+        items.append((icon: "person.2", text: "serves \(entry.displayServings)"))
+        items.append((icon: "person.2", text: entry.sharedByCaption))
+        return items
     }
 
     private func loadSharedRecipes() async {
@@ -525,18 +526,16 @@ struct RecipesHomeView: View {
         }
     }
 
-    /// A photo card matching `recipeCard`'s own formatting exactly (same
-    /// `LibraryEntryCardContent`/`RecipeCardContent` layout: photo on top,
-    /// title + meta row below) and, same as every other recipe card on this
-    /// screen, tappable to open a detail view — direct user report that this
-    /// used to be a plain, smaller `HStack` row with no way to view the
-    /// recipe at all before saving it, formatted nothing like the bundled
-    /// `.library` cards right above it or "My Recipes." Since this entry
-    /// hasn't been saved as a local `Recipe` yet (see `saveLibraryEntry`),
-    /// it opens `LibraryRecipeDetailView` — a read-only detail screen built
-    /// straight off the wire `LibraryRecipeEntry` — rather than the
-    /// `Recipe`-`@Bindable` `RecipeDetailView` every other card uses, which
-    /// has no path that doesn't already assume a persisted local recipe.
+    /// A `MediaTileRow` matching `recipeCard`'s own formatting exactly —
+    /// direct user request for one consistent tile format across every
+    /// recipe/restaurant/plan tile (see that type's own doc comment) — and,
+    /// same as every other tile on this screen, tappable to open a detail
+    /// view. Since this entry hasn't been saved as a local `Recipe` yet
+    /// (see `saveLibraryEntry`), it opens `LibraryRecipeDetailView` — a
+    /// read-only detail screen built straight off the wire
+    /// `LibraryRecipeEntry` — rather than the `Recipe`-`@Bindable`
+    /// `RecipeDetailView` every other tile uses, which has no path that
+    /// doesn't already assume a persisted local recipe.
     @ViewBuilder
     private func masterLibraryCard(_ entry: LibraryRecipeEntry) -> some View {
         // Same "also true across sessions, not just this one" reasoning as
@@ -547,36 +546,38 @@ struct RecipesHomeView: View {
         // relying on it silently.
         let isSaved = savedLibraryEntryIDs.contains(entry.id)
             || allRecipes.contains { $0.backendRecipeID == entry.recipeID }
-        LibraryEntryCardContent(entry: entry)
-            .background {
-                // Same "flexible hidden NavigationLink behind the card"
-                // pattern as `recipeCard` — see that method's own doc
-                // comment for why.
-                NavigationLink("") {
-                    LibraryRecipeDetailView(entry: entry, isSaved: isSaved) {
-                        saveLibraryEntry(entry)
-                    }
+        MediaTileRow(
+            title: entry.title,
+            metaItems: libraryEntryMetaItems(entry),
+            thumbnail: { EntryPhoto(photoData: entry.photoData) },
+            accessoryIcon: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
+            accessoryTint: isSaved ? .brandSage : .brandForest,
+            onAccessoryTap: isSaved ? nil : { saveLibraryEntry(entry) }
+        )
+        .background {
+            // Same "flexible hidden NavigationLink behind the tile"
+            // pattern as `recipeCard` — see that method's own doc comment
+            // for why.
+            NavigationLink("") {
+                LibraryRecipeDetailView(entry: entry, isSaved: isSaved) {
+                    saveLibraryEntry(entry)
                 }
-                .opacity(0)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .overlay(alignment: .topTrailing) {
-                Group {
-                    if isSaved {
-                        CircularIconButton(systemImage: "checkmark.circle.fill", tint: .brandSage) {}
-                            .allowsHitTesting(false)
-                            .accessibilityLabel("Saved to My Recipes")
-                    } else {
-                        CircularIconButton(systemImage: "square.and.arrow.down", tint: .white) {
-                            saveLibraryEntry(entry)
-                        }
-                        .accessibilityLabel("Save to My Recipes")
-                    }
-                }
-                .padding(8)
-            }
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            .listRowSeparator(.hidden)
+            .opacity(0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
+    }
+
+    private func libraryEntryMetaItems(_ entry: LibraryRecipeEntry) -> [(icon: String, text: String)] {
+        var items: [(icon: String, text: String)] = []
+        if entry.totalMinutes > 0 {
+            items.append((icon: "clock", text: "\(entry.totalMinutes) min"))
+        }
+        items.append((icon: "person.2", text: "serves \(entry.displayServings)"))
+        items.append((icon: "books.vertical", text: entry.addedByCaption))
+        return items
     }
 
     private func loadMasterLibrary() async {
@@ -668,130 +669,129 @@ struct RecipesHomeView: View {
     private var emptyStateDescription: String {
         switch section {
         case .mine: return "Add your own recipe or import one from a link."
-        case .favorites: return "Tap the heart on a recipe to save it here."
+        case .favorites: return "Swipe a recipe and tap the heart to save it here."
         case .library: return "Check back soon for more built-in recipes."
         case .shared: return "" // Unused — see `sharedSectionContent`.
         }
     }
 
-    /// A photo card (image on top, title + details below) with floating
-    /// buttons over the image: a heart to favorite, a "+" to jump straight
-    /// to `QuickAddToPlanSheet`, and — direct user request, only for a
-    /// recipe this account actually created (`source == .manual || .imported`;
-    /// a bundled `.library` recipe or one saved from someone else's share
-    /// isn't this account's to share or publish further, and publishing one
-    /// would just 403 against the backend's own owner check — see
-    /// `LibraryRecipeEntry.makeLocalRecipe()`'s doc comment) — a share icon
-    /// and an "Add to Library" icon. Tapping the rest of the card opens the
-    /// recipe — via a `NavigationLink` hidden in the background rather than
-    /// wrapping the visible content directly, which is also what keeps
-    /// List from drawing its usual chevron disclosure indicator on the row
-    /// (that indicator is tied to the row's top-level content literally
-    /// being a `NavigationLink`, not to whether tapping it navigates). Every
-    /// button is a separate `.overlay` on the *outside* of this whole
-    /// stack, not nested inside the link's label — a `Button` nested inside
-    /// a `NavigationLink`'s label fires both the button's action and the
-    /// navigation on the same tap.
+    /// A `MediaTileRow` — direct user request for one consistent tile
+    /// format shared across the Plan/Restaurants/Recipes tabs (see that
+    /// type's own doc comment), replacing this card's previous vertical
+    /// photo-on-top layout. That version floated up to four icon buttons
+    /// over the image (favorite, quick-add, share, add-to-library); this
+    /// shorter tile only has room for the one accessory badge the shared
+    /// component offers, so quick-add — the single action every recipe
+    /// (bundled, saved, or the account's own) can always take — keeps that
+    /// spot, matching the reference tile's own "+" badge exactly. Favorite,
+    /// share, and "Add to Library" (the latter two still gated to
+    /// `source == .manual || .imported` — see their own actions' doc
+    /// comments for why publishing/sharing someone else's original work
+    /// isn't offered at all) move to swipe actions and a `.contextMenu`
+    /// instead of floating badges. Tapping the tile opens the recipe via a
+    /// `NavigationLink` hidden in the background, same "keeps List's own
+    /// chevron from appearing, and keeps a nested Button from also firing
+    /// the navigation" reasoning as before.
     @ViewBuilder
     private func recipeCard(_ recipe: Recipe) -> some View {
         let canShareOrPublish = recipe.source == .manual || recipe.source == .imported
-        RecipeCardContent(recipe: recipe)
-            .background {
-                // `.background` proposes the primary view's size to this
-                // content, but a NavigationLink only *accepts* that size if
-                // asked to be flexible — without the explicit frame here it
-                // shrinks to fit its own empty label, leaving only a sliver
-                // of the card actually tappable.
-                NavigationLink("") {
-                    RecipeDetailView(recipe: recipe)
-                }
-                .opacity(0)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        MediaTileRow(
+            title: recipe.title,
+            metaItems: recipeMetaItems(recipe),
+            thumbnail: { RecipeThumbnail(recipe: recipe) },
+            accessoryIcon: "plus",
+            accessoryTint: .brandForest,
+            onAccessoryTap: { quickAddRecipe = recipe }
+        )
+        .background {
+            NavigationLink("") {
+                RecipeDetailView(recipe: recipe)
             }
-            .overlay(alignment: .topLeading) {
-                VStack(spacing: 6) {
-                    CircularIconButton(systemImage: "plus", tint: .white) {
-                        quickAddRecipe = recipe
-                    }
-                    if canShareOrPublish {
-                        CircularIconButton(systemImage: "square.and.arrow.up", tint: .white) {
-                            shareTapped(recipe)
-                        }
-                    }
-                }
-                .padding(8)
-            }
-            .overlay(alignment: .topTrailing) {
-                VStack(spacing: 6) {
-                    CircularIconButton(
-                        systemImage: recipe.isFavorite ? "heart.fill" : "heart",
-                        tint: recipe.isFavorite ? .brandTerracotta : .white
-                    ) {
-                        recipe.isFavorite.toggle()
-                    }
-                    if canShareOrPublish {
-                        CircularIconButton(
-                            systemImage: recipe.isPublishedToLibrary ? "books.vertical.fill" : "books.vertical",
-                            tint: recipe.isPublishedToLibrary ? .brandSage : .white
-                        ) {
-                            publishTapped(recipe)
-                        }
-                        .accessibilityLabel(recipe.isPublishedToLibrary ? "Already in the Library" : "Add to Library")
-                    }
-                }
-                .padding(8)
-            }
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            .listRowSeparator(.hidden)
-    }
-}
-
-private struct RecipeCardContent: View {
-    let recipe: Recipe
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            RecipeThumbnail(recipe: recipe)
-                .frame(height: 150)
-                .frame(maxWidth: .infinity)
-                .clipped()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(recipe.title)
-                    .font(.brandHeadline)
-                    .foregroundStyle(.primary)
-                HStack(spacing: 8) {
-                    if recipe.totalMinutes > 0 {
-                        Label("\(recipe.totalMinutes) min", systemImage: "clock")
-                    }
-                    Label("serves \(recipe.servings)", systemImage: "person.2")
-                    if recipe.source == .imported {
-                        Label("imported", systemImage: "link")
-                    }
-                    if recipe.source == .shared {
-                        Label(recipe.sharedAttributionCaption, systemImage: "person.2")
-                    }
-                }
-                .font(.brandCaption)
-                .foregroundStyle(.secondary)
-            }
-            .padding(10)
+            .opacity(0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color.brandCream)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.06)))
+        .swipeActions(edge: .leading) {
+            Button {
+                recipe.isFavorite.toggle()
+            } label: {
+                Label(recipe.isFavorite ? "Unfavorite" : "Favorite", systemImage: recipe.isFavorite ? "heart.slash" : "heart")
+            }
+            .tint(.brandTerracotta)
+        }
+        .swipeActions(edge: .trailing) {
+            if canShareOrPublish {
+                Button {
+                    publishTapped(recipe)
+                } label: {
+                    Label(
+                        recipe.isPublishedToLibrary ? "In Library" : "Add to Library",
+                        systemImage: recipe.isPublishedToLibrary ? "books.vertical.fill" : "books.vertical"
+                    )
+                }
+                .tint(.brandSage)
+                .disabled(recipe.isPublishedToLibrary)
+                Button {
+                    shareTapped(recipe)
+                } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                .tint(.brandHoney)
+            }
+        }
+        .contextMenu {
+            Button {
+                recipe.isFavorite.toggle()
+            } label: {
+                Label(recipe.isFavorite ? "Unfavorite" : "Favorite", systemImage: recipe.isFavorite ? "heart.slash" : "heart")
+            }
+            if canShareOrPublish {
+                Button {
+                    shareTapped(recipe)
+                } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                if !recipe.isPublishedToLibrary {
+                    Button {
+                        publishTapped(recipe)
+                    } label: {
+                        Label("Add to Library", systemImage: "books.vertical")
+                    }
+                }
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
+    }
+
+    private func recipeMetaItems(_ recipe: Recipe) -> [(icon: String, text: String)] {
+        var items: [(icon: String, text: String)] = []
+        if recipe.totalMinutes > 0 {
+            items.append((icon: "clock", text: "\(recipe.totalMinutes) min"))
+        }
+        items.append((icon: "person.2", text: "serves \(recipe.servings)"))
+        if recipe.source == .imported {
+            items.append((icon: "link", text: "imported"))
+        }
+        if recipe.source == .shared {
+            items.append((icon: "person.2", text: recipe.sharedAttributionCaption))
+        }
+        if recipe.isFavorite {
+            items.append((icon: "heart.fill", text: "favorite"))
+        }
+        return items
     }
 }
 
-/// The photo half of `SharedRecipeEntryThumbnail`/`LibraryEntryCardContent`/
-/// `LibraryRecipeDetailView`, deliberately much simpler than `RecipeThumbnail`
+/// The photo half of `SharedRecipeEntryThumbnail`/`LibraryRecipeDetailView`/
+/// `SharedRecipeDetailView`, deliberately much simpler than `RecipeThumbnail`
 /// (no remote-URL/bundled-asset cases: an entry that hasn't been saved as a
 /// local `Recipe` yet only ever has a decoded photo or nothing) and with no
-/// frame baked in, so each caller sizes it for its own layout (a 56pt square
-/// row thumbnail, a 150pt-tall card top, a 200pt-tall detail header) — same
-/// placeholder look either way (sage tint, a plain fork-and-knife glyph) so
-/// one of these with no photo doesn't look broken or different from any
-/// other "no photo" recipe elsewhere in this app.
+/// frame baked in, so each caller sizes it for its own layout (a 56pt
+/// square row thumbnail, a `mediaTileHeight`-square `MediaTileRow`
+/// thumbnail, a 200pt-tall detail header) — same placeholder look either
+/// way (sage tint, a plain fork-and-knife glyph) so one of these with no
+/// photo doesn't look broken or different from any other "no photo"
+/// recipe elsewhere in this app.
 private struct EntryPhoto: View {
     let photoData: Data?
 
@@ -818,49 +818,6 @@ private struct SharedRecipeEntryThumbnail: View {
         EntryPhoto(photoData: photoData)
             .frame(width: 56, height: 56)
             .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-/// The `RecipeCardContent`-equivalent for a master-library entry that
-/// hasn't been saved as a local `Recipe` yet — same layout (photo on top,
-/// title + meta row below) built off `LibraryRecipeEntry`'s own fields
-/// instead of a `Recipe`'s, plus the "Added by ..." caption a saved
-/// recipe's own card has no equivalent of. Not folded into
-/// `RecipeCardContent` itself: `RecipeThumbnail` only knows how to read a
-/// `Recipe`'s photo/asset/remote-URL fields, none of which an unsaved
-/// `LibraryRecipeEntry` has — see `masterLibraryCard`'s own doc comment for
-/// the fuller "why a near-duplicate, not a shared generic" reasoning.
-private struct LibraryEntryCardContent: View {
-    let entry: LibraryRecipeEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            EntryPhoto(photoData: entry.photoData)
-                .frame(height: 150)
-                .frame(maxWidth: .infinity)
-                .clipped()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title)
-                    .font(.brandHeadline)
-                    .foregroundStyle(.primary)
-                HStack(spacing: 8) {
-                    if entry.totalMinutes > 0 {
-                        Label("\(entry.totalMinutes) min", systemImage: "clock")
-                    }
-                    Label("serves \(entry.displayServings)", systemImage: "person.2")
-                }
-                .font(.brandCaption)
-                .foregroundStyle(.secondary)
-                Text(entry.addedByCaption)
-                    .font(.brandCaption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(10)
-        }
-        .background(Color.brandCream)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.06)))
     }
 }
 
@@ -976,45 +933,6 @@ private struct LibraryRecipeDetailView: View {
     }
 }
 
-/// The `LibraryEntryCardContent` counterpart for a "Shared" entry — same
-/// layout, same reasoning for why this is a near-duplicate rather than a
-/// shared generic (see that type's own doc comment), just reading
-/// `SharedRecipeEntry`'s fields (`sharedByCaption` in place of
-/// `addedByCaption`) instead.
-private struct SharedEntryCardContent: View {
-    let entry: SharedRecipeEntry
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            EntryPhoto(photoData: entry.photoData)
-                .frame(height: 150)
-                .frame(maxWidth: .infinity)
-                .clipped()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title)
-                    .font(.brandHeadline)
-                    .foregroundStyle(.primary)
-                HStack(spacing: 8) {
-                    if entry.totalMinutes > 0 {
-                        Label("\(entry.totalMinutes) min", systemImage: "clock")
-                    }
-                    Label("serves \(entry.displayServings)", systemImage: "person.2")
-                }
-                .font(.brandCaption)
-                .foregroundStyle(.secondary)
-                Text(entry.sharedByCaption)
-                    .font(.brandCaption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(10)
-        }
-        .background(Color.brandCream)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.06)))
-    }
-}
-
 /// The `LibraryRecipeDetailView` counterpart for a "Shared" entry — same
 /// read-only layout/reasoning (see that type's own doc comment), just
 /// reading `SharedRecipeEntry`'s fields instead.
@@ -1116,24 +1034,5 @@ private struct SharedRecipeDetailView: View {
                 }
             }
         }
-    }
-}
-
-/// A small circular button floating over a photo — a translucent dark disc
-/// so a white icon reads clearly regardless of what's underneath it.
-private struct CircularIconButton: View {
-    let systemImage: String
-    let tint: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.brandCallout)
-                .foregroundStyle(tint)
-                .padding(8)
-                .background(.black.opacity(0.35), in: Circle())
-        }
-        .buttonStyle(.plain)
     }
 }

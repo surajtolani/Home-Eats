@@ -167,7 +167,7 @@ struct RecipeDetailView: View {
     /// The literal "Shared"/"Library" tag (see `SharedRecipeEntry
     /// .makeLocalRecipe()`/`LibraryRecipeEntry.makeLocalRecipe()`) reads as
     /// `recipe.sharedAttributionCaption` instead of the bare tag text —
-    /// same "who shared it" fix as `RecipeCardContent`'s meta row; every
+    /// same "who shared it" fix as `RecipesHomeView.recipeMetaItems`; every
     /// other tag (a custom one, or "AI" from a photo/notes import) passes
     /// through unchanged. Only the caption's own leading word gets
     /// capitalized to match this chip row's existing style ("Shared by

@@ -1384,10 +1384,17 @@ private struct GroupPlannedMealRow: View {
     @Binding var pushedTarget: GroupPlanNavigationTarget?
     let onRemove: () -> Void
 
+    /// Only queried to opportunistically resolve a real recipe photo for
+    /// `thumbnail` below — see that property's own doc comment. Any given
+    /// day panel only ever has a handful of these rows on screen at once,
+    /// so one small unfiltered `@Query` per row costs nothing real.
+    @Query private var allRecipes: [Recipe]
+
     /// Same icon+color convention as the personal `PlannedMealRow` — a
     /// recipe, an eat-out plan, and an order-in plan all read distinctly at
     /// a glance here too, and it's the same palette as the calendar's own
-    /// legend/status dots.
+    /// legend/status dots. Still used as `thumbnail`'s own fallback
+    /// placeholder below, even now that this row is a `MediaTileRow`.
     private var iconName: String {
         if meal.isHomeCooked { return "frying.pan" }
         return meal.isOrderingIn ? "bag" : "fork.knife"
@@ -1397,37 +1404,51 @@ private struct GroupPlannedMealRow: View {
         return meal.isOrderingIn ? .brandHoney : .brandTerracotta
     }
 
+    /// A group-shared meal only ever carries a bare `recipeID` string (a
+    /// backend id, resolved by `GroupPlanDestinationView` on tap, not a
+    /// full local `Recipe` with photo data) — but if this same recipe also
+    /// happens to exist locally (`Recipe.backendRecipeID == meal.recipeID`,
+    /// true whenever it's been saved/synced on this device), that local
+    /// copy's own photo is a real thumbnail worth showing rather than
+    /// nothing. Falls back to the existing icon+color placeholder
+    /// (`iconName`/`iconColor` above) when no local match exists — for an
+    /// eat-out/order-in plan (no `recipeID` at all) or simply a recipe this
+    /// device hasn't independently saved.
+    private var resolvedRecipe: Recipe? {
+        guard let recipeID = meal.recipeID else { return nil }
+        return allRecipes.first { $0.backendRecipeID == recipeID }
+    }
+
     var body: some View {
-        // The whole row, not just the icon/title capsule, is the tappable
-        // area here — unlike `GroupSuggestionRow` below, nothing in this
-        // row's visible content is its own `Button` (the only action,
-        // "Remove," lives behind `.swipeActions`, which never conflicts
-        // with a plain tap), so there's no nested-button-swallows-the-tap
-        // concern to work around.
+        // The whole row, not just the tile itself, is the tappable area
+        // here — unlike `GroupSuggestionRow` below, nothing in this row's
+        // visible content is its own `Button` (the only action, "Remove,"
+        // lives behind `.swipeActions`, which never conflicts with a plain
+        // tap), so there's no nested-button-swallows-the-tap concern to
+        // work around.
         GroupPlanLinkableRow(
             recipeID: meal.recipeID, cachedRecipeTitle: meal.cachedRecipeTitle, restaurantName: meal.restaurantName,
             pushedTarget: $pushedTarget
         ) {
-            HStack {
-                HStack(spacing: 6) {
-                    Image(systemName: iconName).foregroundStyle(iconColor)
-                    Text(meal.displayTitle)
+            // `MediaTileRow` — direct user request for one consistent tile
+            // format across the Plan/Restaurants/Recipes tabs (see that
+            // type's own doc comment). No accessory badge here (nothing to
+            // "add" once a meal's already decided) — swipe-to-remove below
+            // is this row's only action, same as before.
+            MediaTileRow(
+                title: meal.displayTitle,
+                metaItems: [(icon: "person.fill", text: "by \(memberName)")],
+                thumbnail: {
+                    if let resolvedRecipe {
+                        RecipeThumbnail(recipe: resolvedRecipe)
+                    } else {
+                        ZStack {
+                            iconColor.opacity(0.15)
+                            Image(systemName: iconName).foregroundStyle(iconColor)
+                        }
+                    }
                 }
-                // `.brandSubheadline`, not `.brandHeadline` — direct user
-                // request to match `GroupSuggestionRow`'s own title size
-                // (the "ones that go into a vote"), so a decided meal and a
-                // suggestion read at the same scale rather than the decided
-                // one looking visibly larger.
-                .font(.brandSubheadline)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(iconColor.opacity(0.12), in: Capsule())
-
-                Spacer()
-                Text("by \(memberName)")
-                    .font(.brandCaption2)
-                    .foregroundStyle(.secondary)
-            }
+            )
         }
         .swipeActions(edge: .trailing) {
             // MANAGER only — mirrors `DELETE /groups/:groupId/meal-plan/:id`
@@ -2165,10 +2186,10 @@ private struct GroupAddMealSheet: View {
 ///
 /// **What gets planned**: a result's/saved restaurant's plain name alone,
 /// not "name, address" — every downstream display of `restaurantName`
-/// (`GroupPlannedMealRow`'s pill, `GroupSuggestionRow`, `GroupAgendaDayRow`'s
+/// (`GroupPlannedMealRow`'s tile title, `GroupSuggestionRow`, `GroupAgendaDayRow`'s
 /// one-line slot summary) is a compact, space-constrained label, the same
 /// shape a hand-typed name always produced, and an address tacked on would
-/// either get silently truncated there or badly overflow a pill sized for a
+/// either get silently truncated there or badly overflow a title sized for a
 /// short name. The result list still shows the address as a secondary line
 /// — enough to tell two same-named places apart before picking one — it
 /// just isn't carried into the string that ends up planned for the group.

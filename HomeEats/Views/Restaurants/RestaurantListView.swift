@@ -50,21 +50,18 @@ struct RestaurantListView: View {
                             NavigationLink {
                                 RestaurantDetailView(restaurant: restaurant)
                             } label: {
-                                HStack {
-                                    RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoNames.first, size: 44)
-                                    VStack(alignment: .leading) {
-                                        HStack {
-                                            Text(restaurant.name).foregroundStyle(.primary)
-                                            if restaurant.isFavorite {
-                                                Image(systemName: "star.fill").foregroundStyle(.yellow).font(.brandCaption)
-                                            }
-                                        }
-                                        if let descriptorLine = restaurant.descriptorLine {
-                                            Text(descriptorLine).font(.brandCaption).foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    Spacer()
+                                restaurantTile(restaurant)
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button {
+                                    restaurant.isFavorite.toggle()
+                                } label: {
+                                    Label(
+                                        restaurant.isFavorite ? "Unfavorite" : "Favorite",
+                                        systemImage: restaurant.isFavorite ? "star.slash" : "star"
+                                    )
                                 }
+                                .tint(.brandHoney)
                             }
                         }
                         .onDelete { offsets in
@@ -201,6 +198,39 @@ struct RestaurantListView: View {
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal)
         .padding(.vertical, 8)
+    }
+
+    /// The `MediaTileRow`-based row for a saved restaurant — direct user
+    /// request for a consistent tile format across the Plan/Restaurants/
+    /// Recipes tabs (see that type's own doc comment). The favorite star
+    /// that used to sit inline next to the name moves to a floating
+    /// accessory badge (matching the reference tile's own corner button
+    /// exactly) and a leading swipe action, rather than disappearing —
+    /// there's only room for the one floating accessory this tile shape
+    /// offers.
+    private func restaurantTile(_ restaurant: Restaurant) -> some View {
+        MediaTileRow(
+            title: restaurant.name,
+            metaItems: restaurantMetaItems(restaurant),
+            thumbnail: { RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoNames.first, size: mediaTileHeight) },
+            accessoryIcon: restaurant.isFavorite ? "star.fill" : "star",
+            accessoryTint: restaurant.isFavorite ? .brandHoney : .secondary,
+            onAccessoryTap: { restaurant.isFavorite.toggle() }
+        )
+    }
+
+    private func restaurantMetaItems(_ restaurant: Restaurant) -> [(icon: String, text: String)] {
+        var items: [(icon: String, text: String)] = []
+        if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
+            items.append((icon: "fork.knife", text: cuisine))
+        }
+        if let priceRange = restaurant.priceRange, !priceRange.isEmpty {
+            items.append((icon: "dollarsign.circle", text: priceRange))
+        }
+        if let rating = restaurant.rating, rating > 0 {
+            items.append((icon: "star.fill", text: "\(rating)/5"))
+        }
+        return items
     }
 
     private var searchResultsSection: some View {

@@ -90,7 +90,7 @@ final class Recipe {
     /// .makeLocalRecipe()`), `nil` if they published anonymously. `nil` for
     /// every other `source` (nothing to attribute a `.manual`/`.imported`/
     /// `.library` recipe to). Direct user request: a shared recipe's card
-    /// used to just say "shared" with no name — see `RecipeCardContent`'s
+    /// used to just say "shared" with no name — see `RecipesHomeView.recipeMetaItems`'s
     /// own doc comment for where this actually renders. Captured once at
     /// save time rather than read live from the backend on every render,
     /// since the original `SharedRecipeEntry`/`LibraryRecipeEntry` this
@@ -148,7 +148,7 @@ final class Recipe {
     var totalMinutes: Int { prepMinutes + cookMinutes }
 
     /// "shared by Priya" / "added by Priya" / "added anonymously" — the
-    /// lowercase-leading caption `RecipeCardContent`'s meta row and
+    /// lowercase-leading caption `RecipesHomeView.recipeMetaItems` and
     /// `RecipeDetailView`'s tag chip show for a `.shared` recipe, in place
     /// of the old bare "shared" with no name at all. Distinguishes a
     /// friend/group share (`tags.contains("Shared")` — see
