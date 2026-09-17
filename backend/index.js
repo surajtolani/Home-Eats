@@ -27,6 +27,7 @@ const invitesRouter = require("./routes/invites");
 const notificationsRouter = require("./routes/notifications");
 const recipeLibraryRouter = require("./routes/recipeLibrary");
 const restaurantsRouter = require("./routes/restaurants");
+const mealHistoryRouter = require("./routes/mealHistory");
 const groupMealPlanRouter = require("./routes/groupMealPlan");
 const groupGroceryRouter = require("./routes/groupGrocery");
 const groupGroceryAislesRouter = require("./routes/groupGroceryAisles");
@@ -173,6 +174,13 @@ app.use("/recipe-library", requireAuth, recipeLibraryRouter);
 // same "own distinct, never-colliding prefix" choice `/recipe-library`
 // makes relative to `/recipes/*`.
 app.use("/restaurants/library", requireAuth, restaurantsRouter);
+
+// --- Personal meal history -------------------------------------------------
+// Account-backed log of what was actually eaten (rating + notes), the same
+// durability/multi-device reasoning as the recipe/restaurant libraries just
+// above — see routes/mealHistory.js and MealHistoryEntry's own doc comment
+// in prisma/schema.prisma.
+app.use("/meal-history", requireAuth, mealHistoryRouter);
 
 // Shared mapping from a Places API (New) place object to the shape both
 // /restaurants/search and /restaurants/search-natural return — kept in one

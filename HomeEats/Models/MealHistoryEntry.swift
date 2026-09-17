@@ -21,6 +21,15 @@ final class MealHistoryEntry {
     var rating: MealRating?
     var madeByMemberID: UUID?
     var notes: String?
+    /// This entry's id on the backend's `MealHistoryEntry` table, once
+    /// pushed there — `nil` until `PersonalLibrarySyncService.syncMealHistory`
+    /// first creates it server-side, same role `Restaurant.backendID`/
+    /// `Recipe.backendRecipeID` already play for those two models. Before
+    /// this existed, meal history lived purely on-device with no server
+    /// copy at all, so a local-store reset or a second device could never
+    /// recover or see it. See `PersonalLibrarySyncService`'s own doc
+    /// comment for the full sync design.
+    var backendID: String?
 
     init(
         id: UUID = UUID(),
@@ -29,7 +38,8 @@ final class MealHistoryEntry {
         restaurantID: UUID? = nil,
         rating: MealRating? = nil,
         madeByMemberID: UUID? = nil,
-        notes: String? = nil
+        notes: String? = nil,
+        backendID: String? = nil
     ) {
         self.id = id
         self.date = date
@@ -38,5 +48,6 @@ final class MealHistoryEntry {
         self.rating = rating
         self.madeByMemberID = madeByMemberID
         self.notes = notes
+        self.backendID = backendID
     }
 }

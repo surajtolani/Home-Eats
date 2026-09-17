@@ -37,7 +37,17 @@ struct MealHistoryView: View {
                 }
             }
             .onDelete { offsets in
-                for index in offsets { modelContext.delete(history[index]) }
+                for index in offsets {
+                    let entry = history[index]
+                    // Same "immediate, online-only, captured before the
+                    // local delete" pattern as `RestaurantListView`'s/
+                    // `RecipesHomeView`'s own deletes — see
+                    // `PersonalLibrarySyncService`'s doc comment.
+                    if let backendID = entry.backendID {
+                        Task { try? await AccountsAPIClient.deleteMealHistoryEntry(id: backendID) }
+                    }
+                    modelContext.delete(entry)
+                }
             }
         }
         .navigationTitle("Meal History")

@@ -990,6 +990,60 @@ extension AccountsAPIClient {
     }
 }
 
+// MARK: - Personal meal history (routes/mealHistory.js, mounted at
+// /meal-history) — see `RemoteMealHistoryEntry`'s own doc comment in
+// AccountModels.swift, and `PersonalLibrarySyncService`, for the full story.
+
+extension AccountsAPIClient {
+    static func getMyMealHistoryEntries() async throws -> [RemoteMealHistoryEntry] {
+        let response: MealHistoryListResponse = try await send("GET", path: "meal-history/mine")
+        return response.entries
+    }
+
+    static func createMealHistoryEntry(_ payload: MealHistoryPayload) async throws -> RemoteMealHistoryEntry {
+        struct Response: Decodable { let entry: RemoteMealHistoryEntry }
+        let response: Response = try await send("POST", path: "meal-history", body: payload.asJSONObject())
+        return response.entry
+    }
+
+    /// Always sends every field, same "full current state, no partial diff"
+    /// choice as `updateRestaurant`'s own doc comment — `PersonalLibrarySyncService`
+    /// pushes a meal history entry's full local state on every sync pass.
+    static func updateMealHistoryEntry(id entryID: String, _ payload: MealHistoryPayload) async throws -> RemoteMealHistoryEntry {
+        struct Response: Decodable { let entry: RemoteMealHistoryEntry }
+        let response: Response = try await send("PATCH", path: "meal-history/\(entryID)", body: payload.asJSONObject())
+        return response.entry
+    }
+
+    static func deleteMealHistoryEntry(id entryID: String) async throws {
+        try await sendNoContent("DELETE", path: "meal-history/\(entryID)")
+    }
+}
+
+/// The request body `POST /meal-history` and `PATCH /meal-history/:id` both
+/// take — same "always send every field, explicit `NSNull()` for a Swift
+/// `nil`" choice as `RestaurantLibraryPayload`'s own doc comment explains,
+/// for the same reason: `PATCH`'s handler applies whatever's in the parsed
+/// body as-is (see routes/mealHistory.js), so an omitted key would silently
+/// fail to clear a field the user removed locally.
+struct MealHistoryPayload {
+    var date: Date
+    var recipeID: String?
+    var restaurantID: String?
+    var rating: RemoteMealRating?
+    var notes: String?
+
+    func asJSONObject() -> [String: Any] {
+        [
+            "date": AccountsAPIClient.isoDateString(date),
+            "recipeId": recipeID.map { $0 as Any } ?? NSNull(),
+            "restaurantId": restaurantID.map { $0 as Any } ?? NSNull(),
+            "rating": rating.map { $0.rawValue as Any } ?? NSNull(),
+            "notes": notes.map { $0 as Any } ?? NSNull()
+        ]
+    }
+}
+
 /// The request body `POST /restaurants/library` and `PATCH
 /// /restaurants/library/:id` both take — same "always send every field"
 /// choice `updateRestaurant`'s own doc comment explains, so unlike

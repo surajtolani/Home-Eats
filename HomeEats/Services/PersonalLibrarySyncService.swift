@@ -66,6 +66,15 @@ enum PersonalLibrarySyncService {
     static func sync(modelContext: ModelContext) async {
         await syncRestaurants(modelContext: modelContext)
         await syncRecipes(modelContext: modelContext)
+        // Meal history last, deliberately — its push step translates each
+        // entry's local recipeID/restaurantID into the backend ids
+        // `syncRestaurants`/`syncRecipes` just finished assigning this same
+        // pass (a brand-new local recipe/restaurant gets its `backendID`/
+        // `backendRecipeID` stamped in place, on the same object, during
+        // those two calls), so running this after them means a
+        // same-session "log a meal I just added" already resolves instead
+        // of silently sending a null reference until the next sync pass.
+        await syncMealHistory(modelContext: modelContext)
     }
 
     // MARK: - Restaurants
@@ -160,6 +169,83 @@ enum PersonalLibrarySyncService {
             modelContext.insert(remote.makeLocalRecipe())
         }
     }
+
+    // MARK: - Meal history
+
+    /// Same blunt "full state every pass" push + "only add what's missing"
+    /// pull as `syncRestaurants`/`syncRecipes` above — see this type's own
+    /// doc comment for the full reasoning. The one wrinkle here: a meal
+    /// history entry's `recipeID`/`restaurantID` are THIS DEVICE's local
+    /// `Recipe`/`Restaurant` row ids, meaningless to any other device, so
+    /// every push/pull has to translate through each row's own
+    /// `backendRecipeID`/`backendID` instead of sending/reading the local
+    /// UUID directly.
+    private static func syncMealHistory(modelContext: ModelContext) async {
+        let localRecipes = (try? modelContext.fetch(FetchDescriptor<Recipe>())) ?? []
+        let localRestaurants = (try? modelContext.fetch(FetchDescriptor<Restaurant>())) ?? []
+        let recipeBackendIDByLocalID = Dictionary(
+            uniqueKeysWithValues: localRecipes.compactMap { recipe -> (UUID, String)? in
+                guard let backendID = recipe.backendRecipeID else { return nil }
+                return (recipe.id, backendID)
+            }
+        )
+        let restaurantBackendIDByLocalID = Dictionary(
+            uniqueKeysWithValues: localRestaurants.compactMap { restaurant -> (UUID, String)? in
+                guard let backendID = restaurant.backendID else { return nil }
+                return (restaurant.id, backendID)
+            }
+        )
+
+        let localEntries = (try? modelContext.fetch(FetchDescriptor<MealHistoryEntry>())) ?? []
+        for entry in localEntries {
+            do {
+                // A reference to a recipe/restaurant that hasn't reached the
+                // backend yet (still `nil` in the lookups above) is sent as
+                // `nil` this pass — not an error, and not worth blocking the
+                // rest of this row's push on: the next sync pass re-sends
+                // this entry's full state anyway, so it resolves itself
+                // automatically once that recipe/restaurant syncs.
+                let payload = MealHistoryPayload(
+                    date: entry.date,
+                    recipeID: entry.recipeID.flatMap { recipeBackendIDByLocalID[$0] },
+                    restaurantID: entry.restaurantID.flatMap { restaurantBackendIDByLocalID[$0] },
+                    rating: entry.rating.map { RemoteMealRating(localRating: $0) },
+                    notes: entry.notes
+                )
+                if let backendID = entry.backendID {
+                    _ = try await AccountsAPIClient.updateMealHistoryEntry(id: backendID, payload)
+                } else {
+                    let created = try await AccountsAPIClient.createMealHistoryEntry(payload)
+                    entry.backendID = created.id
+                }
+            } catch {
+                // Same best-effort, no-retry-queue reasoning as
+                // `syncRestaurants`/`syncRecipes` above.
+                continue
+            }
+        }
+
+        guard let remoteEntries = try? await AccountsAPIClient.getMyMealHistoryEntries() else { return }
+        let localBackendIDs = Set(localEntries.compactMap(\.backendID))
+        let localRecipeIDByBackendID = Dictionary(
+            uniqueKeysWithValues: localRecipes.compactMap { recipe -> (String, UUID)? in
+                guard let backendID = recipe.backendRecipeID else { return nil }
+                return (backendID, recipe.id)
+            }
+        )
+        let localRestaurantIDByBackendID = Dictionary(
+            uniqueKeysWithValues: localRestaurants.compactMap { restaurant -> (String, UUID)? in
+                guard let backendID = restaurant.backendID else { return nil }
+                return (backendID, restaurant.id)
+            }
+        )
+        for remote in remoteEntries where !localBackendIDs.contains(remote.id) {
+            modelContext.insert(remote.makeLocalEntry(
+                recipeIDByBackendID: localRecipeIDByBackendID,
+                restaurantIDByBackendID: localRestaurantIDByBackendID
+            ))
+        }
+    }
 }
 
 extension RemoteRestaurant {
@@ -210,6 +296,29 @@ extension RemoteRecipe {
             photoData: photoData,
             createdAt: createdAt,
             backendRecipeID: id
+        )
+    }
+}
+
+extension RemoteMealHistoryEntry {
+    /// Same recovery role as `RemoteRestaurant.makeLocalRestaurant()`/
+    /// `RemoteRecipe.makeLocalRecipe()` above. `recipeIDByBackendID`/
+    /// `restaurantIDByBackendID` are this device's own local id lookups
+    /// (built once per sync pass in `syncMealHistory`, not refetched per
+    /// row) — a backend reference with no local match yet (the recipe/
+    /// restaurant itself hasn't been pulled to this device) simply comes
+    /// back `nil` here, same "best-effort, resolves itself on a later
+    /// pass" reasoning as the push side. `madeByMemberID` has no backend
+    /// counterpart at all (see `MealHistoryEntry.backendID`'s own doc
+    /// comment) and is left `nil` on a recovered entry.
+    func makeLocalEntry(recipeIDByBackendID: [String: UUID], restaurantIDByBackendID: [String: UUID]) -> MealHistoryEntry {
+        MealHistoryEntry(
+            date: date,
+            recipeID: recipeID.flatMap { recipeIDByBackendID[$0] },
+            restaurantID: restaurantID.flatMap { restaurantIDByBackendID[$0] },
+            rating: rating?.localRating,
+            notes: notes,
+            backendID: id
         )
     }
 }

@@ -93,6 +93,12 @@ model User {
   mealSuggestionVotes     MealSuggestionVote[]
   addedGroceryItems       GroupGroceryItem[]
 
+  // Personal meal history (see MealHistoryEntry's own doc comment below) —
+  // account-backed for the same durability/multi-device reasons Recipe/
+  // Restaurant already are (see PersonalLibrarySyncService's doc comment on
+  // the iOS side).
+  mealHistoryEntries MealHistoryEntry[]
+
   // Group grocery "My Layout" aisles (Phase 4) — see the doc comment on
   // GroupStoreAisle below. (A former sibling relation here,
   // `addedGroupStaples GroupStapleItem[]`, was removed along with the
@@ -455,6 +461,8 @@ model Recipe {
   // shared-with group) before letting it be planned or suggested.
   plannedMeals    PlannedMeal[]
   mealSuggestions MealSuggestion[]
+  // See MealHistoryEntry's own doc comment below.
+  mealHistoryEntries MealHistoryEntry[]
 
   @@index([ownerId])
 }
@@ -550,6 +558,8 @@ model Restaurant {
   updatedAt        DateTime @updatedAt
 
   owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  // See MealHistoryEntry's own doc comment below.
+  mealHistoryEntries MealHistoryEntry[]
 
   @@index([ownerId])
 }
@@ -904,3 +914,69 @@ model GroupStoreAisle {
 // does this job alone; see GroupStoreAisle's doc comment above for the
 // full removal note and prisma/migrations/*_drop_group_grocery_history_entry
 // for the actual table drop.
+
+// --- Personal meal history ------------------------------------------------
+// Account-backed backup + multi-device sync for the iOS `MealHistoryEntry`
+// SwiftData model (HomeEats/Models/MealHistoryEntry.swift) — a log of what
+// was actually eaten on a given day (rating + notes), used by
+// `MealHistoryView` and by `RecipesHomeView`'s "cook again soon?"
+// recommendation logic. Confirmed still genuinely reachable/active in the
+// current UI (unlike the personal, non-group `PlannedMeal`/`GroceryItem`
+// models nearby in this schema, which the iOS app no longer mounts
+// anywhere — every account is always inside a group, per `RootView`'s
+// `CreateOrJoinFirstGroupView` gate, so all real planning/grocery data
+// already flows through the fully-synced Group system instead). Meal
+// history has no such group equivalent — it's inherently personal (what
+// *I* ate, how *I* rated it) — so, like Recipe/Restaurant, it gets its own
+// small account-backed table rather than living only on one device.
+//
+// Synced the same way Recipe/Restaurant already are, from the iOS
+// `PersonalLibrarySyncService` (see that file's own doc comment for the
+// full push/pull design: full-state re-push every pass, pull only adds
+// rows with no local match) — no separate per-row pending-state machine,
+// since a meal history entry has exactly one writer, the account itself.
+//
+// `recipeId`/`restaurantId` are real FKs (unlike `PlannedMeal
+// .restaurantName`'s plain-string-only design above, an earlier, narrower
+// v1 scope decision for that specific group feature) since both Recipe and
+// Restaurant already have stable, globally-unique backend ids by the time
+// this model exists — `onDelete: SetNull` so deleting the recipe/
+// restaurant later never cascades into silently deleting someone's meal
+// history, it just clears the dangling reference (same reasoning as
+// `PlannedMeal.recipeId`'s own doc comment above).
+//
+// Deliberately does NOT carry the iOS model's `madeByMemberID` — that
+// references a `FamilyMember`, a purely local/on-device concept with no
+// backend counterpart at all (see `MoreView.swift`'s doc comment: managing
+// `FamilyMember` rows has no entry point in the UI anymore, though the type
+// itself is still read for attribution elsewhere). There is nothing
+// meaningful to sync it to across devices, so a restored/pulled entry
+// simply has no "made by" attribution — an accepted, narrow gap, not a
+// missing feature this table needs to solve.
+model MealHistoryEntry {
+  id           String      @id @default(uuid())
+  ownerId      String
+  date         DateTime
+  recipeId     String?
+  restaurantId String?
+  rating       MealRating?
+  notes        String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  owner      User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  recipe     Recipe?     @relation(fields: [recipeId], references: [id], onDelete: SetNull)
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId])
+}
+
+// Mirrors the iOS `MealRating` enum's case names exactly (see
+// HomeEats/Models/MealHistoryEntry.swift) so the sync layer needs no
+// lookup table between the two, same convention `MealSlot` above already
+// follows for `PlannedMeal`/`MealSuggestion`.
+enum MealRating {
+  DISLIKED
+  NEUTRAL
+  LIKED
+}

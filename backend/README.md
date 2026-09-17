@@ -851,6 +851,31 @@ match by id. See that type's own doc comment for the full reasoning,
 including why deletes are handled immediately/inline rather than through
 this same pass.
 
+## 11. Personal meal history
+
+Account-backed backup + multi-device sync for the iOS `MealHistoryEntry`
+SwiftData model — a log of what was actually eaten (rating + notes),
+synced the same way as the personal restaurant/recipe libraries above (see
+`PersonalLibrarySyncService`'s own doc comment). Routes live in
+`routes/mealHistory.js`, mounted at `/meal-history`. Every route here
+requires auth. No sharing/visibility concept — every entry here is simply
+"the caller's own."
+
+`recipeId`/`restaurantId` are real references into `/recipe-library`/
+`/restaurants/library` (`onDelete: SetNull` — deleting the recipe/
+restaurant later just clears the dangling reference, never deletes the
+history entry itself). Deliberately does NOT carry the iOS model's
+`madeByMemberID` — that references a purely local `FamilyMember` with
+nothing to sync it to across devices, so a restored entry simply has no
+"made by" attribution.
+
+| Method | Path | Auth | Body | Notes |
+|---|---|---|---|---|
+| GET | `/meal-history/mine` | required | — | `{ entries: [...] }` — every entry the caller owns, newest first. No pagination, same "small enough to just send it all" call as the restaurant/recipe libraries. |
+| POST | `/meal-history` | required | `{ date, recipeId?, restaurantId?, rating?, notes? }` | Creates an entry owned by the caller. `rating` is one of `DISLIKED`/`NEUTRAL`/`LIKED`. Returns `{ entry }`. |
+| PATCH | `/meal-history/:id` | required, owner only | Any subset of the `POST` body's fields | `404` if the id doesn't exist or isn't the caller's. |
+| DELETE | `/meal-history/:id` | required, owner only | — | `404` if the id doesn't exist or isn't the caller's, otherwise `204`. |
+
 ## Notes
 
 - New routes here (`/recipe-library`) are mounted separately from the

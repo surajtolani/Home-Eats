@@ -270,11 +270,16 @@ This is a first build-out, scoped per the spec's own phasing notes:
     orderings still work independently on the *personal* screen; only the
     *group* screen's two views are coupled this way. A real fix needs a
     backend schema change, out of scope for this iOS-only task.
-  - **No group-scoped order reminders or meal-history logging.** Both are
-    purely local, per-device features (`NotificationScheduler`,
-    `MealHistoryEntry`) with no backend counterpart for a group's shared
-    plan, so `GroupDaySlotsView` has no "set a reminder"/"log this meal"
-    actions the way the personal `DaySlotsView` does.
+  - **No group-scoped order reminders or meal-history logging.** Order
+    reminders (`NotificationScheduler`) are still purely local/per-device
+    with no group concept at all. Meal-history logging (`MealHistoryEntry`)
+    is now account-backed (see `PersonalLibrarySyncService.syncMealHistory`
+    and `backend/README.md`'s "Personal meal history" section) — a device's
+    own history survives a reset and shows up on another signed-in
+    device — but it's still not *group*-scoped: there's no shared
+    "what did the household actually make" log, so `GroupDaySlotsView` has
+    no "set a reminder"/"log this meal" actions the way the personal
+    `DaySlotsView` does.
   - **Schema-change risk, same caveat as the very next bullet below.** This
     round added new stored properties to the existing `GroupSharedGroceryItem`
     model (`aisleID`/`aisleManuallySet`) plus a brand-new model type

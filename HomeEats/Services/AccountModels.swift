@@ -643,6 +643,73 @@ struct RestaurantLibraryListResponse: Codable {
     let restaurants: [RemoteRestaurant]
 }
 
+// MARK: - Personal meal history (routes/mealHistory.js, mounted at
+// /meal-history) — the backend counterpart of the local `MealHistoryEntry`
+// SwiftData model, added for the same account-backed durability/multi-
+// device reasoning as the restaurant/recipe libraries above. See
+// `PersonalLibrarySyncService`'s own doc comment for the sync design this
+// feeds.
+
+/// Mirrors the backend's `MealRating` enum (`DISLIKED`/`NEUTRAL`/`LIKED` —
+/// see prisma/schema.prisma) as its own wire-format-only Swift enum, same
+/// "second enum at the network boundary, not a second `Decodable`
+/// conformance on the local type" reasoning as `RemoteMealSlot`'s own doc
+/// comment above — the local `MealRating`'s raw values are `Int`
+/// (`0`/`1`/`2`, an on-device `Codable`-for-SwiftData implementation
+/// detail), which doesn't line up with the backend's string enum at all.
+enum RemoteMealRating: String, Codable {
+    case disliked = "DISLIKED"
+    case neutral = "NEUTRAL"
+    case liked = "LIKED"
+
+    var localRating: MealRating {
+        switch self {
+        case .disliked: return .disliked
+        case .neutral: return .neutral
+        case .liked: return .liked
+        }
+    }
+
+    init(localRating: MealRating) {
+        switch localRating {
+        case .disliked: self = .disliked
+        case .neutral: self = .neutral
+        case .liked: self = .liked
+        }
+    }
+}
+
+/// `GET /meal-history/mine`'s rows and every entry-mutating route's
+/// response — exactly `serializeEntry(...)` in routes/mealHistory.js.
+/// `recipeID`/`restaurantID` are the backend ids of a Recipe/Restaurant
+/// (matching `Recipe.backendRecipeID`/`Restaurant.backendID` locally, NOT
+/// the local `MealHistoryEntry.recipeID`/`.restaurantID` UUIDs, which are
+/// this device's own local identity for those rows and mean nothing on
+/// another device) — see `PersonalLibrarySyncService`'s `syncMealHistory`
+/// for how the two get translated back and forth.
+struct RemoteMealHistoryEntry: Codable, Identifiable {
+    let id: String
+    let ownerID: String
+    let date: Date
+    let recipeID: String?
+    let restaurantID: String?
+    let rating: RemoteMealRating?
+    let notes: String?
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, date, rating, notes, createdAt, updatedAt
+        case ownerID = "ownerId"
+        case recipeID = "recipeId"
+        case restaurantID = "restaurantId"
+    }
+}
+
+struct MealHistoryListResponse: Codable {
+    let entries: [RemoteMealHistoryEntry]
+}
+
 // MARK: - Group meal planning (Phase 4 — routes/groupMealPlan.js)
 //
 // These types are the *wire* shapes only — decode targets for
