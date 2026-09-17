@@ -78,7 +78,7 @@ struct HomeEatsApp: App {
         //
         // An explicit `url:` (rather than SwiftData's default location) is
         // what makes the recovery below possible — we need to know exactly
-        // which file to remove if the schema on disk can't be opened.
+        // which file to quarantine if the schema on disk can't be opened.
         let storeURL = Self.storeURL
         let configuration = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
         do {
@@ -90,18 +90,37 @@ struct HomeEatsApp: App {
             // default) would otherwise `fatalError` here on every launch —
             // permanently bricking the app for anyone who had an earlier
             // build installed, with no recovery but a manual delete/reinstall.
-            // Pre-release, with no real user data at stake, resetting local
-            // storage and starting fresh is the safer failure mode. This is
-            // an MVP tradeoff, not a real migration strategy — shipping this
+            // Resetting local storage and starting fresh is the safer
+            // failure mode than bricking the app outright. This is still an
+            // MVP tradeoff, not a real migration strategy — shipping this
             // behavior for good means every future schema change needs an
-            // actual `SchemaMigrationPlan` instead, or this silently deletes
-            // real users' data on an incompatible update.
-            print("ModelContainer creation failed (\(error)); resetting local store.")
-            Self.deleteStore(at: storeURL)
+            // actual `SchemaMigrationPlan` instead.
+            //
+            // **Not a silent, irrecoverable delete anymore** — direct user
+            // question: "is there a way to make sure that we don't have an
+            // issue where the images suddenly disappear and we can't get it
+            // back." This exact mechanism is a real, previously-confirmed
+            // cause of that (see `GroupSharedGroceryItem.quantityCount`'s own
+            // doc comment on the incident that motivated `PersonalLibrarySyncService`
+            // in the first place) — a bad migration used to hard-delete the
+            // WAL/SHM/store files outright, so anything not already backed
+            // up to the account (a personal-only recipe/restaurant never
+            // synced, or any local-only meal-plan/grocery data, which has no
+            // backend copy at all) was gone for good, not just until the
+            // next sync. `moveStoreAside(from:)` renames the old store files
+            // aside (timestamped, so a repeat failure never overwrites an
+            // earlier quarantined copy) instead of deleting them — the app
+            // still starts fresh with a new, empty store either way (this
+            // doesn't change what the person sees at launch), but the old
+            // data file itself survives on disk, recoverable later by
+            // inspecting the device's file system rather than gone the
+            // instant this runs.
+            print("ModelContainer creation failed (\(error)); quarantining local store and starting fresh.")
+            Self.moveStoreAside(from: storeURL)
             do {
                 modelContainer = try ModelContainer(for: schema, configurations: [configuration])
             } catch {
-                fatalError("Failed to create ModelContainer even after resetting local storage: \(error)")
+                fatalError("Failed to create ModelContainer even after quarantining local storage: \(error)")
             }
         }
 
@@ -155,14 +174,28 @@ struct HomeEatsApp: App {
         URL.applicationSupportDirectory.appending(path: "HomeEats.store")
     }
 
-    private static func deleteStore(at url: URL) {
+    /// Renames the old store's main file and its WAL/SHM sidecars aside
+    /// (all three move together, or the quarantined copy would itself be
+    /// left inconsistent) into a `QuarantinedStores` subfolder, timestamped
+    /// so a second migration failure later never overwrites an earlier
+    /// quarantined copy. Deliberately a *move*, not a delete — see the
+    /// call site's own doc comment for why. Best-effort: if even the move
+    /// fails (e.g. a truly unreadable/corrupt file `FileManager` can't
+    /// touch), this still leaves the original file in place rather than
+    /// force-deleting it, and `ModelContainer` creation right after this
+    /// call simply gets whatever fresh store it can — same fallback either
+    /// way.
+    private static func moveStoreAside(from url: URL) {
         let fileManager = FileManager.default
-        // SwiftData's SQLite store keeps WAL/SHM sidecar files alongside the
-        // main file; all three need to go together or the store is left
-        // inconsistent.
+        let quarantineDir = url.deletingLastPathComponent().appending(path: "QuarantinedStores")
+        try? fileManager.createDirectory(at: quarantineDir, withIntermediateDirectories: true)
+
+        let timestamp = ISO8601DateFormatter().string(from: .now).replacingOccurrences(of: ":", with: "-")
         for suffix in ["", "-wal", "-shm"] {
-            let sidecarURL = URL(fileURLWithPath: url.path + suffix)
-            try? fileManager.removeItem(at: sidecarURL)
+            let sourceURL = URL(fileURLWithPath: url.path + suffix)
+            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
+            let destinationURL = quarantineDir.appending(path: "\(timestamp)-\(url.lastPathComponent)\(suffix)")
+            try? fileManager.moveItem(at: sourceURL, to: destinationURL)
         }
     }
 
