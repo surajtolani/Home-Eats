@@ -52,17 +52,6 @@ struct RestaurantListView: View {
                             } label: {
                                 restaurantTile(restaurant)
                             }
-                            .swipeActions(edge: .leading) {
-                                Button {
-                                    restaurant.isFavorite.toggle()
-                                } label: {
-                                    Label(
-                                        restaurant.isFavorite ? "Unfavorite" : "Favorite",
-                                        systemImage: restaurant.isFavorite ? "star.slash" : "star"
-                                    )
-                                }
-                                .tint(.brandHoney)
-                            }
                         }
                         .onDelete { offsets in
                             for index in offsets {
@@ -213,9 +202,14 @@ struct RestaurantListView: View {
             title: restaurant.name,
             metaItems: restaurantMetaItems(restaurant),
             thumbnail: { RestaurantThumbnail(googlePhotoName: restaurant.googlePhotoNames.first, size: mediaTileHeight) },
-            accessoryIcon: restaurant.isFavorite ? "star.fill" : "star",
-            accessoryTint: restaurant.isFavorite ? .brandHoney : .secondary,
-            onAccessoryTap: { restaurant.isFavorite.toggle() }
+            actions: [
+                MediaTileAction(
+                    icon: restaurant.isFavorite ? "star.fill" : "star",
+                    tint: restaurant.isFavorite ? .brandHoney : .secondary,
+                    label: restaurant.isFavorite ? "Unfavorite" : "Favorite",
+                    onTap: { restaurant.isFavorite.toggle() }
+                )
+            ]
         )
     }
 

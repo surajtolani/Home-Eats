@@ -441,9 +441,14 @@ struct RecipesHomeView: View {
             title: entry.title,
             metaItems: sharedEntryMetaItems(entry),
             thumbnail: { EntryPhoto(photoData: entry.photoData) },
-            accessoryIcon: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
-            accessoryTint: isSaved ? .brandSage : .brandForest,
-            onAccessoryTap: isSaved ? nil : { saveSharedRecipe(entry) }
+            actions: [
+                MediaTileAction(
+                    icon: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
+                    tint: isSaved ? .brandSage : .brandForest,
+                    label: isSaved ? "Saved to My Recipes" : "Save to My Recipes",
+                    onTap: isSaved ? nil : { saveSharedRecipe(entry) }
+                )
+            ]
         )
         .background {
             NavigationLink("") {
@@ -550,9 +555,14 @@ struct RecipesHomeView: View {
             title: entry.title,
             metaItems: libraryEntryMetaItems(entry),
             thumbnail: { EntryPhoto(photoData: entry.photoData) },
-            accessoryIcon: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
-            accessoryTint: isSaved ? .brandSage : .brandForest,
-            onAccessoryTap: isSaved ? nil : { saveLibraryEntry(entry) }
+            actions: [
+                MediaTileAction(
+                    icon: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
+                    tint: isSaved ? .brandSage : .brandForest,
+                    label: isSaved ? "Saved to My Recipes" : "Save to My Recipes",
+                    onTap: isSaved ? nil : { saveLibraryEntry(entry) }
+                )
+            ]
         )
         .background {
             // Same "flexible hidden NavigationLink behind the tile"
@@ -669,7 +679,7 @@ struct RecipesHomeView: View {
     private var emptyStateDescription: String {
         switch section {
         case .mine: return "Add your own recipe or import one from a link."
-        case .favorites: return "Swipe a recipe and tap the heart to save it here."
+        case .favorites: return "Tap the heart on a recipe to save it here."
         case .library: return "Check back soon for more built-in recipes."
         case .shared: return "" // Unused — see `sharedSectionContent`.
         }
@@ -678,30 +688,25 @@ struct RecipesHomeView: View {
     /// A `MediaTileRow` — direct user request for one consistent tile
     /// format shared across the Plan/Restaurants/Recipes tabs (see that
     /// type's own doc comment), replacing this card's previous vertical
-    /// photo-on-top layout. That version floated up to four icon buttons
-    /// over the image (favorite, quick-add, share, add-to-library); this
-    /// shorter tile only has room for the one accessory badge the shared
-    /// component offers, so quick-add — the single action every recipe
-    /// (bundled, saved, or the account's own) can always take — keeps that
-    /// spot, matching the reference tile's own "+" badge exactly. Favorite,
-    /// share, and "Add to Library" (the latter two still gated to
-    /// `source == .manual || .imported` — see their own actions' doc
-    /// comments for why publishing/sharing someone else's original work
-    /// isn't offered at all) move to swipe actions and a `.contextMenu`
-    /// instead of floating badges. Tapping the tile opens the recipe via a
+    /// photo-on-top layout. Every action this card used to float over the
+    /// image (favorite, quick-add, share, add-to-library) stays exactly as
+    /// tappable as before — `MediaTileRow`'s `actions` row, not a swipe or
+    /// `.contextMenu` (a first attempt at this moved the three secondary
+    /// actions there; direct, immediate push-back: "shouldn't be moved to
+    /// a swipe... should stay in the tile"). Share/"Add to Library" stay
+    /// gated to `source == .manual || .imported` (see `publishTapped`'s
+    /// own doc comment for why publishing/sharing someone else's original
+    /// work isn't offered at all). Tapping the tile opens the recipe via a
     /// `NavigationLink` hidden in the background, same "keeps List's own
     /// chevron from appearing, and keeps a nested Button from also firing
     /// the navigation" reasoning as before.
     @ViewBuilder
     private func recipeCard(_ recipe: Recipe) -> some View {
-        let canShareOrPublish = recipe.source == .manual || recipe.source == .imported
         MediaTileRow(
             title: recipe.title,
             metaItems: recipeMetaItems(recipe),
             thumbnail: { RecipeThumbnail(recipe: recipe) },
-            accessoryIcon: "plus",
-            accessoryTint: .brandForest,
-            onAccessoryTap: { quickAddRecipe = recipe }
+            actions: recipeTileActions(recipe)
         )
         .background {
             NavigationLink("") {
@@ -710,57 +715,42 @@ struct RecipesHomeView: View {
             .opacity(0)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .swipeActions(edge: .leading) {
-            Button {
-                recipe.isFavorite.toggle()
-            } label: {
-                Label(recipe.isFavorite ? "Unfavorite" : "Favorite", systemImage: recipe.isFavorite ? "heart.slash" : "heart")
-            }
-            .tint(.brandTerracotta)
-        }
-        .swipeActions(edge: .trailing) {
-            if canShareOrPublish {
-                Button {
-                    publishTapped(recipe)
-                } label: {
-                    Label(
-                        recipe.isPublishedToLibrary ? "In Library" : "Add to Library",
-                        systemImage: recipe.isPublishedToLibrary ? "books.vertical.fill" : "books.vertical"
-                    )
-                }
-                .tint(.brandSage)
-                .disabled(recipe.isPublishedToLibrary)
-                Button {
-                    shareTapped(recipe)
-                } label: {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-                .tint(.brandHoney)
-            }
-        }
-        .contextMenu {
-            Button {
-                recipe.isFavorite.toggle()
-            } label: {
-                Label(recipe.isFavorite ? "Unfavorite" : "Favorite", systemImage: recipe.isFavorite ? "heart.slash" : "heart")
-            }
-            if canShareOrPublish {
-                Button {
-                    shareTapped(recipe)
-                } label: {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-                if !recipe.isPublishedToLibrary {
-                    Button {
-                        publishTapped(recipe)
-                    } label: {
-                        Label("Add to Library", systemImage: "books.vertical")
-                    }
-                }
-            }
-        }
         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
         .listRowSeparator(.hidden)
+    }
+
+    private func recipeTileActions(_ recipe: Recipe) -> [MediaTileAction] {
+        let canShareOrPublish = recipe.source == .manual || recipe.source == .imported
+        var actions: [MediaTileAction] = [
+            MediaTileAction(icon: "plus.circle.fill", tint: .brandForest, label: "Add to Plan") {
+                quickAddRecipe = recipe
+            }
+        ]
+        if canShareOrPublish {
+            actions.append(
+                MediaTileAction(icon: "square.and.arrow.up", tint: .brandHoney, label: "Share") {
+                    shareTapped(recipe)
+                }
+            )
+            actions.append(
+                MediaTileAction(
+                    icon: recipe.isPublishedToLibrary ? "books.vertical.fill" : "books.vertical",
+                    tint: .brandSage,
+                    label: recipe.isPublishedToLibrary ? "Already in Library" : "Add to Library",
+                    onTap: recipe.isPublishedToLibrary ? nil : { publishTapped(recipe) }
+                )
+            )
+        }
+        actions.append(
+            MediaTileAction(
+                icon: recipe.isFavorite ? "heart.fill" : "heart",
+                tint: .brandTerracotta,
+                label: recipe.isFavorite ? "Unfavorite" : "Favorite"
+            ) {
+                recipe.isFavorite.toggle()
+            }
+        )
+        return actions
     }
 
     private func recipeMetaItems(_ recipe: Recipe) -> [(icon: String, text: String)] {
