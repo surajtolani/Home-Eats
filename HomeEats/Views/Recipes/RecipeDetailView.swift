@@ -153,7 +153,7 @@ struct RecipeDetailView: View {
             if !recipe.tags.isEmpty {
                 HStack {
                     ForEach(Array(recipe.tags.enumerated()), id: \.offset) { _, tag in
-                        Text(tag)
+                        Text(displayTag(tag))
                             .font(.brandCaption2.bold())
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
@@ -162,6 +162,23 @@ struct RecipeDetailView: View {
                 }
             }
         }
+    }
+
+    /// The literal "Shared"/"Library" tag (see `SharedRecipeEntry
+    /// .makeLocalRecipe()`/`LibraryRecipeEntry.makeLocalRecipe()`) reads as
+    /// `recipe.sharedAttributionCaption` instead of the bare tag text —
+    /// same "who shared it" fix as `RecipeCardContent`'s meta row; every
+    /// other tag (a custom one, or "AI" from a photo/notes import) passes
+    /// through unchanged. Only the caption's own leading word gets
+    /// capitalized to match this chip row's existing style ("Shared by
+    /// Priya," not "shared by Priya") — deliberately not `.titleCasedForDisplay`
+    /// (`.capitalized`), which would also lowercase the rest of a name
+    /// that isn't itself all-lowercase (e.g. "McDonald" -> "Mcdonald").
+    private func displayTag(_ tag: String) -> String {
+        guard tag == "Shared" || tag == "Library" else { return tag }
+        let caption = recipe.sharedAttributionCaption
+        guard let first = caption.first else { return caption }
+        return first.uppercased() + caption.dropFirst()
     }
 
     private var metaRow: some View {

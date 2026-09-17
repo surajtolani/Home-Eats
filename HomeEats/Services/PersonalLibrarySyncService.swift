@@ -241,7 +241,8 @@ extension SharedRecipeEntry {
             tags: ["Shared"],
             imageName: imageName,
             photoData: photoData,
-            backendRecipeID: recipeID
+            backendRecipeID: recipeID,
+            sharedByName: share.sharedBy.displayNameOrPhoneNumber
         )
     }
 }
@@ -274,7 +275,8 @@ extension LibraryRecipeEntry {
             imageName: imageName,
             photoData: photoData,
             backendRecipeID: recipeID,
-            isPublishedToLibrary: true
+            isPublishedToLibrary: true,
+            sharedByName: addedBy?.displayNameOrPhoneNumber
         )
     }
 }

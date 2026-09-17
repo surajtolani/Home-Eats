@@ -84,6 +84,22 @@ final class Recipe {
     /// lightweight SwiftData migration, same reasoning as `isFavorite`'s own
     /// doc comment.
     var isPublishedToLibrary: Bool = false
+    /// Who this recipe actually came from, for a `.shared` recipe only —
+    /// the friend/group member who shared it (`SharedRecipeEntry.makeLocalRecipe()`),
+    /// or the master-library publisher's name (`LibraryRecipeEntry
+    /// .makeLocalRecipe()`), `nil` if they published anonymously. `nil` for
+    /// every other `source` (nothing to attribute a `.manual`/`.imported`/
+    /// `.library` recipe to). Direct user request: a shared recipe's card
+    /// used to just say "shared" with no name — see `RecipeCardContent`'s
+    /// own doc comment for where this actually renders. Captured once at
+    /// save time rather than read live from the backend on every render,
+    /// since the original `SharedRecipeEntry`/`LibraryRecipeEntry` this
+    /// recipe was saved from stops existing the moment it's no longer
+    /// fetched (see `RecipeSource.shared`'s own doc comment) — there'd be
+    /// nothing left to look the name up from later otherwise. Optional
+    /// with no explicit default needed for migration — same reasoning as
+    /// `sourceURL`/`imageName` above.
+    var sharedByName: String?
 
     init(
         id: UUID = UUID(),
@@ -104,7 +120,8 @@ final class Recipe {
         createdAt: Date = .now,
         createdByMemberID: UUID? = nil,
         backendRecipeID: String? = nil,
-        isPublishedToLibrary: Bool = false
+        isPublishedToLibrary: Bool = false,
+        sharedByName: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -125,7 +142,29 @@ final class Recipe {
         self.createdByMemberID = createdByMemberID
         self.backendRecipeID = backendRecipeID
         self.isPublishedToLibrary = isPublishedToLibrary
+        self.sharedByName = sharedByName
     }
 
     var totalMinutes: Int { prepMinutes + cookMinutes }
+
+    /// "shared by Priya" / "added by Priya" / "added anonymously" — the
+    /// lowercase-leading caption `RecipeCardContent`'s meta row and
+    /// `RecipeDetailView`'s tag chip show for a `.shared` recipe, in place
+    /// of the old bare "shared" with no name at all. Distinguishes a
+    /// friend/group share (`tags.contains("Shared")` — see
+    /// `SharedRecipeEntry.makeLocalRecipe()`) from a master-library save
+    /// (`tags.contains("Library")` — see `LibraryRecipeEntry
+    /// .makeLocalRecipe()`), since those two read differently even though
+    /// both set `source: .shared` and both carry a `sharedByName`. Falls
+    /// back to the plain, nameless "shared" for a recipe saved before this
+    /// field existed (`sharedByName == nil` on a friend share, which is
+    /// otherwise never anonymous).
+    var sharedAttributionCaption: String {
+        if tags.contains("Library") {
+            guard let sharedByName else { return "added anonymously" }
+            return "added by \(sharedByName)"
+        }
+        guard let sharedByName else { return "shared" }
+        return "shared by \(sharedByName)"
+    }
 }

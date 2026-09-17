@@ -769,7 +769,7 @@ private struct RecipeCardContent: View {
                         Label("imported", systemImage: "link")
                     }
                     if recipe.source == .shared {
-                        Label("shared", systemImage: "person.2")
+                        Label(recipe.sharedAttributionCaption, systemImage: "person.2")
                     }
                 }
                 .font(.brandCaption)
