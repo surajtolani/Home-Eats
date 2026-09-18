@@ -5,7 +5,17 @@ import SwiftUI
 /// every call site can reference it as `mediaTileHeight` without having to
 /// spell out an otherwise-irrelevant generic parameter just to name a
 /// static property on a generic type (`MediaTileRow<EmptyView>.tileHeight`).
-let mediaTileHeight: CGFloat = 64
+///
+/// Bumped from the original 64 — direct user report: at that size, with a
+/// real title/meta/actions combination (a two-word restaurant name, cuisine
+/// + price + rating, a favorite star; or a recipe's time + servings + up to
+/// four action icons), there wasn't enough room and text was getting cut
+/// off outright, not just tightly fit. 92 gives the title room to wrap to a
+/// genuine second line (see `title`'s own `.lineLimit(2)` below — also a
+/// direct ask: "if the name of restaurant needs to be in 2 lines that's
+/// fine") and the meta row room to wrap onto two lines of its own instead
+/// of squeezing every item onto one.
+let mediaTileHeight: CGFloat = 92
 
 /// One always-visible action icon on a `MediaTileRow`'s trailing edge —
 /// a plain top-level type, not nested inside `MediaTileRow` itself, for
@@ -82,11 +92,31 @@ struct MediaTileRow<Thumbnail: View>: View {
                 Text(title)
                     .font(.brandHeadline)
                     .foregroundStyle(.primary)
-                    .lineLimit(1)
+                    // 2 lines, not 1 — direct user request ("if the name of
+                    // restaurant needs to be in 2 lines that's fine"), so a
+                    // real full name/title is readable instead of ending in
+                    // an ellipsis the moment it's longer than a few words.
+                    .lineLimit(2)
                 if !metaItems.isEmpty {
-                    HStack(spacing: 10) {
-                        ForEach(Array(metaItems.enumerated()), id: \.offset) { _, item in
-                            Label(item.text, systemImage: item.icon)
+                    // Wrapped into rows of at most 2 items each, rather than
+                    // one long `HStack` every item had to squeeze onto —
+                    // direct user report that meta info (a recipe's time/
+                    // servings, a restaurant's cuisine/price/rating) was
+                    // getting cut off with up to 3-4 items and the actions
+                    // column both competing for one line's worth of width.
+                    // Capped at 2 per row (not a full wrap-whatever-fits
+                    // flow layout) to keep this a plain, predictable VStack
+                    // of HStacks rather than a custom `Layout` — with at
+                    // most 4 meta items on any tile today, that's at most 2
+                    // extra lines, which `mediaTileHeight`'s own bump
+                    // already makes room for.
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(metaItemRows.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 10) {
+                                ForEach(Array(row.enumerated()), id: \.offset) { _, item in
+                                    Label(item.text, systemImage: item.icon)
+                                }
+                            }
                         }
                     }
                     .font(.brandCaption)
@@ -97,7 +127,13 @@ struct MediaTileRow<Thumbnail: View>: View {
             Spacer(minLength: 8)
 
             if !actions.isEmpty {
-                HStack(spacing: 14) {
+                // Spacing tightened from 14 -> 8 — direct user report that
+                // the action icons (up to 4, on a recipe tile) were taking
+                // too much of the tile's limited width, crowding out the
+                // meta row next to them. The icons themselves keep their
+                // existing tap target size (`.brandCallout`, same as
+                // before) — only the gap between them shrinks.
+                HStack(spacing: 8) {
                     ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
                         if let onTap = action.onTap {
                             Button(action: onTap) {
@@ -120,5 +156,14 @@ struct MediaTileRow<Thumbnail: View>: View {
         .padding(10)
         .background(Color.brandCream, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.black.opacity(0.06)))
+    }
+
+    /// `metaItems` chunked two at a time, in order — see the call site's
+    /// own comment for why a fixed 2-per-row cap instead of a true wrapping
+    /// flow layout.
+    private var metaItemRows: [[(icon: String, text: String)]] {
+        stride(from: 0, to: metaItems.count, by: 2).map { start in
+            Array(metaItems[start..<min(start + 2, metaItems.count)])
+        }
     }
 }
