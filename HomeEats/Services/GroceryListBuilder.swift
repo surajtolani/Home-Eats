@@ -55,17 +55,23 @@ enum GroceryListBuilder {
                 // shopping list should just say what to buy. Ingredients
                 // that aren't actually purchasable at all (water, ice) are
                 // skipped entirely rather than becoming a line item.
-                let cleanName = IngredientNameCleaner.groceryName(from: ingredient.name)
-                guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
-                    continue
+                // `groceryNames` (plural) — almost always one name, but a
+                // known combined line like "salt and pepper" contributes to
+                // *both* the "salt" and "pepper" buckets separately, same
+                // as if the recipe had listed them as two lines to begin
+                // with — see that function's own doc comment.
+                for cleanName in IngredientNameCleaner.groceryNames(from: ingredient.name) {
+                    guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
+                        continue
+                    }
+                    let key = canonicalKey(for: cleanName)
+                    var aggregate = aggregates[key] ?? IngredientAggregate(
+                        displayName: cleanName,
+                        category: ingredient.category
+                    )
+                    aggregate.add(ingredient, from: recipe.id)
+                    aggregates[key] = aggregate
                 }
-                let key = canonicalKey(for: cleanName)
-                var aggregate = aggregates[key] ?? IngredientAggregate(
-                    displayName: cleanName,
-                    category: ingredient.category
-                )
-                aggregate.add(ingredient, from: recipe.id)
-                aggregates[key] = aggregate
             }
         }
 

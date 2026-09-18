@@ -72,4 +72,18 @@ final class GroupGroceryListBuilderTests: XCTestCase {
     func testNoRecipesProducesNoCandidates() {
         XCTAssertTrue(GroupGroceryListBuilder.aggregate(ingredientsByRecipeID: [:]).isEmpty)
     }
+
+    /// Direct, confirmed report: "salt and pepper" was landing as its own
+    /// odd third line alongside separately-listed "salt"/"pepper" from
+    /// other recipes instead of contributing to those same two lines.
+    func testCombinedSaltAndPepperContributesToBothSeparateLines() {
+        let candidates = GroupGroceryListBuilder.aggregate(ingredientsByRecipeID: [
+            "roast-chicken": [ingredient("salt and pepper")],
+            "steak": [ingredient("salt", quantity: 1, unit: "tsp")]
+        ])
+        XCTAssertNotNil(candidates[GroceryListBuilder.canonicalKey(for: "salt")])
+        XCTAssertNotNil(candidates[GroceryListBuilder.canonicalKey(for: "pepper")])
+        // No standalone "salt and pepper" line of its own.
+        XCTAssertNil(candidates[GroceryListBuilder.canonicalKey(for: "salt and pepper")])
+    }
 }

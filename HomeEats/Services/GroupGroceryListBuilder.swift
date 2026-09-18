@@ -69,28 +69,34 @@ enum GroupGroceryListBuilder {
 
         for (_, ingredients) in ingredientsByRecipeID {
             for ingredient in ingredients {
-                let cleanName = IngredientNameCleaner.groceryName(from: ingredient.name)
-                guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
-                    continue
-                }
-                let key = GroceryListBuilder.canonicalKey(for: cleanName)
+                // `groceryNames` (plural) — almost always one name, but a
+                // known combined line like "salt and pepper" contributes to
+                // *both* the "salt" and "pepper" buckets separately, same
+                // as if the recipe had listed them as two lines to begin
+                // with — see that function's own doc comment.
+                for cleanName in IngredientNameCleaner.groceryNames(from: ingredient.name) {
+                    guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
+                        continue
+                    }
+                    let key = GroceryListBuilder.canonicalKey(for: cleanName)
 
-                if candidates[key] == nil {
-                    candidates[key] = Candidate(
-                        displayName: cleanName,
-                        category: GroceryCategory.guess(fromIngredientName: cleanName),
-                        quantityText: ""
-                    )
-                }
-                recipeCountByKey[key, default: 0] += 1
+                    if candidates[key] == nil {
+                        candidates[key] = Candidate(
+                            displayName: cleanName,
+                            category: GroceryCategory.guess(fromIngredientName: cleanName),
+                            quantityText: ""
+                        )
+                    }
+                    recipeCountByKey[key, default: 0] += 1
 
-                if let quantity = ingredient.quantity {
-                    // Canonicalize the unit before using it as a bucket key
-                    // — otherwise "1 cup" and "2 cups" land in separate
-                    // buckets and never actually combine, same reasoning as
-                    // the personal builder's identical step.
-                    let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
-                    totalsByKey[key, default: [:]][unitKey, default: 0] += quantity
+                    if let quantity = ingredient.quantity {
+                        // Canonicalize the unit before using it as a bucket
+                        // key — otherwise "1 cup" and "2 cups" land in
+                        // separate buckets and never actually combine, same
+                        // reasoning as the personal builder's identical step.
+                        let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
+                        totalsByKey[key, default: [:]][unitKey, default: 0] += quantity
+                    }
                 }
             }
         }
@@ -127,20 +133,24 @@ enum GroupGroceryListBuilder {
 
         for (_, ingredients) in ingredientsByRecipeID {
             for ingredient in ingredients {
-                let cleanName = IngredientNameCleaner.groceryName(from: ingredient.name)
-                guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
-                    continue
-                }
-                let key = GroceryListBuilder.canonicalKey(for: cleanName)
+                // Same "salt and pepper" splitting as `aggregate(ingredientsByRecipeID:)`
+                // above — see `IngredientNameCleaner.groceryNames`'s own
+                // doc comment.
+                for cleanName in IngredientNameCleaner.groceryNames(from: ingredient.name) {
+                    guard !cleanName.isEmpty, !IngredientNameCleaner.isExcludedFromGroceryList(cleanName) else {
+                        continue
+                    }
+                    let key = GroceryListBuilder.canonicalKey(for: cleanName)
 
-                if candidates[key] == nil {
-                    candidates[key] = Candidate(displayName: cleanName, category: ingredient.category, quantityText: "")
-                }
-                recipeCountByKey[key, default: 0] += 1
+                    if candidates[key] == nil {
+                        candidates[key] = Candidate(displayName: cleanName, category: ingredient.category, quantityText: "")
+                    }
+                    recipeCountByKey[key, default: 0] += 1
 
-                if let quantity = ingredient.quantity {
-                    let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
-                    totalsByKey[key, default: [:]][unitKey, default: 0] += quantity
+                    if let quantity = ingredient.quantity {
+                        let unitKey = ingredient.unit.map(IngredientLineParser.canonicalUnit) ?? ""
+                        totalsByKey[key, default: [:]][unitKey, default: 0] += quantity
+                    }
                 }
             }
         }

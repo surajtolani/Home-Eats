@@ -76,9 +76,20 @@ enum IngredientLineParser {
 
         let quantity = consumeQuantity(&scanner)
         let unit = consumeUnit(&scanner)
-        let name = scanner.trimmingCharacters(in: .whitespaces)
+        var name = scanner.trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: ","))
             .trimmingCharacters(in: .whitespaces)
+        // "3 tablespoons OF lemon juice" — a unit is often followed by a
+        // linking "of" before the actual ingredient ("of" is never itself
+        // part of an ingredient's name). Left in place, it sticks to the
+        // front of `name` ("of lemon juice"), which then fails to match the
+        // same ingredient parsed without that connector elsewhere ("lemon
+        // juice") once the grocery list tries to combine the two lines —
+        // direct, confirmed report of exactly this ("I see lemon juice and
+        // '3 tablespoons of lemon juice'" as two separate items).
+        if unit != nil, name.lowercased().hasPrefix("of ") {
+            name = String(name.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        }
 
         let finalName = name.isEmpty ? trimmed : name
         return RecipeIngredientEntry(

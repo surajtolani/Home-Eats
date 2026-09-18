@@ -11,11 +11,17 @@ enum IngredientNameCleaner {
 
     /// Trailing descriptive phrases that show up with or without a leading
     /// comma ("salt to taste", "salt, to taste") — stripped from the end of
-    /// the name wherever they appear.
+    /// the name wherever they appear. A general trailing "for ...$" clause
+    /// (not just the two specific "for serving"/"for garnish" phrases this
+    /// used to list) covers any purpose note a recipe tacks onto an
+    /// ingredient — direct, confirmed report: "water for rice" was showing
+    /// up as its own grocery item instead of being recognized as plain
+    /// water (which `isExcludedFromGroceryList` already skips, but only
+    /// once "for rice" is gone). "water, for cooking rice" is caught the
+    /// same way, the leading `,?` making the comma optional either way.
     private static let trailingPhrasePatterns: [String] = [
         #",?\s+to taste\.?$"#,
-        #",?\s+for serving\.?$"#,
-        #",?\s+for garnish\.?$"#,
+        #",?\s+for\s+.+$"#,
         #",?\s+as needed\.?$"#,
         #",?\s+optional\.?$"#,
         #",?\s+if desired\.?$"#
@@ -40,7 +46,13 @@ enum IngredientNameCleaner {
         "shredded", "julienned", "cubed", "halved", "quartered", "trimmed",
         "cut", "zested", "juiced", "mashed", "toasted", "roasted", "cooked",
         "divided", "packed", "sifted", "washed", "patted", "torn", "crumbled",
-        "finely", "coarsely", "roughly", "thinly", "thickly", "freshly"
+        "finely", "coarsely", "roughly", "thinly", "thickly", "freshly",
+        // "fresh" (as opposed to "freshly", already listed above) — direct,
+        // confirmed report: "grated ginger" and "grated fresh ginger" were
+        // landing as two separate grocery lines instead of merging, since
+        // "fresh" was the one leftover word keeping their canonical keys
+        // apart.
+        "fresh"
     ]
 
     /// Ingredients that never belong on a shopping list — not real
@@ -103,7 +115,71 @@ enum IngredientNameCleaner {
             )
         }
 
+        // A raw ingredient line that never got its quantity/unit split out
+        // at all (e.g. some AI-extracted or manually pasted lines) can
+        // leave something like "3 tablespoons of lemon juice" sitting
+        // whole in the name — re-running it through
+        // `IngredientLineParser.parse` here recovers just the ingredient
+        // part ("lemon juice") for grocery-list purposes ONLY (this never
+        // touches the recipe's own stored ingredient, and this file has no
+        // need to duplicate that parser's own quantity/unit vocabulary).
+        // Gated on a unit actually being found — a bare leading number
+        // alone ("2% milk", "10X sugar") is left completely alone, since
+        // plenty of real product names start with a digit that isn't a
+        // measurement at all.
+        let reparsed = IngredientLineParser.parse(result)
+        if reparsed.unit != nil, !reparsed.name.isEmpty {
+            result = reparsed.name
+        }
+        // A leading "of" can still be left over even when the quantity/
+        // unit were already correctly split out at the `RecipeIngredientEntry`
+        // level (rather than needing the reparse fallback just above) —
+        // "3 tbsp of lemon juice" -> quantity 3, unit "tbsp", name "of
+        // lemon juice". Same reasoning as `IngredientLineParser.parse`'s
+        // own "of"-stripping step (see that method's doc comment); kept as
+        // a second, independent check here since that step only fires for
+        // a *fresh* parse of the whole raw line, not for a name that's
+        // already had its quantity/unit removed before this file ever sees
+        // it.
+        if result.lowercased().hasPrefix("of ") {
+            result = String(result.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        }
+
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Known "combined seasoning" phrases that really describe two separate
+    /// purchasable items, not one — split into their own constituent
+    /// ingredients before ever reaching the grocery list, rather than
+    /// either becoming an odd extra line of its own ("Salt And Pepper")
+    /// alongside separately-listed "salt"/"pepper" entries from other
+    /// recipes, or staying unmerged across every recipe's own choice of
+    /// connector ("salt and pepper" vs. "salt + pepper" vs. "salt &
+    /// pepper") — direct, confirmed report of exactly that fragmentation.
+    /// Deliberately NOT a general "split on and" rule — that would wrongly
+    /// break plenty of real single-ingredient names that happen to contain
+    /// "and" ("mac and cheese", "peanut butter and jelly", "salt and
+    /// vinegar chips") into nonsense fragments. This only matches this one,
+    /// specific, extremely common seasoning pair, looked up after
+    /// normalizing every spelling of its connector to the same form.
+    private static let knownCombinedIngredients: [String: [String]] = [
+        "salt and pepper": ["salt", "pepper"]
+    ]
+
+    /// Same cleanup as `groceryName(from:)`, but returns more than one name
+    /// when the cleaned result is a known combined-ingredient phrase (see
+    /// `knownCombinedIngredients`) — almost always a single-element array,
+    /// same as `groceryName(from:)` wrapped in one.
+    static func groceryNames(from rawName: String) -> [String] {
+        let cleaned = groceryName(from: rawName)
+        let normalizedConnector = cleaned
+            .lowercased()
+            .replacingOccurrences(of: #"\s*(\+|&|,?\s+and)\s*"#, with: " and ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if let split = knownCombinedIngredients[normalizedConnector] {
+            return split
+        }
+        return [cleaned]
     }
 
     /// Whether a (already-cleaned) grocery name is something that should
