@@ -33,9 +33,11 @@ const router = express.Router();
 // shape as routes/friends.js's own publicUser / routes/groups.js's own
 // publicUser (each file keeps its own copy rather than sharing one module —
 // see groups.js's publicUser doc comment for that precedent) — here the
-// relationship is "you sent/received an Invite naming this person".
+// relationship is "you sent/received an Invite naming this person". No
+// `phoneNumber` — see routes/friends.js's own doc comment on its
+// `publicUser` for why.
 function publicUser(user) {
-  return { id: user.id, displayName: user.displayName, phoneNumber: user.phoneNumber };
+  return { id: user.id, displayName: user.displayName };
 }
 
 // The shape returned for one pending group Invite — used by this file's own

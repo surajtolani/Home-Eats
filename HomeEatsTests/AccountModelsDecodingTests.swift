@@ -147,16 +147,21 @@ final class AccountModelsDecodingTests: XCTestCase {
     // MARK: - Friends (routes/friends.js)
 
     func testFriendsListDecodesAllThreeSections() throws {
+        // No `phoneNumber` key anywhere here — matches the backend's
+        // `publicUser(...)` shape (routes/friends.js), which stopped
+        // including it (see `PublicUser.displayNameOrPhoneNumber`'s own doc
+        // comment for why: a real, confirmed abuse vector via the
+        // unauthenticated POST /auth/request-code).
         let json = """
         {
           "friends": [
-            { "id": "u2", "displayName": "Alex", "phoneNumber": "+14155550002" }
+            { "id": "u2", "displayName": "Alex" }
           ],
           "incomingRequests": [
-            { "friendshipId": "f1", "from": { "id": "u3", "displayName": null, "phoneNumber": "+14155550003" } }
+            { "friendshipId": "f1", "from": { "id": "u3", "displayName": null } }
           ],
           "outgoingRequests": [
-            { "friendshipId": "f2", "to": { "id": "u4", "displayName": "Sam", "phoneNumber": "+14155550004" } }
+            { "friendshipId": "f2", "to": { "id": "u4", "displayName": "Sam" } }
           ]
         }
         """
@@ -166,8 +171,9 @@ final class AccountModelsDecodingTests: XCTestCase {
 
         XCTAssertEqual(list.incomingRequests.count, 1)
         XCTAssertEqual(list.incomingRequests[0].friendshipID, "f1")
-        // No display name yet -> falls back to phone number.
-        XCTAssertEqual(list.incomingRequests[0].from.displayNameOrPhoneNumber, "+14155550003")
+        // No display name yet -> falls back to a generic placeholder, never
+        // a phone number.
+        XCTAssertEqual(list.incomingRequests[0].from.displayNameOrPhoneNumber, "New User")
 
         XCTAssertEqual(list.outgoingRequests.count, 1)
         XCTAssertEqual(list.outgoingRequests[0].friendshipID, "f2")
@@ -204,8 +210,8 @@ final class AccountModelsDecodingTests: XCTestCase {
             "createdByUserId": "u1",
             "createdAt": "2024-02-01T00:00:00.000Z",
             "members": [
-              { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001", "role": "MANAGER" },
-              { "id": "u2", "displayName": "Alex", "phoneNumber": "+14155550002", "role": "PARTICIPANT" }
+              { "id": "u1", "displayName": "Me", "role": "MANAGER" },
+              { "id": "u2", "displayName": "Alex", "role": "PARTICIPANT" }
             ]
           }
         }
@@ -239,7 +245,7 @@ final class AccountModelsDecodingTests: XCTestCase {
             "createdByUserId": null,
             "createdAt": "2024-02-01T00:00:00.000Z",
             "members": [
-              { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001", "role": "PARTICIPANT" }
+              { "id": "u1", "displayName": "Me", "role": "PARTICIPANT" }
             ]
           }
         }

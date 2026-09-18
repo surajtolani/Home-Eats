@@ -47,8 +47,21 @@ async function runSerializable(fn, { retries = 3 } = {}) {
 // legitimate relationship with them (an accepted friend, an incoming/
 // outgoing request to/from them, or — see routes/groups.js — a fellow
 // member of a shared group). Never used for an arbitrary/unrelated userId.
+//
+// Does NOT include `phoneNumber` — it used to, but that's a real phone
+// number handed to anyone with a "relationship" this loosely defined (any
+// fellow group member, even ones added by someone else who never actually
+// exchanged numbers with this person), and `POST /auth/request-code` is
+// intentionally unauthenticated (it's the sign-in entry point itself — see
+// that route's own doc comment), so anyone who could see a phone number
+// here could script repeated real verification-code texts to that number
+// with zero trace in this app's own client code. `displayName` becoming
+// mandatory before reaching the main app (see `RootView`'s completion
+// gate) already means this fallback is rare going forward; iOS's
+// `PublicUser.displayNameOrPhoneNumber`/`GroupMember.displayNameOrPhoneNumber`
+// now fall back to a plain "New User" instead.
 function publicUser(user) {
-  return { id: user.id, displayName: user.displayName, phoneNumber: user.phoneNumber };
+  return { id: user.id, displayName: user.displayName };
 }
 
 // Resolves whatever pending Invite(s) (see the Invite model's doc comment

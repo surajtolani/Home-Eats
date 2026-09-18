@@ -22,9 +22,11 @@ const router = express.Router();
 // Same "safe to hand back to someone with a legitimate relationship" shape
 // as routes/friends.js's and routes/groups.js's own (duplicated, not
 // imported) `publicUser` helpers — kept small and local rather than shared,
-// matching how those two files already each keep their own copy.
+// matching how those two files already each keep their own copy. No
+// `phoneNumber` — see routes/friends.js's own doc comment on its
+// `publicUser` for why.
 function publicUser(user) {
-  return { id: user.id, displayName: user.displayName, phoneNumber: user.phoneNumber };
+  return { id: user.id, displayName: user.displayName };
 }
 
 // Same accepted-friend check as routes/groups.js's `isAcceptedFriend` (also

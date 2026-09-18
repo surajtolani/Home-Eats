@@ -46,9 +46,13 @@ const router = express.Router();
 // Same "safe to share with someone who has a legitimate relationship"
 // shape as routes/friends.js's publicUser — here that relationship is
 // "fellow member of this same group", checked by the caller before this is
-// ever used.
+// ever used. No `phoneNumber` — see routes/friends.js's own doc comment on
+// this function for why (a real, unauthenticated abuse vector: anyone who
+// could see a fellow member's phone number here could script repeated
+// verification-code texts to it via the unauthenticated
+// `POST /auth/request-code`).
 function publicUser(user) {
-  return { id: user.id, displayName: user.displayName, phoneNumber: user.phoneNumber };
+  return { id: user.id, displayName: user.displayName };
 }
 
 // Same as publicUser, plus this group's role for that person — used

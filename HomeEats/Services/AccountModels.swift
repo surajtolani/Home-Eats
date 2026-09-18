@@ -91,15 +91,28 @@ struct AccountUser: Codable, Identifiable, Equatable {
 struct PublicUser: Codable, Identifiable, Equatable, Hashable {
     let id: String
     let displayName: String?
-    let phoneNumber: String
 
+    /// No `phoneNumber` field here anymore — the backend's own `publicUser(...)`
+    /// helper (routes/friends.js, routes/groups.js, routes/invites.js,
+    /// routes/recipeLibrary.js) used to include it, but that handed a real
+    /// phone number to anyone with a "relationship" this loosely defined
+    /// (any fellow group member, even ones added by someone else who never
+    /// actually exchanged numbers with this person) — and `POST
+    /// /auth/request-code` is intentionally unauthenticated (it's the
+    /// sign-in entry point itself), so anyone who could see a phone number
+    /// here could script repeated real verification-code texts to that
+    /// number with zero trace in this app's own client code. Direct,
+    /// confirmed cause of a real incident.
+    ///
     /// What to show for this person when a display name may or may not be
     /// set yet (`displayName` is `nil` until `PATCH /me` is ever called —
-    /// see the `User` model's doc comment in prisma/schema.prisma) — falls
-    /// back to the one thing every account always has.
+    /// see the `User` model's doc comment in prisma/schema.prisma). Every
+    /// account is required to set one before reaching the main app (see
+    /// `RootView`'s completion gate), so this fallback should only ever be
+    /// reached for an account that predates that requirement.
     var displayNameOrPhoneNumber: String {
         if let displayName, !displayName.isEmpty { return displayName }
-        return phoneNumber
+        return "New User"
     }
 }
 
@@ -192,15 +205,17 @@ enum GroupRole: String, Codable {
 struct GroupMember: Codable, Identifiable, Equatable, Hashable {
     let id: String
     let displayName: String?
-    let phoneNumber: String
     let role: GroupRole
 
     /// Same fallback idea as `PublicUser.displayNameOrPhoneNumber` — kept as
     /// its own copy rather than a shared protocol, same reasoning as that
-    /// property's own doc comment.
+    /// property's own doc comment. Also, like `PublicUser`, no longer has a
+    /// `phoneNumber` field at all — see that property's own doc comment for
+    /// why (a real, confirmed abuse vector: a fellow group member's phone
+    /// number, combined with the unauthenticated `POST /auth/request-code`).
     var displayNameOrPhoneNumber: String {
         if let displayName, !displayName.isEmpty { return displayName }
-        return phoneNumber
+        return "New User"
     }
 }
 
@@ -341,12 +356,21 @@ struct GroupSentInvite: Codable, Identifiable {
     let createdAt: Date
 
     /// What to show for who this invite named — the invited user's own
-    /// name (falling back to their phone number, same convention as
-    /// `PublicUser.displayNameOrPhoneNumber`) when they're already a Home
-    /// Eats user, otherwise just the raw phone number, since nothing else
-    /// is known about them yet.
+    /// name when they're already a Home Eats user with one set, otherwise
+    /// `invitedPhoneNumber`. Deliberately does NOT go through
+    /// `invitedUser?.displayNameOrPhoneNumber` (which no longer discloses a
+    /// phone number at all — see that property's own doc comment): this
+    /// specific screen is MANAGER-only and about an invite THIS group sent,
+    /// so the number here is already known to the viewer (they're the one
+    /// who typed it in to create the invite) — falling back to it isn't a
+    /// new disclosure, just showing the manager their own already-known
+    /// data instead of a generic "New User" that would actually be a
+    /// regression here.
     var displayLabel: String {
-        invitedUser?.displayNameOrPhoneNumber ?? invitedPhoneNumber
+        if let displayName = invitedUser?.displayName, !displayName.isEmpty {
+            return displayName
+        }
+        return invitedPhoneNumber
     }
 }
 

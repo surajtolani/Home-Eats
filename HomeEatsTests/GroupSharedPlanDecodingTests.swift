@@ -209,17 +209,22 @@ final class GroupSharedPlanDecodingTests: XCTestCase {
 
     func testGroupMemberDecodesRoleForBothCases() throws {
         struct Fixture: Decodable { let members: [GroupMember] }
+        // No `phoneNumber` key — matches the backend's `publicMember(...)`
+        // shape (routes/groups.js), which stopped including it (see
+        // `GroupMember.displayNameOrPhoneNumber`'s own doc comment for why:
+        // a real, confirmed abuse vector via the unauthenticated
+        // POST /auth/request-code).
         let json = """
         {
           "members": [
-            { "id": "u1", "displayName": "Me", "phoneNumber": "+14155550001", "role": "MANAGER" },
-            { "id": "u2", "displayName": null, "phoneNumber": "+14155550002", "role": "PARTICIPANT" }
+            { "id": "u1", "displayName": "Me", "role": "MANAGER" },
+            { "id": "u2", "displayName": null, "role": "PARTICIPANT" }
           ]
         }
         """
         let response = try decoder.decode(Fixture.self, from: data(json))
         XCTAssertEqual(response.members[0].role, .manager)
         XCTAssertEqual(response.members[1].role, .participant)
-        XCTAssertEqual(response.members[1].displayNameOrPhoneNumber, "+14155550002")
+        XCTAssertEqual(response.members[1].displayNameOrPhoneNumber, "New User")
     }
 }
