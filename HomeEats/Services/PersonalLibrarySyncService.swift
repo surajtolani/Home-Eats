@@ -184,16 +184,18 @@ enum PersonalLibrarySyncService {
         let localRecipes = (try? modelContext.fetch(FetchDescriptor<Recipe>())) ?? []
         let localRestaurants = (try? modelContext.fetch(FetchDescriptor<Restaurant>())) ?? []
         let recipeBackendIDByLocalID = Dictionary(
-            uniqueKeysWithValues: localRecipes.compactMap { recipe -> (UUID, String)? in
+            localRecipes.compactMap { recipe -> (UUID, String)? in
                 guard let backendID = recipe.backendRecipeID else { return nil }
                 return (recipe.id, backendID)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         let restaurantBackendIDByLocalID = Dictionary(
-            uniqueKeysWithValues: localRestaurants.compactMap { restaurant -> (UUID, String)? in
+            localRestaurants.compactMap { restaurant -> (UUID, String)? in
                 guard let backendID = restaurant.backendID else { return nil }
                 return (restaurant.id, backendID)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
 
         let localEntries = (try? modelContext.fetch(FetchDescriptor<MealHistoryEntry>())) ?? []
@@ -227,17 +229,33 @@ enum PersonalLibrarySyncService {
 
         guard let remoteEntries = try? await AccountsAPIClient.getMyMealHistoryEntries() else { return }
         let localBackendIDs = Set(localEntries.compactMap(\.backendID))
+        // NOT `Dictionary(uniqueKeysWithValues:)` — that traps the whole app
+        // the instant two local rows share the same backend id (see
+        // `GroceryListBuilder.dedupedByCanonicalKey`'s own doc comment for
+        // this exact crash class hitting this codebase before). Two local
+        // `Recipe`/`Restaurant` rows CAN end up pointing at the same
+        // `backendRecipeID`/`backendID` — e.g. a row saved locally before
+        // this session's duplicate-prevention checks existed, or two
+        // overlapping sync passes (this loop here and `RecipesHomeView`'s/
+        // `RestaurantListView`'s own opportunistic sync, both un-guarded
+        // against running concurrently) each pushing the same
+        // not-yet-synced row as a fresh create. `uniquingKeysWith: { first,
+        // _ in first }` just keeps whichever row was encountered first
+        // instead of crashing — an arbitrary but harmless pick, since both
+        // rows would resolve to the same recipe/restaurant either way.
         let localRecipeIDByBackendID = Dictionary(
-            uniqueKeysWithValues: localRecipes.compactMap { recipe -> (String, UUID)? in
+            localRecipes.compactMap { recipe -> (String, UUID)? in
                 guard let backendID = recipe.backendRecipeID else { return nil }
                 return (backendID, recipe.id)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         let localRestaurantIDByBackendID = Dictionary(
-            uniqueKeysWithValues: localRestaurants.compactMap { restaurant -> (String, UUID)? in
+            localRestaurants.compactMap { restaurant -> (String, UUID)? in
                 guard let backendID = restaurant.backendID else { return nil }
                 return (backendID, restaurant.id)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         for remote in remoteEntries where !localBackendIDs.contains(remote.id) {
             modelContext.insert(remote.makeLocalEntry(
