@@ -5,18 +5,7 @@ import Foundation
 /// (type one ingredient per line) and for lines pulled from an imported URL.
 enum IngredientLineParser {
 
-    /// Not `private` — reused by `GroceryListBuilder.canonicalKey`, which
-    /// strips these from the matching key the same way it already strips
-    /// `IngredientNameCleaner.modifierWords`. A count-noun unit word can
-    /// land on either side of the ingredient depending on how a recipe
-    /// phrases it ("3 cloves garlic" vs. "3 garlic cloves") — only the
-    /// first order gets consumed by `consumeUnit` below, so a stray
-    /// "cloves"/"slices"/... left in the *name* needs the same treatment
-    /// as a stray "diced"/"minced" for two differently-worded lines to
-    /// still merge (see that method's own doc comment for the fuller
-    /// reasoning, and the real, confirmed report that motivated this: "3
-    /// garlic cloves, finely chopped" wasn't merging with "minced garlic").
-    static let knownUnits: Set<String> = [
+    private static let knownUnits: Set<String> = [
         "cup", "cups", "tablespoon", "tablespoons", "tbsp", "teaspoon", "teaspoons", "tsp",
         "ounce", "ounces", "oz", "pound", "pounds", "lb", "lbs", "gram", "grams", "g",
         "kilogram", "kilograms", "kg", "milliliter", "milliliters", "ml", "liter", "liters", "l",

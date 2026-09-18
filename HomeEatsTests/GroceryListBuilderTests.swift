@@ -533,7 +533,7 @@ final class GroceryListBuilderTests: XCTestCase {
     /// Direct, confirmed report: "3 garlic cloves, finely chopped" wasn't
     /// merging with "minced garlic" — a count-noun unit word like "cloves"
     /// can land on either side of the phrase depending on how a recipe
-    /// words it, so the key needs to strip `IngredientLineParser.knownUnits`
+    /// words it, so the key needs to strip `trailingCountNounUnits`
     /// the same way it already strips ordinary prep-verb modifiers.
     func testCanonicalKeyStripsCountNounUnitsRegardlessOfPosition() {
         XCTAssertEqual(
@@ -543,6 +543,34 @@ final class GroceryListBuilderTests: XCTestCase {
         XCTAssertEqual(
             GroceryListBuilder.canonicalKey(for: "onion slices"),
             GroceryListBuilder.canonicalKey(for: "slices onion")
+        )
+    }
+
+    /// Independent-verification finding: an earlier version of this fix
+    /// stripped the *full* `IngredientLineParser.knownUnits` set from the
+    /// key regardless of position, which reintroduced the exact false-merge
+    /// class this whole pass exists to prevent — "fish sticks" collapsed to
+    /// "fish" (colliding with plain fish), "chocolate bar"/"granola bar"
+    /// collapsed to "chocolate"/"granola", and "bottle gourd" (a real,
+    /// distinct vegetable) collapsed to "gourd". `trailingCountNounUnits` is
+    /// scoped to only words that are always a discrete sub-part of a single
+    /// food item, never the terminal noun of a standalone product name.
+    func testCanonicalKeyDoesNotStripUnitWordsThatArePartOfAProductName() {
+        XCTAssertNotEqual(
+            GroceryListBuilder.canonicalKey(for: "fish sticks"),
+            GroceryListBuilder.canonicalKey(for: "fish")
+        )
+        XCTAssertNotEqual(
+            GroceryListBuilder.canonicalKey(for: "chocolate bar"),
+            GroceryListBuilder.canonicalKey(for: "chocolate")
+        )
+        XCTAssertNotEqual(
+            GroceryListBuilder.canonicalKey(for: "granola bar"),
+            GroceryListBuilder.canonicalKey(for: "granola")
+        )
+        XCTAssertNotEqual(
+            GroceryListBuilder.canonicalKey(for: "bottle gourd"),
+            GroceryListBuilder.canonicalKey(for: "gourd")
         )
     }
 

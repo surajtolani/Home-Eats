@@ -253,6 +253,7 @@ enum GroceryListBuilder {
     /// different keys ("chicken thigh" vs. "chicken thighs") even after
     /// sorting, defeating the whole point of normalizing word order in the
     /// first place.
+
     /// Nouns whose product identity actually changes depending on which
     /// modifier is attached — "diced tomatoes" is a specific canned SKU,
     /// not a prep instruction for fresh "tomatoes"; "crushed red pepper" is
@@ -262,9 +263,36 @@ enum GroceryListBuilder {
     /// don't collide. Deliberately narrow (two nouns) rather than a general
     /// "some modifiers are product-defining" rule, which would need a much
     /// larger, harder-to-get-right list to avoid new false merges elsewhere.
+    ///
+    /// Known, accepted scoping limitation: this checks whether a
+    /// product-defining noun appears ANYWHERE in the phrase, not whether it
+    /// sits next to the modifier — so a hypothetical multi-ingredient name
+    /// like "diced onion and tomato" would wrongly keep "diced" attached
+    /// even though it modifies "onion," not "tomato." Left as-is rather
+    /// than adding adjacency logic, since a cleaned grocery name is always
+    /// one `RecipeIngredientEntry.name`, i.e. already a single ingredient
+    /// by construction — this multi-noun shape essentially doesn't occur.
     private static let productDefiningNouns: Set<String> = ["tomato", "pepper"]
     private static let productDefiningModifierWords: Set<String> = [
         "diced", "crushed", "stewed", "pureed", "puree"
+    ]
+
+    /// A deliberately NARROWER subset of `IngredientLineParser.knownUnits`:
+    /// only words that are always a discrete sub-part of a single food
+    /// item, never the terminal noun of a standalone product name.
+    /// Red-team-verified false merges from using the *full* `knownUnits`
+    /// set here instead: "fish sticks" -> "fish" (collided with plain
+    /// "fish"), "chocolate bar"/"granola bar" -> "chocolate"/"granola",
+    /// "bottle gourd" (a real, distinct vegetable) -> "gourd". Words like
+    /// bar/stick/bag/box/bottle/jar/can/package/container/packet/envelope/
+    /// loaf are container- or product-shape words that legitimately show
+    /// up as the last word of a real product name, so they're excluded
+    /// here even though they're valid *units* for
+    /// `IngredientLineParser`'s own quantity-parsing purposes.
+    private static let trailingCountNounUnits: Set<String> = [
+        "clove", "cloves", "slice", "slices", "head", "heads",
+        "sprig", "sprigs", "stalk", "stalks", "piece", "pieces",
+        "pinch", "pinches", "dash", "dashes", "bunch", "bunches"
     ]
 
     static func canonicalKey(for rawName: String) -> String {
@@ -294,7 +322,7 @@ enum GroceryListBuilder {
                     return true
                 }
                 return !IngredientNameCleaner.modifierWords.contains(word)
-                    && !IngredientLineParser.knownUnits.contains(word)
+                    && !trailingCountNounUnits.contains(word)
             }
             .map(singularizedWord)
             .sorted()
