@@ -886,11 +886,19 @@ struct GroupDaySlotsView: View {
     private func suggestions(for slot: MealSlot) -> [GroupMealSuggestion] {
         allSuggestions
             .filter { $0.syncState != .pendingDelete && $0.date.isSameDay(as: normalizedDate) && $0.slot == slot }
-            // Net score (upvotes minus downvotes), highest first — same
-            // "most popular suggestion floats to the top" ordering the old
-            // upvote-only `voteCount` sort gave, generalized now that a
-            // suggestion can also collect downvotes.
-            .sorted { $0.upvoteCount - $0.downvoteCount > $1.upvoteCount - $1.downvoteCount }
+            // Stable proposal order (oldest first), NOT live net score —
+            // direct, confirmed bug report: sorting by a score that changes
+            // the instant someone votes means the list itself reorders on
+            // every tap, so the row the user's finger is still over can
+            // become a *different* suggestion by the time the tap lands —
+            // "I vote thumbs-up on the 2nd option and it activates the
+            // 1st one instead" (really: voting on the 2nd one correctly
+            // registered, but immediately moved it to a new position,
+            // sliding the untouched 1st one into the row the user was
+            // still looking at). `createdAt` never changes as a side effect
+            // of voting, so the list order stays put while someone
+            // actually taps through several options in a row.
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     private func memberName(_ userID: String) -> String {

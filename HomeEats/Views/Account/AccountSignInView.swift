@@ -256,7 +256,19 @@ struct AccountSignInView: View {
     }
 
     private func sendCode() async {
-        guard let e164 = enteredE164 else { return }
+        // Real, confirmed bug: the "Send Code" `Button` swaps for a
+        // `ProgressView` once `isLoading` is `true` (see `body` above), but
+        // that's a SwiftUI *render* reacting to state, not something that
+        // can block a tap that already happened — each tap spawns its own
+        // independent `Task { await sendCode() }`, and without a guard here,
+        // any of those that land before the view actually re-renders (a
+        // laggy/janky moment — exactly what a crash-and-relaunch cycle
+        // produces) each independently proceeds to call
+        // `AccountsAPIClient.requestCode(phoneNumber:)`, firing a second (or
+        // third) real Twilio SMS for what was, from the user's side, "one"
+        // attempt at signing in. `guard !isLoading` makes a re-entrant call
+        // an outright no-op instead of a second real send.
+        guard !isLoading, let e164 = enteredE164 else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -270,7 +282,10 @@ struct AccountSignInView: View {
     }
 
     private func verify() async {
-        guard let phoneNumber = confirmedPhoneNumber else { return }
+        // Same re-entrancy guard, same reasoning, as `sendCode()` above —
+        // `POST /auth/verify-code` only ever accepts one code per attempt
+        // anyway, but there's no reason to send a stray duplicate request.
+        guard !isLoading, let phoneNumber = confirmedPhoneNumber else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
