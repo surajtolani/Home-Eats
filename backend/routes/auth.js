@@ -31,15 +31,27 @@ const PhoneSchema = z.object({
 // POST /request-code costs real money the moment it fires a real Twilio
 // Verify send, and that happens before Twilio's own Fraud Guard/rate
 // limiting ever gets a say — so this adds a lightweight limiter in front of
-// it. Two independent limits: per phone number (5/hour comfortably covers
-// normal sign-in — typo'd a digit, code expired, resend — without letting
-// someone rack up real charges hammering one number) and per IP (20/hour,
-// looser since a shared household/office IP can plausibly have several
-// people signing in independently, but still caps one IP cycling through
-// many numbers). See `lib/rateLimit.js`'s own doc comment on why a small
-// in-memory limiter is enough here (single Render instance, not a hard
-// security boundary).
-const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5 });
+// it. Per phone number, there are now TWO stacked limits rather than one:
+// - `requestCodePhoneBurstLimiter` (1 per 60s) — a real incident: a user
+//   received three unprompted codes in quick succession (someone who could
+//   see their number — see `publicUser(...)`'s own doc comment on that
+//   leak, now fixed — scripting repeated calls to this unauthenticated
+//   endpoint). The old single 5/hour limit did nothing to stop a tight
+//   burst like that; this catches it within the first couple of requests
+//   regardless of what the hourly count still allows.
+// - `requestCodePhoneLimiter` (3/hour, tightened from 5) — still comfortably
+//   covers genuine spaced-out resends (typo'd a digit, code expired) while
+//   capping how many real texts one number can be hit with in an hour even
+//   if each individual request is more than 60s apart.
+// Per IP (20/hour) stays as its own separate limit, looser since a shared
+// household/office IP can plausibly have several people signing in
+// independently, but still caps one IP cycling through many numbers. See
+// `lib/rateLimit.js`'s own doc comment on why a small in-memory limiter is
+// enough here (single Render instance, not a hard security boundary — and
+// its state resets on every deploy, so this alone is a mitigation, not a
+// complete fix; the real fix is not leaking phone numbers to begin with).
+const requestCodePhoneBurstLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 1 });
+const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 3 });
 const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
 
 function firstIssue(error, fallback) {
@@ -68,10 +80,16 @@ router.post("/request-code", asyncHandler(async (req, res) => {
 
   // Checked (and counted) after body validation, so a malformed request
   // doesn't burn either quota, same reasoning as the pre-existing "cheap
-  // format check before the billed Twilio call" comment below.
+  // format check before the billed Twilio call" comment below. All three
+  // limiters are checked (not short-circuited) so each one's own counter
+  // still advances even when another already blocks this request — a
+  // caller retrying every few seconds right up against the burst limit
+  // should still find the hourly limit accurately reflects how many
+  // actually went through.
+  const burstLimited = requestCodePhoneBurstLimiter.check(phoneNumber).limited;
   const phoneLimited = requestCodePhoneLimiter.check(phoneNumber).limited;
   const ipLimited = requestCodeIPLimiter.check(req.ip).limited;
-  if (phoneLimited || ipLimited) {
+  if (burstLimited || phoneLimited || ipLimited) {
     return res.status(429).json({ error: "Too many verification code requests. Please wait a bit and try again." });
   }
 

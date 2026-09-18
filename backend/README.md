@@ -936,11 +936,18 @@ nothing to sync it to across devices, so a restored entry simply has no
   configured" story as the `/recipes/*` Claude calls above — fine at
   household/friend-group scale, worth knowing before wiring this up to
   something high-traffic.
-- **Rate limiting**: `POST /auth/request-code` is throttled by a small
-  in-memory limiter (`lib/rateLimit.js`) — 5 requests per phone number per
-  hour, 20 per IP per hour — on top of Twilio Verify's own Fraud
-  Guard/rate-limiting, since this route fires a billed Twilio call before
-  Twilio ever gets a say. `429` with `{ "error": "..." }` when exceeded. The
+- **Rate limiting**: `POST /auth/request-code` is throttled by three
+  stacked small in-memory limiters (`lib/rateLimit.js`) — 1 request per
+  phone number per 60 seconds, 3 per phone number per hour, and 20 per IP
+  per hour — on top of Twilio Verify's own Fraud Guard/rate-limiting, since
+  this route fires a billed Twilio call before Twilio ever gets a say. The
+  60-second burst limit (tightened alongside the hourly one, down from
+  5/hour) was added after a real incident: a user received three
+  unprompted codes in quick succession from someone who could see their
+  phone number via the friends/groups API before that leak was fixed (see
+  `publicUser(...)`'s own doc comment in routes/friends.js) — the old
+  5/hour limit alone did nothing to stop a tight burst like that. `429`
+  with `{ "error": "..." }` when any of the three is exceeded. Each
   limiter's state is per-process (fine for this app's single Render
   instance — see the deploy section above — but it resets on every
   deploy/restart and wouldn't be shared across instances if this ever
