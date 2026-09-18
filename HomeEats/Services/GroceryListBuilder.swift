@@ -253,19 +253,49 @@ enum GroceryListBuilder {
     /// different keys ("chicken thigh" vs. "chicken thighs") even after
     /// sorting, defeating the whole point of normalizing word order in the
     /// first place.
+    /// Nouns whose product identity actually changes depending on which
+    /// modifier is attached — "diced tomatoes" is a specific canned SKU,
+    /// not a prep instruction for fresh "tomatoes"; "crushed red pepper" is
+    /// a spice-rack item, not a prep instruction for a fresh "red pepper."
+    /// For these nouns only, the modifiers below are kept as part of the
+    /// key instead of being stripped like an ordinary prep verb, so the two
+    /// don't collide. Deliberately narrow (two nouns) rather than a general
+    /// "some modifiers are product-defining" rule, which would need a much
+    /// larger, harder-to-get-right list to avoid new false merges elsewhere.
+    private static let productDefiningNouns: Set<String> = ["tomato", "pepper"]
+    private static let productDefiningModifierWords: Set<String> = [
+        "diced", "crushed", "stewed", "pureed", "puree"
+    ]
+
     static func canonicalKey(for rawName: String) -> String {
-        var trimmed = rawName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // Fold accents so "jalapeño" and "jalapeno" merge instead of
+        // landing as two separate grocery-list lines just because one
+        // recipe site used the accented spelling and another didn't.
+        var trimmed = rawName
+            .folding(options: .diacriticInsensitive, locale: nil)
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if let parenIndex = trimmed.firstIndex(of: "(") {
             trimmed = String(trimmed[trimmed.startIndex..<parenIndex]).trimmingCharacters(in: .whitespaces)
         }
         // A comma is treated as a plain word boundary here too, in case
         // this raw name never went through `IngredientNameCleaner
         // .groceryName`'s own trailing-comma-clause handling first.
-        let words = trimmed
+        let rawWords = trimmed
             .replacingOccurrences(of: ",", with: " ")
             .split(separator: " ")
             .map(String.init)
-            .filter { !IngredientNameCleaner.modifierWords.contains($0) }
+        let hasProductDefiningNoun = rawWords.contains {
+            productDefiningNouns.contains(singularizedWord($0))
+        }
+        let words = rawWords
+            .filter { word in
+                if hasProductDefiningNoun, productDefiningModifierWords.contains(word) {
+                    return true
+                }
+                return !IngredientNameCleaner.modifierWords.contains(word)
+                    && !IngredientLineParser.knownUnits.contains(word)
+            }
             .map(singularizedWord)
             .sorted()
         return words.isEmpty ? trimmed : words.joined(separator: " ")

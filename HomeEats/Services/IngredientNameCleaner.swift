@@ -66,6 +66,17 @@ enum IngredientNameCleaner {
         "ice water", "tap water", "ice", "ice cube"
     ]
 
+    /// `excludedNames` above is plain English, not pre-sorted into
+    /// `GroceryListBuilder.canonicalKey`'s word-sorted form — "ice cube"
+    /// canonicalizes to "cube ice", not "ice cube". Comparing a candidate's
+    /// canonical key against the RAW literals would silently never match
+    /// "ice cube" (the other entries happen to already be alphabetical by
+    /// luck). Canonicalizing the excluded set itself keeps this correct
+    /// regardless of word order in either list.
+    private static let excludedCanonicalKeys: Set<String> = Set(
+        excludedNames.map { GroceryListBuilder.canonicalKey(for: $0) }
+    )
+
     /// Strips parenthetical asides and prep-instruction clauses, leaving
     /// just what you'd actually ask for at a store.
     static func groceryName(from rawName: String) -> String {
@@ -145,6 +156,43 @@ enum IngredientNameCleaner {
             result = String(result.dropFirst(3)).trimmingCharacters(in: .whitespaces)
         }
 
+        // "1.2 kg / 2.4 lb chuck beef" — international-audience recipe
+        // sites (RecipeTin Eats and similar) commonly give both metric and
+        // imperial units separated by "/"; only the FIRST is ever consumed
+        // above, leaving a stray leading "/ 2.4 lb ..." second measurement
+        // stuck on the front of the name. This app doesn't attempt
+        // cross-unit conversion/arithmetic anywhere (each unit gets its own
+        // bucket — see `GroceryListBuilder.IngredientAggregate`), so this
+        // is scoped to the display/matching name only, same "recover the
+        // ingredient, not the numbers" spirit as the reparse step above.
+        if result.hasPrefix("/") {
+            let afterSlash = String(result.dropFirst()).trimmingCharacters(in: .whitespaces)
+            let reparsedAfterSlash = IngredientLineParser.parse(afterSlash)
+            if reparsedAfterSlash.unit != nil, !reparsedAfterSlash.name.isEmpty {
+                result = reparsedAfterSlash.name
+            } else {
+                result = afterSlash
+            }
+        }
+
+        // "1/2 cup plus 2 tablespoons unsalted butter" — a second "plus N
+        // unit" quantity refinement between the already-consumed first
+        // amount and the actual ingredient name (common in precise baking
+        // recipes). Same "name-only, no arithmetic" scoping as the slash
+        // case just above.
+        if result.lowercased().hasPrefix("plus ") {
+            let afterPlus = String(result.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            let reparsedAfterPlus = IngredientLineParser.parse(afterPlus)
+            if reparsedAfterPlus.unit != nil, !reparsedAfterPlus.name.isEmpty {
+                result = reparsedAfterPlus.name
+            } else {
+                result = afterPlus
+            }
+            if result.lowercased().hasPrefix("of ") {
+                result = String(result.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            }
+        }
+
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -185,7 +233,7 @@ enum IngredientNameCleaner {
     /// Whether a (already-cleaned) grocery name is something that should
     /// never actually be added to the list.
     static func isExcludedFromGroceryList(_ cleanedName: String) -> Bool {
-        excludedNames.contains(GroceryListBuilder.canonicalKey(for: cleanedName))
+        excludedCanonicalKeys.contains(GroceryListBuilder.canonicalKey(for: cleanedName))
     }
 }
 

@@ -109,4 +109,37 @@ final class IngredientNameCleanerTests: XCTestCase {
         // a single-element array.
         XCTAssertEqual(IngredientNameCleaner.groceryNames(from: "onion"), ["onion"])
     }
+
+    // MARK: - Rigor pass: real-recipe-sourced edge cases
+
+    /// International-audience recipe sites (RecipeTin Eats and similar)
+    /// commonly give both metric and imperial measurements separated by
+    /// "/" — only the first is ever consumed at import time, leaving a
+    /// stray leading "/ 2.4 lb ..." second measurement stuck on the name.
+    func testStripsStrayLeadingSlashFromSecondMeasurement() {
+        XCTAssertEqual(
+            IngredientNameCleaner.groceryName(from: "/ 2.4 lb chuck beef, cut into 3.5 cm cubes"),
+            "chuck beef"
+        )
+    }
+
+    /// Precise baking recipes sometimes give a "plus N unit" refinement
+    /// between the already-consumed first amount and the actual ingredient
+    /// name ("1/2 cup plus 2 tablespoons ... unsalted butter").
+    func testStripsLeadingPlusClause() {
+        XCTAssertEqual(
+            IngredientNameCleaner.groceryName(from: "plus 2 tablespoons (140 grams) unsalted butter, softened"),
+            "unsalted butter"
+        )
+    }
+
+    /// Regression: `excludedNames`' literals aren't all pre-sorted the way
+    /// `GroceryListBuilder.canonicalKey` sorts its words — "ice cube"
+    /// canonicalizes to "cube ice" — so comparing a candidate's canonical
+    /// key against the raw literals silently never matched "ice cube" at
+    /// all (the other entries happened to already be alphabetical).
+    func testExcludesIceCubeRegardlessOfWordOrder() {
+        XCTAssertTrue(IngredientNameCleaner.isExcludedFromGroceryList("ice cube"))
+        XCTAssertTrue(IngredientNameCleaner.isExcludedFromGroceryList("ice cubes"))
+    }
 }

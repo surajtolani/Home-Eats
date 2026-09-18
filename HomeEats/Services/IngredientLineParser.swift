@@ -5,7 +5,18 @@ import Foundation
 /// (type one ingredient per line) and for lines pulled from an imported URL.
 enum IngredientLineParser {
 
-    private static let knownUnits: Set<String> = [
+    /// Not `private` — reused by `GroceryListBuilder.canonicalKey`, which
+    /// strips these from the matching key the same way it already strips
+    /// `IngredientNameCleaner.modifierWords`. A count-noun unit word can
+    /// land on either side of the ingredient depending on how a recipe
+    /// phrases it ("3 cloves garlic" vs. "3 garlic cloves") — only the
+    /// first order gets consumed by `consumeUnit` below, so a stray
+    /// "cloves"/"slices"/... left in the *name* needs the same treatment
+    /// as a stray "diced"/"minced" for two differently-worded lines to
+    /// still merge (see that method's own doc comment for the fuller
+    /// reasoning, and the real, confirmed report that motivated this: "3
+    /// garlic cloves, finely chopped" wasn't merging with "minced garlic").
+    static let knownUnits: Set<String> = [
         "cup", "cups", "tablespoon", "tablespoons", "tbsp", "teaspoon", "teaspoons", "tsp",
         "ounce", "ounces", "oz", "pound", "pounds", "lb", "lbs", "gram", "grams", "g",
         "kilogram", "kilograms", "kg", "milliliter", "milliliters", "ml", "liter", "liters", "l",
@@ -167,17 +178,44 @@ enum IngredientLineParser {
         return text.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
     }
 
-    /// Consumes a leading quantity like "2", "1.5", "1/2", or "1 1/2" from the
-    /// front of `text`, advancing it past the match, and returns the parsed value.
+    /// Leading precision qualifiers ("scant 3/4 cup," "heaping 1/2
+    /// teaspoon") — skipped over, not reflected in the parsed value (this
+    /// app doesn't distinguish "scant" from "exact" anywhere), so the real
+    /// quantity/unit right after one still gets recognized instead of the
+    /// whole "qualifier + number + unit" staying stuck in the ingredient
+    /// name for grocery-list purposes.
+    private static let quantityQualifierWords: Set<String> = [
+        "scant", "heaping", "rounded", "generous",
+        // "about 3 cloves garlic," "roughly 1 lb butter" — an approximation
+        // qualifier in front of the number, same treatment as "scant"/
+        // "heaping" above. Direct, confirmed gap: these used to block
+        // `consumeQuantity` from recognizing the number at all (it requires
+        // a digit at the very start), leaving the entire line — number,
+        // unit, and all — stuck as one unparsed name.
+        "about", "roughly", "approximately", "around"
+    ]
+
+    /// Consumes a leading quantity like "2", "1.5", "1/2", "1 1/2",
+    /// "4-5" (a range — see below), or "a"/"an" (see below) from the front
+    /// of `text`, advancing it past the match, and returns the parsed value.
     private static func consumeQuantity(_ text: inout Substring) -> Double? {
         let original = text
         text = text.drop { $0 == " " }
 
-        // Mixed number: "1 1/2" (digit runs bounded for the same overflow
-        // reason as the decimal/integer case below).
-        if let mixed = matchPrefix(of: text, pattern: #"^(\d{1,6})\s+(\d{1,6})\/(\d{1,6})\s*"#) {
+        if let qualifierMatch = matchPrefix(of: text, pattern: #"^[A-Za-z]+\s+"#),
+           quantityQualifierWords.contains(qualifierMatch.trimmingCharacters(in: .whitespaces).lowercased()) {
+            text = text.dropFirst(qualifierMatch.count)
+        }
+
+        // Mixed number: "1 1/2", or "1 and 1/2" (the optional "and" is a
+        // real, if less common, way recipes phrase this — direct,
+        // confirmed gap: without it, only the leading "1" was recognized,
+        // leaving "and 1/2 cups flour" stuck as the name). Digit runs
+        // bounded for the same overflow reason as the decimal/integer case
+        // below.
+        if let mixed = matchPrefix(of: text, pattern: #"^(\d{1,6})\s+(?:and\s+)?(\d{1,6})\/(\d{1,6})\s*"#) {
             let comps = mixed.components(separatedBy: CharacterSet(charactersIn: " /"))
-                .filter { !$0.isEmpty }
+                .filter { !$0.isEmpty && $0.lowercased() != "and" }
             if comps.count == 3, let whole = Double(comps[0]), let num = Double(comps[1]), let den = Double(comps[2]), den != 0 {
                 text = text.dropFirst(mixed.count)
                 return whole + num / den
@@ -191,6 +229,23 @@ enum IngredientLineParser {
                 return num / den
             }
         }
+        // Range: "4-5 plum tomatoes," "5-6 large onions" (an en-/em-dash
+        // separator works too — some sites use one instead of a plain
+        // hyphen). Takes the UPPER bound as a "buy enough" estimate; this
+        // app doesn't attempt precise cross-unit quantity math anywhere
+        // else either, so approximating here is consistent, not a new
+        // limitation. Tried before the plain decimal/integer case just
+        // below — that one would otherwise greedily match just the "4" and
+        // leave "-5" stuck at the front of the name.
+        if let range = matchPrefix(of: text, pattern: #"^(\d{1,6}(\.\d+)?)\s*[-\u{2013}\u{2014}]\s*(\d{1,6}(\.\d+)?)\s*"#) {
+            let comps = range.components(separatedBy: CharacterSet(charactersIn: "-\u{2013}\u{2014}"))
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if comps.count == 2, let upper = Double(comps[1]) {
+                text = text.dropFirst(range.count)
+                return upper
+            }
+        }
         // Decimal or integer: "2", "1.5". Capped at 6 digits before the
         // decimal point — no real recipe quantity needs more than that, and
         // without a cap a stray run of digits (garbled source markup, a
@@ -201,8 +256,47 @@ enum IngredientLineParser {
         if let number = matchPrefix(of: text, pattern: #"^(\d{1,6}(\.\d+)?)\s*"#) {
             let numeric = number.trimmingCharacters(in: .whitespaces)
             if let value = Double(numeric) {
-                text = text.dropFirst(number.count)
+                let remainder = text.dropFirst(number.count)
+                // A digit run immediately followed by a letter with NO
+                // space at all ("7UP", "10x sugar") is more likely a single
+                // compound token (a brand/product name) than a real
+                // "quantity space unit" pair — real recipe text almost
+                // always has that space. Only roll back to leaving the
+                // whole thing untouched when there's ALSO no recognized
+                // unit right there to validate the split; "2tbsp sugar" (a
+                // real, if uncommon, no-space compact notation) still
+                // correctly parses as quantity 2 / unit tbsp, since "tbsp"
+                // itself confirms the split was real. Direct, confirmed
+                // gap: without this check, "7UP" parsed as quantity 7,
+                // name "UP" — silently corrupting a real product name.
+                let noSpaceConsumed = number.count == numeric.count
+                if noSpaceConsumed, let nextCharacter = remainder.first, nextCharacter.isLetter {
+                    var probe = remainder
+                    if consumeUnit(&probe) == nil {
+                        text = original
+                        return nil
+                    }
+                }
+                text = remainder
                 return value
+            }
+        }
+        // "a pinch of salt," "a dash of pepper," "a can of beans" — "a"/
+        // "an" as an implicit quantity of 1, but ONLY when the very next
+        // word is a real recognized unit ("pinch"/"dash"/"can"/...);
+        // otherwise "a" is just the ordinary English article ("a whole
+        // chicken," "a large onion") and must be left alone as part of the
+        // name, not consumed as a phantom quantity. Direct, confirmed gap
+        // from real recipe text: "a pinch of salt" was never recognized as
+        // a quantity+unit at all (no leading digit for the usual path to
+        // find), so it never merged with a plain "salt" from another
+        // recipe.
+        if let article = matchPrefix(of: text, pattern: #"^(a|an)\s+"#) {
+            let afterArticle = text.dropFirst(article.count)
+            var probe = afterArticle
+            if consumeUnit(&probe) != nil {
+                text = afterArticle
+                return 1.0
             }
         }
 

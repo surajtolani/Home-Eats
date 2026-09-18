@@ -527,4 +527,53 @@ final class GroceryListBuilderTests: XCTestCase {
             GroceryListBuilder.canonicalKey(for: "garlic, minced")
         )
     }
+
+    // MARK: - Rigor pass: real-recipe-sourced edge cases
+
+    /// Direct, confirmed report: "3 garlic cloves, finely chopped" wasn't
+    /// merging with "minced garlic" — a count-noun unit word like "cloves"
+    /// can land on either side of the phrase depending on how a recipe
+    /// words it, so the key needs to strip `IngredientLineParser.knownUnits`
+    /// the same way it already strips ordinary prep-verb modifiers.
+    func testCanonicalKeyStripsCountNounUnitsRegardlessOfPosition() {
+        XCTAssertEqual(
+            GroceryListBuilder.canonicalKey(for: "garlic, finely chopped"),
+            GroceryListBuilder.canonicalKey(for: "cloves minced garlic")
+        )
+        XCTAssertEqual(
+            GroceryListBuilder.canonicalKey(for: "onion slices"),
+            GroceryListBuilder.canonicalKey(for: "slices onion")
+        )
+    }
+
+    /// Red-team finding: "diced tomatoes" (a specific canned SKU) and
+    /// "crushed red pepper" (a spice-rack item) must NOT merge with fresh
+    /// "tomatoes" / "red pepper" just because "diced"/"crushed" are
+    /// ordinarily-stripped prep words — here the modifier IS the product.
+    func testCanonicalKeyKeepsProductDefiningModifiersForTomatoAndPepper() {
+        XCTAssertNotEqual(
+            GroceryListBuilder.canonicalKey(for: "diced tomatoes"),
+            GroceryListBuilder.canonicalKey(for: "tomatoes")
+        )
+        XCTAssertNotEqual(
+            GroceryListBuilder.canonicalKey(for: "crushed red pepper"),
+            GroceryListBuilder.canonicalKey(for: "red pepper")
+        )
+        // An ordinary noun unaffected by this narrow rule still merges
+        // through the usual modifier-stripping path.
+        XCTAssertEqual(
+            GroceryListBuilder.canonicalKey(for: "diced onion"),
+            GroceryListBuilder.canonicalKey(for: "onion")
+        )
+    }
+
+    /// Red-team finding: an accented spelling from one recipe site
+    /// ("jalapeño") and a plain-ASCII spelling from another ("jalapeno")
+    /// used to land as two separate grocery-list lines.
+    func testCanonicalKeyFoldsDiacritics() {
+        XCTAssertEqual(
+            GroceryListBuilder.canonicalKey(for: "jalapeño, sliced"),
+            GroceryListBuilder.canonicalKey(for: "jalapeno, sliced")
+        )
+    }
 }
