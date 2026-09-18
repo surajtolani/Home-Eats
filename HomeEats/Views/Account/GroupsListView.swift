@@ -2,8 +2,12 @@ import SwiftUI
 
 /// Every group the caller belongs to — fetched live from `GET /groups`,
 /// same "no local model, backend is the sole source of truth" reasoning as
-/// `FriendsListView` (see its own doc comment).
+/// `FriendsListView` (see its own doc comment) — and the same
+/// `LocalDataCache` read-only snapshot fallback that view now has, for the
+/// same reason: a live fetch failing (offline, flaky connection) shouldn't
+/// blank a list this screen was just showing a moment ago.
 struct GroupsListView: View {
+    @EnvironmentObject private var accountSession: AccountSession
     @State private var groups: [GroupSummary] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -83,17 +87,29 @@ struct GroupsListView: View {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        let isFirstLoad = groups.isEmpty
+        // Same cache-seed-before-live-fetch pattern as
+        // `FriendsListView.load()` — see `LocalDataCache`'s own doc
+        // comment. Only relevant before anything's on screen yet.
+        if groups.isEmpty, let userID = accountSession.currentUser?.id {
+            groups = LocalDataCache.load([GroupSummary].self, key: cacheKey(userID: userID)) ?? []
+        }
+        let hasNothingToShowYet = groups.isEmpty
         do {
-            groups = try await AccountsAPIClient.getGroups()
+            let fetched = try await AccountsAPIClient.getGroups()
+            groups = fetched
+            if let userID = accountSession.currentUser?.id {
+                LocalDataCache.save(fetched, key: cacheKey(userID: userID))
+            }
         } catch {
-            if isFirstLoad {
+            if hasNothingToShowYet {
                 errorMessage = error.localizedDescription
             } else {
                 refreshFailure = error.localizedDescription
             }
         }
     }
+
+    private func cacheKey(userID: String) -> String { "groups-\(userID)" }
 }
 
 /// "Name a group, pick members from your accepted friends" — its own view

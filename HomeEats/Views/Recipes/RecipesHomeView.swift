@@ -395,9 +395,14 @@ struct RecipesHomeView: View {
                 description: Text("Friends and groups can share recipes with you once you're signed in.")
             )
             Button("Sign In") { showSignIn = true }
-        } else if isLoadingShared {
+        } else if isLoadingShared && sharedRecipes.isEmpty {
+            // Only shown when there's truly nothing yet to display — a
+            // cache hit (see `loadSharedRecipes`) means `sharedRecipes` is
+            // already populated by the time this renders, so the list
+            // below shows immediately instead of a spinner, and a
+            // background refresh updates it in place.
             ProgressView()
-        } else if let sharedLoadError {
+        } else if let sharedLoadError, sharedRecipes.isEmpty {
             Text(sharedLoadError).foregroundStyle(.red)
             Button("Retry") { Task { await loadSharedRecipes() } }
         } else if sharedRecipes.isEmpty {
@@ -473,16 +478,37 @@ struct RecipesHomeView: View {
         return items
     }
 
+    /// Seeds `sharedRecipes` from `LocalDataCache`'s last successful
+    /// snapshot before the live fetch even starts (see that type's own doc
+    /// comment) — a real list shows up immediately instead of a spinner
+    /// that turns into a blank error state if the connection is offline or
+    /// slow. A failed live fetch only surfaces `sharedLoadError` (replacing
+    /// the section's content — see `sharedSectionContent`) if the cache
+    /// seed also came up empty; otherwise the cached list just stays on
+    /// screen, silently stale, rather than being yanked away by one failed
+    /// refresh.
     private func loadSharedRecipes() async {
         isLoadingShared = true
         sharedLoadError = nil
+        if sharedRecipes.isEmpty, let userID = accountSession.currentUser?.id {
+            sharedRecipes = LocalDataCache.load([SharedRecipeEntry].self, key: sharedRecipesCacheKey(userID: userID)) ?? []
+        }
+        let hasNothingToShowYet = sharedRecipes.isEmpty
         defer { isLoadingShared = false }
         do {
-            sharedRecipes = try await AccountsAPIClient.getSharedRecipes()
+            let fetched = try await AccountsAPIClient.getSharedRecipes()
+            sharedRecipes = fetched
+            if let userID = accountSession.currentUser?.id {
+                LocalDataCache.save(fetched, key: sharedRecipesCacheKey(userID: userID))
+            }
         } catch {
-            sharedLoadError = error.localizedDescription
+            if hasNothingToShowYet {
+                sharedLoadError = error.localizedDescription
+            }
         }
     }
+
+    private func sharedRecipesCacheKey(userID: String) -> String { "shared-recipes-\(userID)" }
 
     /// Materializes a shared recipe into a local `Recipe` — the "Shared"
     /// counterpart to `RecipeDetailView`'s existing Library-save path
@@ -517,9 +543,14 @@ struct RecipesHomeView: View {
     @ViewBuilder
     private var masterLibrarySectionContent: some View {
         if accountSession.isSignedIn {
-            if isLoadingMasterLibrary {
+            // Same stale-while-revalidate shape as `sharedSectionContent` —
+            // a cache hit (see `loadMasterLibrary`) means `masterLibraryRecipes`
+            // is already populated by the time this renders, so the spinner/
+            // error states below only ever show when there's truly nothing
+            // cached yet.
+            if isLoadingMasterLibrary && masterLibraryRecipes.isEmpty {
                 ProgressView()
-            } else if let masterLibraryLoadError {
+            } else if let masterLibraryLoadError, masterLibraryRecipes.isEmpty {
                 Text(masterLibraryLoadError).font(.brandCaption).foregroundStyle(.secondary)
                 Button("Retry") { Task { await loadMasterLibrary() } }
                     .font(.brandCaption)
@@ -590,16 +621,30 @@ struct RecipesHomeView: View {
         return items
     }
 
+    /// Same cache-seed-before-live-fetch shape as `loadSharedRecipes()` —
+    /// see `LocalDataCache`'s own doc comment.
     private func loadMasterLibrary() async {
         isLoadingMasterLibrary = true
         masterLibraryLoadError = nil
+        if masterLibraryRecipes.isEmpty, let userID = accountSession.currentUser?.id {
+            masterLibraryRecipes = LocalDataCache.load([LibraryRecipeEntry].self, key: masterLibraryCacheKey(userID: userID)) ?? []
+        }
+        let hasNothingToShowYet = masterLibraryRecipes.isEmpty
         defer { isLoadingMasterLibrary = false }
         do {
-            masterLibraryRecipes = try await AccountsAPIClient.getMasterLibrary()
+            let fetched = try await AccountsAPIClient.getMasterLibrary()
+            masterLibraryRecipes = fetched
+            if let userID = accountSession.currentUser?.id {
+                LocalDataCache.save(fetched, key: masterLibraryCacheKey(userID: userID))
+            }
         } catch {
-            masterLibraryLoadError = error.localizedDescription
+            if hasNothingToShowYet {
+                masterLibraryLoadError = error.localizedDescription
+            }
         }
     }
+
+    private func masterLibraryCacheKey(userID: String) -> String { "master-library-\(userID)" }
 
     /// Same "materialize a wire entry into a local, saved `Recipe`" role as
     /// `saveSharedRecipe` above — see `LibraryRecipeEntry.makeLocalRecipe()`'s

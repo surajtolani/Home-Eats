@@ -8,7 +8,17 @@ import SwiftUI
 /// anyway, since it's a request to a server-side account) and the backend
 /// is already the sole source of truth for who's friends with whom — see
 /// the wiring task's own notes on why this deliberately has no local model.
+///
+/// Still keeps a read-only `LocalDataCache` snapshot of the last successful
+/// fetch (see that type's own doc comment) — no local *model*, but also no
+/// longer a blank error screen the instant one live fetch fails while
+/// offline. `load()` seeds `friendsList` from the cache immediately so
+/// something real shows up before the network round-trip even finishes,
+/// then a successful fetch overwrites both the on-screen list and the
+/// cache; a failed fetch only blanks the screen if there's truly nothing
+/// (cached or otherwise) to show yet.
 struct FriendsListView: View {
+    @EnvironmentObject private var accountSession: AccountSession
     @State private var friendsList: FriendsList?
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -158,24 +168,39 @@ struct FriendsListView: View {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        // Only a *first* load's failure blanks the screen down to an error
-        // + Retry button (there's genuinely nothing else to show yet). A
+        // Seed from the last successful fetch's cached snapshot before the
+        // live request even starts — see `LocalDataCache`'s own doc
+        // comment. Only relevant on a genuine first load (`friendsList ==
+        // nil`); a refresh already has something real on screen to fall
+        // back to already.
+        if friendsList == nil, let userID = accountSession.currentUser?.id {
+            friendsList = LocalDataCache.load(FriendsList.self, key: cacheKey(userID: userID))
+        }
+        // Whether there's still nothing to show right before this fetch —
+        // captured here (not re-checked after) so a failure blanks the
+        // screen only when the cache seed above also came up empty. A
         // refresh failure (pull-to-refresh, or the re-fetch after an
         // accept/decline/add-friend action below) with an already-loaded
         // list on screen goes through `actionFailure`'s non-blocking alert
         // instead, leaving whatever was already showing exactly as it was —
         // same reasoning as `actionFailure`'s own doc comment.
-        let isFirstLoad = friendsList == nil
+        let hasNothingToShowYet = friendsList == nil
         do {
-            friendsList = try await AccountsAPIClient.getFriends()
+            let fetched = try await AccountsAPIClient.getFriends()
+            friendsList = fetched
+            if let userID = accountSession.currentUser?.id {
+                LocalDataCache.save(fetched, key: cacheKey(userID: userID))
+            }
         } catch {
-            if isFirstLoad {
+            if hasNothingToShowYet {
                 errorMessage = error.localizedDescription
             } else {
                 actionFailure = error.localizedDescription
             }
         }
     }
+
+    private func cacheKey(userID: String) -> String { "friends-\(userID)" }
 
     private func respond(to friendshipID: String, accept: Bool) async {
         do {
