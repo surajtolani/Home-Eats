@@ -339,6 +339,12 @@ const NaturalSearchQuerySchema = z.object({
   searchQuery: z.string(),
   // A specific place actually named in the request — a neighborhood, city,
   // landmark, or address ("Greenwich", "near the train station downtown").
+  // Include whatever broader context (city, region, country) the request
+  // itself gave, not just an abbreviation or neighborhood name on its own
+  // — this gets geocoded as freestanding text below, and a bare acronym
+  // or a neighborhood name that exists in multiple countries can resolve
+  // to the wrong place, or fail to resolve at all, without that context
+  // ("BGC" -> "BGC, Taguig, Metro Manila, Philippines", not just "BGC").
   // `null` when nothing specific was named (including "near me"/"nearby"),
   // in which case the app's own current location is used instead, same as
   // plain search.
@@ -371,7 +377,12 @@ app.post("/restaurants/search-natural", async (req, res) => {
           role: "user",
           content:
             "A user typed this into a restaurant search box. Extract a good search " +
-            `query for it, and any specific location they named. Request: "${query}"`,
+            "query for it, and any specific location they named. locationText gets " +
+            "geocoded as freestanding text afterward, so include whatever broader " +
+            "context (city, region, country) the request gave alongside a bare " +
+            "neighborhood name or acronym, not just the acronym/neighborhood on its " +
+            "own — e.g. \"BGC\" in \"bgc area in manila philippines\" should become " +
+            `"BGC, Manila, Philippines", not just "BGC". Request: "${query}"`,
         },
       ],
     });
@@ -387,9 +398,23 @@ app.post("/restaurants/search-natural", async (req, res) => {
   // A named location wins over the user's actual current location — asking
   // for something "near Greenwich" while physically somewhere else should
   // search near Greenwich, not near the user.
+  //
+  // `locationGeocodeFailed` matters here: without it, a request that named
+  // a real place Google's Geocoding API couldn't resolve (an unfamiliar
+  // acronym, a typo, an ambiguous name) would silently fall through to the
+  // user's actual current-location coordinates below, while the response
+  // still echoed back `interpretedLocation` as if that named place had
+  // been used — the app would show "Searching near BGC, Manila,
+  // Philippines" while actually searching near wherever the phone
+  // currently is (direct user report of exactly this: asked for
+  // restaurants in BGC, Manila, got results from Greenwich, presumably
+  // near their device's real location). The client uses this flag to
+  // show that honestly instead.
   let locationBias = null;
+  let locationGeocodeFailed = false;
   if (interpreted.locationText) {
     locationBias = await geocode(interpreted.locationText);
+    if (!locationBias) locationGeocodeFailed = true;
   }
   if (!locationBias && hasUserLocation) {
     locationBias = { latitude: lat, longitude: lng };
@@ -401,6 +426,7 @@ app.post("/restaurants/search-natural", async (req, res) => {
       results,
       interpretedQuery: interpreted.searchQuery,
       interpretedLocation: interpreted.locationText,
+      locationGeocodeFailed,
     });
   } catch (error) {
     console.error("Places API request threw", error);

@@ -488,6 +488,13 @@ struct NaturalLanguageRestaurantSearchView: View {
     @State private var results: [RestaurantSearchModel.Result] = []
     @State private var interpretedQuery: String?
     @State private var interpretedLocation: String?
+    /// True when `interpretedLocation` was named but couldn't actually be
+    /// geocoded — see `GooglePlacesService.NaturalSearchResult
+    /// .locationGeocodeFailed`'s own doc comment for the direct, confirmed
+    /// report this fixes (results silently biased to the device's current
+    /// location instead, while still claiming to have searched the named
+    /// place).
+    @State private var locationGeocodeFailed = false
     @State private var hasSearchedOnce = false
     /// Standalone mode only (`onPick == nil`) — see `addFromSearch`'s own
     /// doc comment for why this exists.
@@ -558,6 +565,28 @@ struct NaturalLanguageRestaurantSearchView: View {
                         }
                         .font(.brandCaption)
                         .foregroundStyle(.secondary)
+                        // Direct, confirmed user report: a named location
+                        // that couldn't actually be geocoded used to fail
+                        // silently — the line above still said "Searching
+                        // near BGC, Manila, Philippines" while the search
+                        // was really biased to wherever the device
+                        // currently is, so results from a totally
+                        // different place (Greenwich, in that report)
+                        // looked like a mystery. This says so plainly
+                        // instead.
+                        if locationGeocodeFailed, let interpretedLocation {
+                            Label {
+                                Text(
+                                    userCoordinate != nil
+                                        ? "Couldn't pinpoint \"\(interpretedLocation)\" — showing results near your current location instead."
+                                        : "Couldn't pinpoint \"\(interpretedLocation)\" — try a more specific place (city and country help)."
+                                )
+                            } icon: {
+                                Image(systemName: "exclamationmark.triangle")
+                            }
+                            .font(.brandCaption)
+                            .foregroundStyle(.orange)
+                        }
                     }
                 }
                 if !results.isEmpty {
@@ -595,6 +624,7 @@ struct NaturalLanguageRestaurantSearchView: View {
             let response = try await GooglePlacesService.searchNatural(queryText, near: userCoordinate)
             interpretedQuery = response.interpretedQuery
             interpretedLocation = response.interpretedLocation
+            locationGeocodeFailed = response.locationGeocodeFailed
             results = response.results.map {
                 RestaurantSearchModel.Result(
                     id: $0.id,

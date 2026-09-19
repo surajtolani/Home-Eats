@@ -140,7 +140,8 @@ enum GooglePlacesService {
         return NaturalSearchResult(
             results: decoded.results.map(makePlaceResult),
             interpretedQuery: decoded.interpretedQuery,
-            interpretedLocation: decoded.interpretedLocation
+            interpretedLocation: decoded.interpretedLocation,
+            locationGeocodeFailed: decoded.locationGeocodeFailed
         )
     }
 
@@ -154,6 +155,16 @@ enum GooglePlacesService {
         /// ("Greenwich, CT") — `nil` when the request didn't name one and
         /// the app's own location was used instead.
         let interpretedLocation: String?
+        /// True when `interpretedLocation` was set but the backend's
+        /// geocoder couldn't resolve it to actual coordinates — direct,
+        /// confirmed user report: asked for restaurants in "BGC area in
+        /// Manila Philippines," got results from Greenwich instead,
+        /// because the named location silently failed to geocode and the
+        /// search fell back to the device's own current-location
+        /// coordinates while still showing "Searching near BGC, Manila,
+        /// Philippines" as if that had worked. The caller uses this to
+        /// show that honestly instead of the misleading confirmation.
+        let locationGeocodeFailed: Bool
     }
 
     private static func makePlaceResult(from raw: RawResult) -> PlaceResult {
@@ -296,6 +307,7 @@ enum GooglePlacesService {
         let results: [RawResult]
         let interpretedQuery: String
         let interpretedLocation: String?
+        let locationGeocodeFailed: Bool
     }
 
     private struct RawResult: Decodable {
