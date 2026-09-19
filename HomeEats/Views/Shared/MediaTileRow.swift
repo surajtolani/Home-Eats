@@ -14,8 +14,8 @@ import SwiftUI
 /// a genuine second line (see `title`'s own `.lineLimit(2)` below — also a
 /// direct ask: "if the name of restaurant needs to be in 2 lines that's
 /// fine"), the meta rows room for two lines of their own, and the action
-/// icons (now stacked vertically — see the trailing `VStack` in `body`)
-/// room to stack up to four without crowding.
+/// icons (now their own row underneath those — see `body`) room to sit
+/// below the source line without the tile growing much taller.
 let mediaTileHeight: CGFloat = 108
 
 /// One always-visible action icon on a `MediaTileRow`'s trailing edge —
@@ -46,18 +46,17 @@ struct MediaTileAction {
     }
 }
 
-/// A horizontal media tile — a square thumbnail on the left, a bold title
-/// and a secondary meta row (icon + text pairs, e.g. "25 min" / "serves
-/// 4") stacked to its right, and a compact column of small, always-visible
-/// action icons running down its trailing edge. Direct user request,
-/// modeled on a reference screenshot they attached, for one consistent
-/// tile format shared across the Plan tab's calendar view (a decided
-/// meal), Restaurants, and Recipes — "This tile should probably be a
-/// consistent size and format across all the other tiles" — with a
-/// shorter height than their reference image ("although I would make it
-/// shorter height"): `mediaTileHeight` above is the one place that height
-/// is set, so every call site stays in sync automatically if it's ever
-/// tuned.
+/// A horizontal media tile — a square thumbnail on the left, and to its
+/// right a bold title, a secondary meta row (icon + text pairs, e.g. "25
+/// min" / "serves 4"), and a final row of small, always-visible action
+/// icons underneath. Direct user request, modeled on a reference
+/// screenshot they attached, for one consistent tile format shared across
+/// the Plan tab's calendar view (a decided meal), Restaurants, and Recipes
+/// — "This tile should probably be a consistent size and format across all
+/// the other tiles" — with a shorter height than their reference image
+/// ("although I would make it shorter height"): `mediaTileHeight` above is
+/// the one place that height is set, so every call site stays in sync
+/// automatically if it's ever tuned.
 ///
 /// **Every action stays directly on the tile, tappable with no gesture to
 /// discover.** An earlier version of this tile moved secondary actions
@@ -69,22 +68,23 @@ struct MediaTileAction {
 /// UI across the tabs." `actions` now takes as many icons as a call site
 /// actually needs (Restaurants: one, favorite; Recipes: up to four,
 /// quick-add/share/add-to-library/favorite; Plan: none), rendered as one
-/// small icon-button column, restoring the exact original always-visible,
+/// small icon-button row, restoring the exact original always-visible,
 /// no-swipe-required behavior on top of the new tile shape.
 ///
-/// **Actions run top-to-bottom, not left-to-right.** Direct, repeated
-/// report that a recipe's title and meta info (time, servings, source)
-/// were still getting cut off even after the tile grew taller — a
-/// horizontal row of up to four action icons was eating most of the
-/// tile's width, squeezing the title/meta column into a fraction of the
-/// available space. Stacking the icons vertically instead shrinks that
-/// column down to one icon's width, so the title/meta column (which now
-/// claims the tile's full remaining width via `.frame(maxWidth: .infinity)`
-/// below, instead of competing with a `Spacer` for whatever's left) can
-/// actually use the room: the title runs to the right edge and only wraps
-/// to a second line if it genuinely needs to, and the meta rows (time +
-/// servings, then source, on their own lines) have the same full width to
-/// work with.
+/// **Actions sit in their own row below the meta info, not off to the
+/// side.** Direct, repeated report that a recipe's title and meta info
+/// (time, servings, source) were still getting cut off even after the
+/// tile grew taller — first traced to a horizontal row of up to four
+/// action icons eating most of the tile's width next to the title, then
+/// (after moving the icons to a trailing vertical column) to a direct
+/// follow-up ask to try tucking them under the meta info entirely instead.
+/// With the icons out of the title/meta column's row altogether, that
+/// column claims the tile's *entire* width via
+/// `.frame(maxWidth: .infinity)` below, instead of sharing it with
+/// anything: the title runs to the right edge and only wraps to a second
+/// line if it genuinely needs to, and the meta rows (time + servings, then
+/// source) have that same full width, with the action icons as one more
+/// row underneath the last of them.
 ///
 /// Deliberately NOT used for the Plan tab's Weekly agenda list (direct
 /// user request: "No need for the tile on the weekly tab" — that list
@@ -140,36 +140,39 @@ struct MediaTileRow<Thumbnail: View>: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 }
-            }
-            // Claims the tile's full remaining width, instead of sharing a
-            // `Spacer` with the actions column below — see this type's own
-            // doc comment ("Actions run top-to-bottom, not left-to-right")
-            // for why that's what actually fixes the cut-off title/meta.
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            if !actions.isEmpty {
-                // A column, not a row — see this type's own doc comment.
-                // Top-aligned so it reads as "coming down" from the title's
-                // own baseline, same as a direct user request phrased it.
-                VStack(spacing: 8) {
-                    ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                        if let onTap = action.onTap {
-                            Button(action: onTap) {
-                                Image(systemName: action.icon)
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(action.tint)
-                            .accessibilityLabel(action.label)
-                        } else {
-                            Image(systemName: action.icon)
-                                .allowsHitTesting(false)
+                if !actions.isEmpty {
+                    // One more row under the meta info, not off to the
+                    // trailing edge — see this type's own doc comment
+                    // ("Actions sit in their own row below the meta info").
+                    // Left-aligned like everything else in this column,
+                    // rather than spread out, so it reads as a compact row
+                    // of icons rather than a second action bar.
+                    HStack(spacing: 14) {
+                        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                            if let onTap = action.onTap {
+                                Button(action: onTap) {
+                                    Image(systemName: action.icon)
+                                }
+                                .buttonStyle(.plain)
                                 .foregroundStyle(action.tint)
                                 .accessibilityLabel(action.label)
+                            } else {
+                                Image(systemName: action.icon)
+                                    .allowsHitTesting(false)
+                                    .foregroundStyle(action.tint)
+                                    .accessibilityLabel(action.label)
+                            }
                         }
                     }
+                    .font(.brandCallout)
+                    .padding(.top, 2)
                 }
-                .font(.brandCallout)
             }
+            // Claims the tile's full remaining width — nothing else shares
+            // this row anymore now that actions moved into their own row
+            // inside this column (see this type's own doc comment).
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
         .background(Color.brandCream, in: RoundedRectangle(cornerRadius: 16))
