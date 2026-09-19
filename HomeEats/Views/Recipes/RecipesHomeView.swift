@@ -468,14 +468,13 @@ struct RecipesHomeView: View {
         .listRowSeparator(.hidden)
     }
 
-    private func sharedEntryMetaItems(_ entry: SharedRecipeEntry) -> [(icon: String?, text: String)] {
-        var items: [(icon: String?, text: String)] = []
+    private func sharedEntryMetaItems(_ entry: SharedRecipeEntry) -> [[(icon: String?, text: String)]] {
+        var firstRow: [(icon: String?, text: String)] = []
         if entry.totalMinutes > 0 {
-            items.append((icon: "clock", text: "\(entry.totalMinutes) min"))
+            firstRow.append((icon: "clock", text: "\(entry.totalMinutes) min"))
         }
-        items.append((icon: "person.2", text: "serves \(entry.displayServings)"))
-        items.append((icon: "person.2", text: entry.sharedByCaption))
-        return items
+        firstRow.append((icon: "person.2", text: "serves \(entry.displayServings)"))
+        return [firstRow, [(icon: "person.2", text: entry.sharedByCaption)]]
     }
 
     /// Seeds `sharedRecipes` from `LocalDataCache`'s last successful
@@ -611,14 +610,13 @@ struct RecipesHomeView: View {
         .listRowSeparator(.hidden)
     }
 
-    private func libraryEntryMetaItems(_ entry: LibraryRecipeEntry) -> [(icon: String?, text: String)] {
-        var items: [(icon: String?, text: String)] = []
+    private func libraryEntryMetaItems(_ entry: LibraryRecipeEntry) -> [[(icon: String?, text: String)]] {
+        var firstRow: [(icon: String?, text: String)] = []
         if entry.totalMinutes > 0 {
-            items.append((icon: "clock", text: "\(entry.totalMinutes) min"))
+            firstRow.append((icon: "clock", text: "\(entry.totalMinutes) min"))
         }
-        items.append((icon: "person.2", text: "serves \(entry.displayServings)"))
-        items.append((icon: "books.vertical", text: entry.addedByCaption))
-        return items
+        firstRow.append((icon: "person.2", text: "serves \(entry.displayServings)"))
+        return [firstRow, [(icon: "books.vertical", text: entry.addedByCaption)]]
     }
 
     /// Same cache-seed-before-live-fetch shape as `loadSharedRecipes()` —
@@ -800,25 +798,26 @@ struct RecipesHomeView: View {
 
     /// Direct user request for a recipe tile's exact meta layout: "below
     /// [the title] should be the time, # of people it serves. below that
-    /// should be the source (imported, shared by, etc.)." `MediaTileRow`
-    /// wraps these two at a time onto their own row, so time+servings (the
-    /// first two items below) land on one line and the source (the third,
-    /// when there is one) lands on its own line underneath — exactly this
-    /// order. No separate "favorite" entry here (an earlier version added
-    /// one) since the heart action icon in the tile's new icon column
-    /// already shows favorited state; a text item repeating it would push
-    /// a third, unwanted row onto the tile instead of just source.
-    private func recipeMetaItems(_ recipe: Recipe) -> [(icon: String?, text: String)] {
-        var items: [(icon: String?, text: String)] = []
+    /// should be the source (imported, shared by, etc.)." Time+servings
+    /// share the first row, source (when there is one) gets its own row
+    /// underneath — exactly this order. No separate "favorite" entry here
+    /// (an earlier version added one) since the heart action icon in the
+    /// tile's icon row already shows favorited state; a text item
+    /// repeating it would push a third, unwanted row onto the tile instead
+    /// of just source.
+    private func recipeMetaItems(_ recipe: Recipe) -> [[(icon: String?, text: String)]] {
+        var firstRow: [(icon: String?, text: String)] = []
         if recipe.totalMinutes > 0 {
-            items.append((icon: "clock", text: "\(recipe.totalMinutes) min"))
+            firstRow.append((icon: "clock", text: "\(recipe.totalMinutes) min"))
         }
-        items.append((icon: "person.2", text: "serves \(recipe.servings)"))
+        firstRow.append((icon: "person.2", text: "serves \(recipe.servings)"))
+
+        var items: [[(icon: String?, text: String)]] = [firstRow]
         if recipe.source == .imported {
-            items.append((icon: "link", text: "imported"))
+            items.append([(icon: "link", text: "imported")])
         }
         if recipe.source == .shared {
-            items.append((icon: "person.2", text: recipe.sharedAttributionCaption))
+            items.append([(icon: "person.2", text: recipe.sharedAttributionCaption)])
         }
         return items
     }

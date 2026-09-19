@@ -98,15 +98,23 @@ final class Restaurant {
         self.backendID = backendID
     }
 
+    /// "★★★★☆" for a 1–5 `rating` — factored out of `descriptorLine` so a
+    /// caller that wants the star glyphs on their own (see
+    /// `RestaurantListView.restaurantMetaItems`, which puts them on a
+    /// different line than cuisine) doesn't re-derive the same
+    /// repeat-count logic a second time.
+    var starRatingText: String? {
+        guard let rating, rating > 0 else { return nil }
+        return String(repeating: "★", count: rating) + String(repeating: "☆", count: max(0, 5 - rating))
+    }
+
     /// A single "Italian · $$ · ★★★★☆" line for list/detail display, Google
     /// Maps info-card style — only the pieces that are actually set.
     var descriptorLine: String? {
         var parts: [String] = []
         if let cuisine, !cuisine.isEmpty { parts.append(cuisine) }
         if let priceRange, !priceRange.isEmpty { parts.append(priceRange) }
-        if let rating, rating > 0 {
-            parts.append(String(repeating: "★", count: rating) + String(repeating: "☆", count: 5 - rating))
-        }
+        if let starRatingText { parts.append(starRatingText) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }

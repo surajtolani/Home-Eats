@@ -47,11 +47,23 @@ struct RestaurantListView: View {
                 } else if !restaurants.isEmpty {
                     Section {
                         ForEach(restaurants) { restaurant in
-                            NavigationLink {
-                                RestaurantDetailView(restaurant: restaurant)
-                            } label: {
-                                restaurantTile(restaurant)
-                            }
+                            // A hidden `NavigationLink` in the background,
+                            // not a real `NavigationLink { } label: { }` —
+                            // direct user request to get rid of the
+                            // trailing disclosure chevron a real
+                            // `NavigationLink` row always draws. Same
+                            // pattern `RecipesHomeView.recipeCard` already
+                            // uses for the same reason on Recipes' tiles.
+                            restaurantTile(restaurant)
+                                .background {
+                                    NavigationLink("") {
+                                        RestaurantDetailView(restaurant: restaurant)
+                                    }
+                                    .opacity(0)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                }
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                .listRowSeparator(.hidden)
                         }
                         .onDelete { offsets in
                             for index in offsets {
@@ -192,11 +204,7 @@ struct RestaurantListView: View {
     /// The `MediaTileRow`-based row for a saved restaurant — direct user
     /// request for a consistent tile format across the Plan/Restaurants/
     /// Recipes tabs (see that type's own doc comment). The favorite star
-    /// that used to sit inline next to the name moves to a floating
-    /// accessory badge (matching the reference tile's own corner button
-    /// exactly) and a leading swipe action, rather than disappearing —
-    /// there's only room for the one floating accessory this tile shape
-    /// offers.
+    /// is `MediaTileRow`'s single trailing action icon.
     private func restaurantTile(_ restaurant: Restaurant) -> some View {
         MediaTileRow(
             title: restaurant.name,
@@ -213,19 +221,27 @@ struct RestaurantListView: View {
         )
     }
 
-    /// One plain-text line — cuisine, price, and rating together, direct
-    /// user request: separate icons in front of each ("a fork+knife before
-    /// cuisine, a "$" before the price") read as confusing extra symbols
-    /// next to already-self-explanatory text (a "$" icon right before "$$"
-    /// reading like a third dollar sign), and the rating should show as
-    /// actual stars, not "4/5" text, on the same line as cuisine/price
-    /// rather than wrapping to its own row. `Restaurant.descriptorLine`
-    /// already builds exactly this ("Italian · $$ · ★★★★☆") for the list/
-    /// detail views, so this reuses it instead of re-deriving the same
-    /// three fields into three separate meta items.
-    private func restaurantMetaItems(_ restaurant: Restaurant) -> [(icon: String?, text: String)] {
-        guard let descriptorLine = restaurant.descriptorLine else { return [] }
-        return [(icon: nil, text: descriptorLine)]
+    /// Two plain-text rows — cuisine alone, then price + rating together
+    /// underneath it. Direct user requests, in order: (1) no icon in front
+    /// of cuisine/price/rating (a fork+knife before cuisine, a "$" before
+    /// the price read as confusing extra symbols next to
+    /// already-self-explanatory text — a "$" icon right before "$$"
+    /// reading like a third dollar sign); (2) the rating should show as
+    /// actual stars, not "4/5" text (`Restaurant.starRatingText`); (3)
+    /// price and rating specifically should sit on their own row below
+    /// cuisine, not sharing a line with it.
+    private func restaurantMetaItems(_ restaurant: Restaurant) -> [[(icon: String?, text: String)]] {
+        var rows: [[(icon: String?, text: String)]] = []
+        if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
+            rows.append([(icon: nil, text: cuisine)])
+        }
+        let priceAndRating = [restaurant.priceRange, restaurant.starRatingText]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+        if !priceAndRating.isEmpty {
+            rows.append([(icon: nil, text: priceAndRating.joined(separator: " · "))])
+        }
+        return rows
     }
 
     private var searchResultsSection: some View {

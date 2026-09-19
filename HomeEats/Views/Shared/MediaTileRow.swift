@@ -100,13 +100,24 @@ struct MediaTileAction {
 /// risked breaking it without any way to visually verify the result here).
 struct MediaTileRow<Thumbnail: View>: View {
     let title: String
+    /// Each inner array is one row, rendered left to right; the outer array
+    /// is rows top to bottom — the call site decides the grouping directly
+    /// rather than `MediaTileRow` inferring it from a flat list. That used
+    /// to be a flat `[(icon, text)]` auto-chunked two at a time, which
+    /// worked while every tile happened to want pairs-then-remainder (a
+    /// recipe's time+servings, then source alone), but stopped being able
+    /// to express what real requests needed once Restaurants asked for a
+    /// single item (cuisine) on its own row followed by a different single
+    /// item (price + rating combined) on the next — two 1-item rows, not
+    /// one 2-item row.
+    ///
     /// `icon: nil` renders as plain text instead of `Label` — Restaurants'
-    /// single combined "Italian · $$ · ★★★★☆" line (see
-    /// `RestaurantListView.restaurantMetaItems`) doesn't want one, direct
+    /// cuisine/price/rating rows (see
+    /// `RestaurantListView.restaurantMetaItems`) don't want one, direct
     /// user request: the icons in front of cuisine/price/rating read as
     /// confusing extra symbols next to already-self-explanatory text (a
     /// "$" icon before "$$" reading like an extra dollar sign).
-    var metaItems: [(icon: String?, text: String)] = []
+    var metaItems: [[(icon: String?, text: String)]] = []
     @ViewBuilder var thumbnail: () -> Thumbnail
     var actions: [MediaTileAction] = []
 
@@ -126,21 +137,12 @@ struct MediaTileRow<Thumbnail: View>: View {
                     // an ellipsis the moment it's longer than a few words.
                     .lineLimit(2)
                 if !metaItems.isEmpty {
-                    // Wrapped into rows of at most 2 items each, rather than
-                    // one long `HStack` every item had to squeeze onto —
-                    // direct user report that meta info (a recipe's time/
-                    // servings, a restaurant's cuisine/price/rating) was
-                    // getting cut off with up to 3-4 items competing for one
-                    // line's worth of width. Capped at 2 per row (not a full
-                    // wrap-whatever-fits flow layout) to keep this a plain,
-                    // predictable VStack of HStacks rather than a custom
-                    // `Layout` — with at most 4 meta items on any tile
-                    // today, that's at most 2 rows, which naturally reads
-                    // as "time + servings" then "source" underneath it for
-                    // a recipe (see `RecipesHomeView.recipeMetaItems`),
-                    // which is exactly the requested order.
+                    // Each inner array in `metaItems` is already one row —
+                    // see that property's own doc comment for why the
+                    // call site controls this directly instead of
+                    // `MediaTileRow` inferring row breaks from a flat list.
                     VStack(alignment: .leading, spacing: 3) {
-                        ForEach(Array(metaItemRows.enumerated()), id: \.offset) { _, row in
+                        ForEach(Array(metaItems.enumerated()), id: \.offset) { _, row in
                             HStack(spacing: 10) {
                                 ForEach(Array(row.enumerated()), id: \.offset) { _, item in
                                     if let icon = item.icon {
@@ -190,15 +192,6 @@ struct MediaTileRow<Thumbnail: View>: View {
         .padding(10)
         .background(Color.brandCream, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.black.opacity(0.06)))
-    }
-
-    /// `metaItems` chunked two at a time, in order — see the call site's
-    /// own comment for why a fixed 2-per-row cap instead of a true wrapping
-    /// flow layout.
-    private var metaItemRows: [[(icon: String?, text: String)]] {
-        stride(from: 0, to: metaItems.count, by: 2).map { start in
-            Array(metaItems[start..<min(start + 2, metaItems.count)])
-        }
     }
 
     /// One action icon, shared by both places it can render (the

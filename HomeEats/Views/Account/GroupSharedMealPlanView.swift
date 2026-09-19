@@ -1445,7 +1445,7 @@ private struct GroupPlannedMealRow: View {
             // is this row's only action, same as before.
             MediaTileRow(
                 title: meal.displayTitle,
-                metaItems: [(icon: "person.fill", text: "by \(memberName)")],
+                metaItems: [[(icon: "person.fill", text: "by \(memberName)")]],
                 thumbnail: {
                     if let resolvedRecipe {
                         RecipeThumbnail(recipe: resolvedRecipe)
