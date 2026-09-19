@@ -11,6 +11,12 @@ struct RestaurantListView: View {
     @State private var showEditor = false
     @State private var showNaturalSearch = false
     @State private var showDuplicates = false
+    @State private var showFilterSheet = false
+    /// Empty means "no filter" on that facet — see `RestaurantFilterSheet`'s
+    /// own doc comment for the "show all / select metro areas / select
+    /// cuisines" design this backs.
+    @State private var selectedMetroAreas: Set<String> = []
+    @State private var selectedCuisines: Set<String> = []
     /// Direct user report: deleting a restaurant that was already decided
     /// into a (possibly shared/group) meal plan used to silently leave
     /// that plan entry broken — see `CascadeCleanup`'s own doc comment.
@@ -37,6 +43,53 @@ struct RestaurantListView: View {
         !searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    private var isFiltering: Bool {
+        !selectedMetroAreas.isEmpty || !selectedCuisines.isEmpty
+    }
+
+    private static let otherLabel = "Other"
+
+    private func sortedWithOtherLast(_ values: Set<String>) -> [String] {
+        values.sorted { lhs, rhs in
+            if lhs == Self.otherLabel { return false }
+            if rhs == Self.otherLabel { return true }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+    }
+
+    private var availableMetroAreas: [String] {
+        sortedWithOtherLast(Set(restaurants.map { $0.metroArea ?? Self.otherLabel }))
+    }
+
+    private var availableCuisines: [String] {
+        sortedWithOtherLast(Set(restaurants.map { restaurant in
+            guard let cuisine = restaurant.cuisine, !cuisine.isEmpty else { return Self.otherLabel }
+            return cuisine
+        }))
+    }
+
+    private var filteredRestaurants: [Restaurant] {
+        restaurants.filter { restaurant in
+            let metroMatches = selectedMetroAreas.isEmpty
+                || selectedMetroAreas.contains(restaurant.metroArea ?? Self.otherLabel)
+            let cuisineMatches = selectedCuisines.isEmpty
+                || selectedCuisines.contains(restaurant.cuisine?.isEmpty == false ? restaurant.cuisine! : Self.otherLabel)
+            return metroMatches && cuisineMatches
+        }
+    }
+
+    /// `filteredRestaurants` grouped into metro-area sections, sorted
+    /// alphabetically with "Other" (no derivable metro area — see
+    /// `Restaurant.metroArea`'s own doc comment) always last. Direct user
+    /// request: "can we sort this by metro area and it should
+    /// automatically get categorized as such."
+    private var groupedByMetroArea: [(area: String, restaurants: [Restaurant])] {
+        let groups = Dictionary(grouping: filteredRestaurants) { $0.metroArea ?? Self.otherLabel }
+        return sortedWithOtherLast(Set(groups.keys)).map { area in
+            (area: area, restaurants: (groups[area] ?? []).sorted { $0.name < $1.name })
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             searchFieldRow
@@ -51,47 +104,55 @@ struct RestaurantListView: View {
                         systemImage: "fork.knife",
                         description: Text("Search above to find a place and add it, or tap + to add one manually.")
                     )
+                } else if !restaurants.isEmpty && filteredRestaurants.isEmpty {
+                    ContentUnavailableView(
+                        "No Matches",
+                        systemImage: "line.3.horizontal.decrease.circle",
+                        description: Text("No restaurants match the current filter.")
+                    )
                 } else if !restaurants.isEmpty {
-                    Section {
-                        ForEach(restaurants) { restaurant in
-                            // A hidden `NavigationLink` in the background,
-                            // not a real `NavigationLink { } label: { }` —
-                            // direct user request to get rid of the
-                            // trailing disclosure chevron a real
-                            // `NavigationLink` row always draws. Same
-                            // pattern `RecipesHomeView.recipeCard` already
-                            // uses for the same reason on Recipes' tiles.
-                            restaurantTile(restaurant)
-                                .background {
-                                    NavigationLink("") {
-                                        RestaurantDetailView(restaurant: restaurant)
+                    ForEach(groupedByMetroArea, id: \.area) { group in
+                        Section {
+                            ForEach(group.restaurants) { restaurant in
+                                // A hidden `NavigationLink` in the background,
+                                // not a real `NavigationLink { } label: { }` —
+                                // direct user request to get rid of the
+                                // trailing disclosure chevron a real
+                                // `NavigationLink` row always draws. Same
+                                // pattern `RecipesHomeView.recipeCard` already
+                                // uses for the same reason on Recipes' tiles.
+                                restaurantTile(restaurant)
+                                    .background {
+                                        NavigationLink("") {
+                                            RestaurantDetailView(restaurant: restaurant)
+                                        }
+                                        .opacity(0)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     }
-                                    .opacity(0)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                }
-                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                                .listRowSeparator(.hidden)
-                        }
-                        .onDelete { offsets in
-                            for index in offsets {
-                                let restaurant = restaurants[index]
-                                guard !CascadeCleanup.isRestaurantInAnyPlannedMeal(restaurantID: restaurant.id, in: modelContext) else {
-                                    deleteBlockedMessage = "\"\(restaurant.name)\" is in your meal plan. Remove it from the plan before deleting it."
-                                    continue
-                                }
-                                CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
-                                // Same "immediate, online-only, captured before
-                                // the local delete" pattern as `RecipesHomeView`'s
-                                // own recipe delete — see
-                                // `PersonalLibrarySyncService`'s doc comment.
-                                if let backendID = restaurant.backendID {
-                                    Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
-                                }
-                                modelContext.delete(restaurant)
+                                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                    .listRowSeparator(.hidden)
                             }
+                            .onDelete { offsets in
+                                for index in offsets {
+                                    let restaurant = group.restaurants[index]
+                                    guard !CascadeCleanup.isRestaurantInAnyPlannedMeal(restaurantID: restaurant.id, in: modelContext) else {
+                                        deleteBlockedMessage = "\"\(restaurant.name)\" is in your meal plan. Remove it from the plan before deleting it."
+                                        continue
+                                    }
+                                    CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
+                                    // Same "immediate, online-only, captured before
+                                    // the local delete" pattern as `RecipesHomeView`'s
+                                    // own recipe delete — see
+                                    // `PersonalLibrarySyncService`'s doc comment.
+                                    if let backendID = restaurant.backendID {
+                                        Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
+                                    }
+                                    modelContext.delete(restaurant)
+                                }
+                            }
+                        } header: {
+                            Text(group.area)
                         }
-                    } header: {
-                        Text("Your Restaurants")
                     }
                 }
             }
@@ -137,6 +198,18 @@ struct RestaurantListView: View {
                 }
                 .accessibilityLabel("Find Duplicate Restaurants")
             }
+            // Direct user request: "let's add a filter button where you
+            // can 'show all', select metro areas or select/unselect
+            // cuisines." Filled when a filter is actually active so it
+            // reads as a status, not just an action.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showFilterSheet = true
+                } label: {
+                    Image(systemName: isFiltering ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                }
+                .accessibilityLabel("Filter Restaurants")
+            }
         }
         .sheet(isPresented: $showEditor) {
             RestaurantEditorView()
@@ -146,6 +219,14 @@ struct RestaurantListView: View {
         }
         .sheet(isPresented: $showDuplicates) {
             DuplicateRestaurantsView()
+        }
+        .sheet(isPresented: $showFilterSheet) {
+            RestaurantFilterSheet(
+                selectedMetroAreas: $selectedMetroAreas,
+                selectedCuisines: $selectedCuisines,
+                availableMetroAreas: availableMetroAreas,
+                availableCuisines: availableCuisines
+            )
         }
         .alert(
             "Can't Delete Restaurant",

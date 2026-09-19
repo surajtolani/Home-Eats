@@ -117,4 +117,44 @@ final class Restaurant {
         if let starRatingText { parts.append(starRatingText) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+
+    /// A rough "metro area" label derived from `address`, so
+    /// `RestaurantListView` can group/sort/filter restaurants by area
+    /// automatically instead of asking the user to categorize each one by
+    /// hand. Direct user request: "can we sort this by metro area and it
+    /// should automatically get categorized as such."
+    ///
+    /// Google Places (and most well-formed) addresses are consistently
+    /// "street, city, state zip, country" — this pulls out the component
+    /// right before a "state zip"-shaped or country-shaped component (the
+    /// city), which reads as "metro area" closely enough for grouping
+    /// purposes without a second geocoding round trip just to ask Google
+    /// what metro area a place is in. Falls back to the second
+    /// comma-separated component ("street, city, ...") when nothing
+    /// matches that shape, and to `nil` (bucketed under "Other" by
+    /// callers) when `address` is missing or too sparse to say anything
+    /// meaningful — e.g. a bare manually-typed name with no comma at all.
+    var metroArea: String? {
+        guard let address, !address.isEmpty else { return nil }
+        let parts = address
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard parts.count >= 2 else { return nil }
+        for index in parts.indices.dropFirst() where Self.looksLikeStateZipOrCountry(parts[index]) {
+            return parts[index - 1]
+        }
+        return parts[1]
+    }
+
+    private static let countryLabels: Set<String> = ["USA", "US", "United States", "United States of America"]
+    /// "CA", "CA 94103", "NY 10001-1234" — a bare or zip-suffixed two-letter
+    /// state abbreviation, the shape `metroArea` looks for right after a
+    /// city in a US-formatted address.
+    private static let stateZipPattern = #"^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$"#
+
+    private static func looksLikeStateZipOrCountry(_ text: String) -> Bool {
+        if countryLabels.contains(text) { return true }
+        return text.range(of: stateZipPattern, options: .regularExpression) != nil
+    }
 }
