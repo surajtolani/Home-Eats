@@ -118,13 +118,23 @@ struct MediaTileRow<Thumbnail: View>: View {
     /// confusing extra symbols next to already-self-explanatory text (a
     /// "$" icon before "$$" reading like an extra dollar sign).
     var metaItems: [[(icon: String?, text: String)]] = []
+    /// Defaults to the shared `mediaTileHeight` (Restaurants/Recipes, which
+    /// both need the room a full meta block and/or action row take up).
+    /// Direct user request specifically for the Plan tab's decided-meal
+    /// tile ("tiles in the plan tab can be a little shorter since there
+    /// are fewer information being provided in the tile") — that row has
+    /// only one meta line and no actions at all, so a call site can now
+    /// pass a smaller value here instead of every tile across every tab
+    /// being forced to share one height regardless of how much content it
+    /// actually holds.
+    var height: CGFloat = mediaTileHeight
     @ViewBuilder var thumbnail: () -> Thumbnail
     var actions: [MediaTileAction] = []
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             thumbnail()
-                .frame(width: mediaTileHeight, height: mediaTileHeight)
+                .frame(width: height, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
             VStack(alignment: .leading, spacing: 4) {

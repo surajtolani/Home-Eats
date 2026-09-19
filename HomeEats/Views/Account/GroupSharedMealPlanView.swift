@@ -1471,10 +1471,15 @@ private struct GroupPlannedMealRow: View {
             // format across the Plan/Restaurants/Recipes tabs (see that
             // type's own doc comment). No accessory badge here (nothing to
             // "add" once a meal's already decided) — swipe-to-remove below
-            // is this row's only action, same as before.
+            // is this row's only action, same as before. `height: 72`
+            // (shorter than the shared `mediaTileHeight` default) — direct
+            // user request: this row only ever shows a title and one meta
+            // line ("by so-and-so"), no actions, so it doesn't need the
+            // extra height Restaurants/Recipes' fuller tiles do.
             MediaTileRow(
                 title: meal.displayTitle,
                 metaItems: [[(icon: "person.fill", text: "by \(memberName)")]],
+                height: 72,
                 thumbnail: {
                     if let resolvedRecipe {
                         RecipeThumbnail(recipe: resolvedRecipe)
