@@ -468,8 +468,8 @@ struct RecipesHomeView: View {
         .listRowSeparator(.hidden)
     }
 
-    private func sharedEntryMetaItems(_ entry: SharedRecipeEntry) -> [(icon: String, text: String)] {
-        var items: [(icon: String, text: String)] = []
+    private func sharedEntryMetaItems(_ entry: SharedRecipeEntry) -> [(icon: String?, text: String)] {
+        var items: [(icon: String?, text: String)] = []
         if entry.totalMinutes > 0 {
             items.append((icon: "clock", text: "\(entry.totalMinutes) min"))
         }
@@ -611,8 +611,8 @@ struct RecipesHomeView: View {
         .listRowSeparator(.hidden)
     }
 
-    private func libraryEntryMetaItems(_ entry: LibraryRecipeEntry) -> [(icon: String, text: String)] {
-        var items: [(icon: String, text: String)] = []
+    private func libraryEntryMetaItems(_ entry: LibraryRecipeEntry) -> [(icon: String?, text: String)] {
+        var items: [(icon: String?, text: String)] = []
         if entry.totalMinutes > 0 {
             items.append((icon: "clock", text: "\(entry.totalMinutes) min"))
         }
@@ -808,8 +808,8 @@ struct RecipesHomeView: View {
     /// one) since the heart action icon in the tile's new icon column
     /// already shows favorited state; a text item repeating it would push
     /// a third, unwanted row onto the tile instead of just source.
-    private func recipeMetaItems(_ recipe: Recipe) -> [(icon: String, text: String)] {
-        var items: [(icon: String, text: String)] = []
+    private func recipeMetaItems(_ recipe: Recipe) -> [(icon: String?, text: String)] {
+        var items: [(icon: String?, text: String)] = []
         if recipe.totalMinutes > 0 {
             items.append((icon: "clock", text: "\(recipe.totalMinutes) min"))
         }

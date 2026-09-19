@@ -213,18 +213,19 @@ struct RestaurantListView: View {
         )
     }
 
-    private func restaurantMetaItems(_ restaurant: Restaurant) -> [(icon: String, text: String)] {
-        var items: [(icon: String, text: String)] = []
-        if let cuisine = restaurant.cuisine, !cuisine.isEmpty {
-            items.append((icon: "fork.knife", text: cuisine))
-        }
-        if let priceRange = restaurant.priceRange, !priceRange.isEmpty {
-            items.append((icon: "dollarsign.circle", text: priceRange))
-        }
-        if let rating = restaurant.rating, rating > 0 {
-            items.append((icon: "star.fill", text: "\(rating)/5"))
-        }
-        return items
+    /// One plain-text line — cuisine, price, and rating together, direct
+    /// user request: separate icons in front of each ("a fork+knife before
+    /// cuisine, a "$" before the price") read as confusing extra symbols
+    /// next to already-self-explanatory text (a "$" icon right before "$$"
+    /// reading like a third dollar sign), and the rating should show as
+    /// actual stars, not "4/5" text, on the same line as cuisine/price
+    /// rather than wrapping to its own row. `Restaurant.descriptorLine`
+    /// already builds exactly this ("Italian · $$ · ★★★★☆") for the list/
+    /// detail views, so this reuses it instead of re-deriving the same
+    /// three fields into three separate meta items.
+    private func restaurantMetaItems(_ restaurant: Restaurant) -> [(icon: String?, text: String)] {
+        guard let descriptorLine = restaurant.descriptorLine else { return [] }
+        return [(icon: nil, text: descriptorLine)]
     }
 
     private var searchResultsSection: some View {

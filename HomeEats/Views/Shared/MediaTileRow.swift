@@ -100,7 +100,13 @@ struct MediaTileAction {
 /// risked breaking it without any way to visually verify the result here).
 struct MediaTileRow<Thumbnail: View>: View {
     let title: String
-    var metaItems: [(icon: String, text: String)] = []
+    /// `icon: nil` renders as plain text instead of `Label` — Restaurants'
+    /// single combined "Italian · $$ · ★★★★☆" line (see
+    /// `RestaurantListView.restaurantMetaItems`) doesn't want one, direct
+    /// user request: the icons in front of cuisine/price/rating read as
+    /// confusing extra symbols next to already-self-explanatory text (a
+    /// "$" icon before "$$" reading like an extra dollar sign).
+    var metaItems: [(icon: String?, text: String)] = []
     @ViewBuilder var thumbnail: () -> Thumbnail
     var actions: [MediaTileAction] = []
 
@@ -137,7 +143,11 @@ struct MediaTileRow<Thumbnail: View>: View {
                         ForEach(Array(metaItemRows.enumerated()), id: \.offset) { _, row in
                             HStack(spacing: 10) {
                                 ForEach(Array(row.enumerated()), id: \.offset) { _, item in
-                                    Label(item.text, systemImage: item.icon)
+                                    if let icon = item.icon {
+                                        Label(item.text, systemImage: icon)
+                                    } else {
+                                        Text(item.text)
+                                    }
                                 }
                             }
                         }
@@ -185,7 +195,7 @@ struct MediaTileRow<Thumbnail: View>: View {
     /// `metaItems` chunked two at a time, in order — see the call site's
     /// own comment for why a fixed 2-per-row cap instead of a true wrapping
     /// flow layout.
-    private var metaItemRows: [[(icon: String, text: String)]] {
+    private var metaItemRows: [[(icon: String?, text: String)]] {
         stride(from: 0, to: metaItems.count, by: 2).map { start in
             Array(metaItems[start..<min(start + 2, metaItems.count)])
         }
