@@ -854,6 +854,10 @@ struct GroupDaySlotsView: View {
     /// there." `nil` both before any adopt and after the dialog is dismissed
     /// either way.
     @State private var pendingSlotCleanup: MealSlot?
+    /// Which slot's "View Votes" sheet is open, if any — see
+    /// `slotSection(_:)`'s header for where this gets set, and
+    /// `SlotVotesSheet` below for what it shows.
+    @State private var votesSheetSlot: MealSlot?
 
     init(
         groupID: String, date: Date, isManager: Bool, currentUserID: String?, group: GroupDetail?,
@@ -998,6 +1002,9 @@ struct GroupDaySlotsView: View {
             } message: {
                 Text("This meal is decided now. The other suggested options for it can be removed so they're no longer up for a vote.")
             }
+            .sheet(item: $votesSheetSlot) { slot in
+                SlotVotesSheet(slotName: slot.displayName, suggestions: suggestions(for: slot))
+            }
         }
     }
 
@@ -1123,6 +1130,27 @@ struct GroupDaySlotsView: View {
                         .font(.brandCaption2)
                         .foregroundStyle(.secondary)
                         .help("Not synced yet")
+                }
+                // Direct user request, added because the earlier long-press
+                // affordance on each vote capsule turned out not to be
+                // discoverable: "next to the meal type... have an icon show
+                // up (only if there are suggestions) that says 'View
+                // Votes'." Only shown when this slot actually has
+                // suggestions — a slot with only already-decided meals has
+                // no votes to show. The long-press still works too (see
+                // `GroupSuggestionRow`'s `.contextMenu`) — this is just the
+                // clearly-labeled, always-visible way to reach the same
+                // information.
+                if !suggestions(for: slot).isEmpty {
+                    Button {
+                        votesSheetSlot = slot
+                    } label: {
+                        Label("View Votes", systemImage: "checklist")
+                            .font(.brandCaption2.bold())
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.brandForest)
                 }
             }
             .textCase(nil)
@@ -1473,6 +1501,63 @@ private struct GroupPlannedMealRow: View {
                 }
                 .tint(.red)
             }
+        }
+    }
+}
+
+/// The sheet a slot's "View Votes" button opens — direct user request: "have
+/// an icon show up (only if there are suggestions) that says 'View Votes'
+/// and you can look to see for each meal, who voted thumbs up and who voted
+/// thumbs down." One section per suggestion in the slot, each listing its
+/// up/down voters by name — reads `suggestion.voters` directly (see that
+/// field's own doc comment on `GroupMealSuggestion`), the same data
+/// `GroupSuggestionRow`'s long-press context menu already surfaces, just in
+/// a single dedicated, clearly-labeled place instead of a gesture that
+/// turned out not to be discoverable.
+private struct SlotVotesSheet: View {
+    let slotName: String
+    let suggestions: [GroupMealSuggestion]
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if suggestions.isEmpty {
+                    Text("No suggestions for this meal yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(suggestions) { suggestion in
+                        Section(suggestion.displayTitle) {
+                            voteRow(direction: .up, suggestion: suggestion)
+                            voteRow(direction: .down, suggestion: suggestion)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("\(slotName) Votes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func voteRow(direction: VoteDirection, suggestion: GroupMealSuggestion) -> some View {
+        let names = suggestion.voters.filter { $0.direction == direction }.map(\.displayName)
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: direction == .up ? "hand.thumbsup.fill" : "hand.thumbsdown.fill")
+                .foregroundStyle(direction == .up ? Color.brandForest : Color.brandTerracotta)
+                .frame(width: 20)
+            if names.isEmpty {
+                Text("No votes").foregroundStyle(.secondary)
+            } else {
+                Text(names.joined(separator: ", "))
+            }
+            Spacer(minLength: 0)
         }
     }
 }
