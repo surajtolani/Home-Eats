@@ -32,6 +32,14 @@ struct GroupDetailView: View {
     /// creation, via `CreateGroupView`).
     @State private var showRenameAlert = false
     @State private var renameText = ""
+    /// Backs the default-location `.alert` below — direct user request:
+    /// "each 'group' should have an option to select a location - so if a
+    /// group is created for a trip, then you know what the default
+    /// location is," so "Ask for a Restaurant" defaults to the trip's
+    /// destination instead of wherever the person asking physically is.
+    /// See `GroupDetail.defaultLocationText`'s own doc comment.
+    @State private var showLocationAlert = false
+    @State private var locationText = ""
     /// This group's own outstanding invites (`PENDING`/`DECLINED` only —
     /// see `GroupSentInvite`'s own doc comment), for the "Pending Invites"
     /// section below. Loaded alongside `group` in `load()`, only when
@@ -97,6 +105,26 @@ struct GroupDetailView: View {
                     } label: {
                         Label("Grocery List", systemImage: "cart")
                     }
+                    // A trip group's destination — "Ask for a Restaurant"
+                    // defaults here when no location is named in the
+                    // search itself, instead of wherever the person
+                    // asking's own device currently is. MANAGER-editable
+                    // only (server-enforced too — see `updateLocation()`'s
+                    // own doc comment), but shown to every member so a
+                    // PARTICIPANT can see what it's set to.
+                    Button {
+                        locationText = group.defaultLocationText ?? ""
+                        showLocationAlert = true
+                    } label: {
+                        HStack {
+                            Label("Default Location", systemImage: "mappin.and.ellipse")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(group.defaultLocationText ?? "Not Set")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(!isManager)
                 }
                 Section("Members") {
                     ForEach(group.members) { member in
@@ -162,6 +190,16 @@ struct GroupDetailView: View {
             Button("Cancel", role: .cancel) {}
             Button("Save") { Task { await rename() } }
                 .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .alert("Default Location", isPresented: $showLocationAlert) {
+            TextField("e.g. BGC, Manila, Philippines", text: $locationText)
+            Button("Cancel", role: .cancel) {}
+            // Empty is a valid save here, unlike renaming — it clears the
+            // default back to "no default, use whoever's asking's own
+            // current location."
+            Button("Save") { Task { await updateLocation() } }
+        } message: {
+            Text("Used as the default for \"Ask for a Restaurant\" when no location is named in the search — handy for a trip.")
         }
         .alert(
             "Something Went Wrong",
@@ -367,6 +405,22 @@ struct GroupDetailView: View {
         guard !trimmed.isEmpty else { return }
         do {
             group = try await AccountsAPIClient.renameGroup(groupID: groupID, name: trimmed)
+        } catch {
+            actionFailure = error.localizedDescription
+        }
+    }
+
+    /// `MANAGER`-only server-side, same as `rename()` above (both go
+    /// through `PATCH /groups/:groupId` — see that route's own doc
+    /// comment). Unlike `rename()`, an empty result is a valid save here:
+    /// it clears the group back to "no default location."
+    private func updateLocation() async {
+        let trimmed = locationText.trimmingCharacters(in: .whitespaces)
+        do {
+            group = try await AccountsAPIClient.updateGroupLocation(
+                groupID: groupID,
+                locationText: trimmed.isEmpty ? nil : trimmed
+            )
         } catch {
             actionFailure = error.localizedDescription
         }

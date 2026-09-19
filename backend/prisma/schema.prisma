@@ -182,6 +182,18 @@ model Group {
   id              String   @id @default(uuid())
   name            String
   createdByUserId String?
+  // A free-text place this group set as its own default location — a trip
+  // group's destination, rather than wherever a member's device physically
+  // is when they ask for a restaurant. Direct user request: planning a
+  // trip means restaurant search should default to the destination, not
+  // the planner's own current city. Plain text, not stored coordinates —
+  // geocoded fresh on every search the same way a location named directly
+  // in a search sentence already is (POST /restaurants/search-natural's
+  // `geocode` call), so there's one geocoding code path, not two, and no
+  // stale coordinates to keep in sync if Google's resolution of the same
+  // text ever changes. Settable via PATCH /groups/:groupId, MANAGER only
+  // (see that route's own doc comment).
+  defaultLocationText String?
   createdAt       DateTime @default(now())
 
   createdBy    User?             @relation("GroupCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)

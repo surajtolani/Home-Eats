@@ -458,6 +458,19 @@ extension AccountsAPIClient {
         return response.group
     }
 
+    /// Same `PATCH /groups/:groupId`, MANAGER-only, as `renameGroup` above
+    /// — sets this group's `defaultLocationText`, or clears it when
+    /// `locationText` is `nil` (sent as a real JSON `null`, which
+    /// `JSONSerialization` renders correctly from `NSNull()` here). See
+    /// `GroupDetail.defaultLocationText`'s own doc comment for what this
+    /// is for.
+    static func updateGroupLocation(groupID: String, locationText: String?) async throws -> GroupDetail {
+        struct Response: Decodable { let group: GroupDetail }
+        let body: [String: Any] = ["defaultLocationText": locationText ?? NSNull()]
+        let response: Response = try await send("PATCH", path: "groups/\(groupID)", body: body)
+        return response.group
+    }
+
     /// Invites an existing friend to the group — **Phase 5: this no longer
     /// adds them directly.** Before Phase 5, `userId` here always created
     /// the `GroupMembership` instantly (an accepted friend had zero chance

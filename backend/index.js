@@ -416,6 +416,21 @@ app.post("/restaurants/search-natural", async (req, res) => {
     locationBias = await geocode(interpreted.locationText);
     if (!locationBias) locationGeocodeFailed = true;
   }
+  // A group's own default location (a trip's destination — see
+  // Group.defaultLocationText's doc comment in schema.prisma) sits between
+  // a location actually named in the sentence and the device's current
+  // location: the caller already resolved which group (if any) this search
+  // is happening in and sends its text here directly, rather than this
+  // route taking a groupId and looking it up itself — this route has no
+  // auth at all (registered directly on `app`, not behind requireAuth; see
+  // this file's own comment above this route), so it can't safely verify
+  // group membership before reading a group's data itself.
+  const fallbackLocationText = (req.body?.fallbackLocationText || "").toString().trim() || null;
+  let usedFallbackLocation = false;
+  if (!locationBias && fallbackLocationText) {
+    locationBias = await geocode(fallbackLocationText);
+    if (locationBias) usedFallbackLocation = true;
+  }
   if (!locationBias && hasUserLocation) {
     locationBias = { latitude: lat, longitude: lng };
   }
@@ -427,6 +442,7 @@ app.post("/restaurants/search-natural", async (req, res) => {
       interpretedQuery: interpreted.searchQuery,
       interpretedLocation: interpreted.locationText,
       locationGeocodeFailed,
+      usedFallbackLocation,
     });
   } catch (error) {
     console.error("Places API request threw", error);

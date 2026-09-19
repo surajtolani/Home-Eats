@@ -105,12 +105,21 @@ enum GooglePlacesService {
     /// The free-text, "casual pizza near Greenwich" version of `search` —
     /// the backend asks Claude to pull a concrete search query and any
     /// specific place named out of the sentence, geocodes that place if
-    /// there was one, and searches there (falling back to `near` — the
-    /// app's best guess at the user's current location — only if the
-    /// sentence didn't name a place of its own).
+    /// there was one, and searches there. If the sentence didn't name a
+    /// place (or the one it named couldn't be geocoded), `fallbackLocationText`
+    /// — a group's own set default location, a trip's destination, when
+    /// this search is happening in a group context — is tried next; only
+    /// after that does it fall back to `near`, the app's best guess at the
+    /// device's actual current location. Direct user request: "if it
+    /// doesn't include a location, should definitely default to your
+    /// location... but if [the group is] going on a trip somewhere, [it]
+    /// should be able to search in that destination" — each group can set
+    /// its own default location for exactly this (see
+    /// `GroupDetail.defaultLocationText`'s own doc comment).
     static func searchNatural(
         _ query: String,
-        near coordinate: CLLocationCoordinate2D? = nil
+        near coordinate: CLLocationCoordinate2D? = nil,
+        fallbackLocationText: String? = nil
     ) async throws -> NaturalSearchResult {
         guard isConfigured, let base = URL(string: baseURLString) else {
             throw ServiceError.notConfigured
@@ -122,6 +131,9 @@ enum GooglePlacesService {
         if let coordinate {
             body["lat"] = coordinate.latitude
             body["lng"] = coordinate.longitude
+        }
+        if let fallbackLocationText, !fallbackLocationText.isEmpty {
+            body["fallbackLocationText"] = fallbackLocationText
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -141,7 +153,8 @@ enum GooglePlacesService {
             results: decoded.results.map(makePlaceResult),
             interpretedQuery: decoded.interpretedQuery,
             interpretedLocation: decoded.interpretedLocation,
-            locationGeocodeFailed: decoded.locationGeocodeFailed
+            locationGeocodeFailed: decoded.locationGeocodeFailed,
+            usedFallbackLocation: decoded.usedFallbackLocation
         )
     }
 
@@ -165,6 +178,13 @@ enum GooglePlacesService {
         /// Philippines" as if that had worked. The caller uses this to
         /// show that honestly instead of the misleading confirmation.
         let locationGeocodeFailed: Bool
+        /// True when no place was named in the sentence (or the named one
+        /// failed to geocode) and the search ended up biased to a group's
+        /// own `defaultLocationText` (the `fallbackLocationText` this call
+        /// sent) rather than the device's actual current location — lets
+        /// the caller say "showing results near this group's set
+        /// location" instead of implying the device's own GPS was used.
+        let usedFallbackLocation: Bool
     }
 
     private static func makePlaceResult(from raw: RawResult) -> PlaceResult {
@@ -308,6 +328,7 @@ enum GooglePlacesService {
         let interpretedQuery: String
         let interpretedLocation: String?
         let locationGeocodeFailed: Bool
+        let usedFallbackLocation: Bool
     }
 
     private struct RawResult: Decodable {

@@ -472,8 +472,18 @@ struct RestaurantThumbnail: View {
 /// happens here in that mode.
 struct NaturalLanguageRestaurantSearchView: View {
     /// The app's best guess at the user's current location, if available —
-    /// used only when the sentence itself doesn't name a specific place.
+    /// used only when the sentence itself doesn't name a specific place
+    /// and `groupDefaultLocationText` below is also unset.
     let userCoordinate: CLLocationCoordinate2D?
+    /// A group's own set default location (a trip's destination), when
+    /// this sheet is opened from a group's meal-plan screen — takes
+    /// priority over `userCoordinate` (but still loses to a location
+    /// actually named in the sentence) since planning a trip means the
+    /// destination should be the default, not wherever the planner
+    /// physically is. `nil` from the plain Restaurants tab's own "Ask for
+    /// a Restaurant," which isn't tied to any group. See
+    /// `GroupDetail.defaultLocationText`'s own doc comment.
+    var groupDefaultLocationText: String? = nil
     var onPick: ((RestaurantSearchModel.Result) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
@@ -495,6 +505,11 @@ struct NaturalLanguageRestaurantSearchView: View {
     /// location instead, while still claiming to have searched the named
     /// place).
     @State private var locationGeocodeFailed = false
+    /// True when the search ended up biased to `groupDefaultLocationText`
+    /// rather than the device's current location — see
+    /// `GooglePlacesService.NaturalSearchResult.usedFallbackLocation`'s own
+    /// doc comment.
+    @State private var usedFallbackLocation = false
     @State private var hasSearchedOnce = false
     /// Standalone mode only (`onPick == nil`) — see `addFromSearch`'s own
     /// doc comment for why this exists.
@@ -553,10 +568,17 @@ struct NaturalLanguageRestaurantSearchView: View {
                         // Shows what was actually searched for once Claude's
                         // cleaned up the sentence — confirms the request was
                         // understood the way it was meant, especially for a
-                        // named location that might have been misread.
+                        // named location that might have been misread. When
+                        // nothing was named and a group's own default
+                        // location ended up used instead (see
+                        // `groupDefaultLocationText`'s own doc comment),
+                        // that shows here too rather than looking like an
+                        // unbiased search.
                         Label {
                             if let interpretedLocation {
                                 Text("Searching for \"\(interpretedQuery)\" near \(interpretedLocation)")
+                            } else if usedFallbackLocation, let groupDefaultLocationText {
+                                Text("Searching for \"\(interpretedQuery)\" near \(groupDefaultLocationText)")
                             } else {
                                 Text("Searching for \"\(interpretedQuery)\"")
                             }
@@ -573,14 +595,13 @@ struct NaturalLanguageRestaurantSearchView: View {
                         // currently is, so results from a totally
                         // different place (Greenwich, in that report)
                         // looked like a mystery. This says so plainly
-                        // instead.
+                        // instead — and, if it fell all the way through to
+                        // this group's own set location rather than the
+                        // device's, says that instead of implying GPS was
+                        // used.
                         if locationGeocodeFailed, let interpretedLocation {
                             Label {
-                                Text(
-                                    userCoordinate != nil
-                                        ? "Couldn't pinpoint \"\(interpretedLocation)\" — showing results near your current location instead."
-                                        : "Couldn't pinpoint \"\(interpretedLocation)\" — try a more specific place (city and country help)."
-                                )
+                                Text(fallbackExplanation(namedLocation: interpretedLocation))
                             } icon: {
                                 Image(systemName: "exclamationmark.triangle")
                             }
@@ -613,6 +634,21 @@ struct NaturalLanguageRestaurantSearchView: View {
         }
     }
 
+    /// The specific wording for the "couldn't pinpoint that" warning —
+    /// three genuinely different situations, not one generic message:
+    /// fell back to this group's own set location, fell back to the
+    /// device's current location, or (no fallback available either) just
+    /// searched unbiased.
+    private func fallbackExplanation(namedLocation: String) -> String {
+        if usedFallbackLocation, let groupDefaultLocationText {
+            return "Couldn't pinpoint \"\(namedLocation)\" — showing results near this group's set location (\(groupDefaultLocationText)) instead."
+        }
+        if userCoordinate != nil {
+            return "Couldn't pinpoint \"\(namedLocation)\" — showing results near your current location instead."
+        }
+        return "Couldn't pinpoint \"\(namedLocation)\" — try a more specific place (city and country help)."
+    }
+
     private func search() async {
         errorMessage = nil
         isSearching = true
@@ -621,10 +657,15 @@ struct NaturalLanguageRestaurantSearchView: View {
             hasSearchedOnce = true
         }
         do {
-            let response = try await GooglePlacesService.searchNatural(queryText, near: userCoordinate)
+            let response = try await GooglePlacesService.searchNatural(
+                queryText,
+                near: userCoordinate,
+                fallbackLocationText: groupDefaultLocationText
+            )
             interpretedQuery = response.interpretedQuery
             interpretedLocation = response.interpretedLocation
             locationGeocodeFailed = response.locationGeocodeFailed
+            usedFallbackLocation = response.usedFallbackLocation
             results = response.results.map {
                 RestaurantSearchModel.Result(
                     id: $0.id,

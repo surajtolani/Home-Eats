@@ -231,9 +231,23 @@ struct GroupDetail: Codable, Identifiable, Hashable {
     let createdByUserID: String?
     let createdAt: Date
     let members: [GroupMember]
+    /// A free-text place this group set as its own default location — a
+    /// trip group's destination ("BGC, Manila, Philippines"), rather than
+    /// wherever a member's device physically is. Direct user request:
+    /// planning a trip means "Ask for a Restaurant" should default to the
+    /// destination, not the planner's own current city. `nil` if the group
+    /// never set one, in which case every search in this group still just
+    /// falls back to whichever member is asking's own current location,
+    /// same as outside a group. Set/cleared via `PATCH /groups/:groupId`
+    /// (MANAGER only, same as renaming — see that route's own doc
+    /// comment) and geocoded fresh on every search rather than stored as
+    /// coordinates, matching how a named location typed directly into a
+    /// search is already resolved (`POST /restaurants/search-natural`'s
+    /// `geocode` call) — one code path, not two.
+    let defaultLocationText: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, createdAt, members
+        case id, name, createdAt, members, defaultLocationText
         case createdByUserID = "createdByUserId"
     }
 

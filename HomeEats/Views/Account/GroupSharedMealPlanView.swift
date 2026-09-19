@@ -314,7 +314,8 @@ struct GroupSharedMealPlanView: View {
         .sheet(item: $activeSheet) { action in
             GroupMealSheetContent(
                 action: action, groupID: groupID, date: selectedDate,
-                currentUserID: accountSession.currentUser?.id, isManager: isManager
+                currentUserID: accountSession.currentUser?.id, isManager: isManager,
+                groupDefaultLocationText: group?.defaultLocationText
             )
         }
         // Same "attached to the List root, not to row content" reasoning as
@@ -781,7 +782,8 @@ struct GroupDayDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $activeSheet) { action in
             GroupMealSheetContent(
-                action: action, groupID: groupID, date: date, currentUserID: currentUserID, isManager: isManager
+                action: action, groupID: groupID, date: date, currentUserID: currentUserID, isManager: isManager,
+                groupDefaultLocationText: group?.defaultLocationText
             )
         }
         .navigationDestination(item: $pushedTarget) { target in
@@ -1697,11 +1699,19 @@ struct GroupMealSheetContent: View {
     let date: Date
     let currentUserID: String?
     let isManager: Bool
+    /// The group's own set default location, threaded down to
+    /// `GroupAddMealSheet`'s "Ask for a Restaurant" — see
+    /// `NaturalLanguageRestaurantSearchView.groupDefaultLocationText`'s own
+    /// doc comment.
+    var groupDefaultLocationText: String? = nil
 
     var body: some View {
         switch action {
         case .pickMeal(let slot):
-            GroupAddMealSheet(groupID: groupID, date: date, initialSlot: slot, isManager: isManager, currentUserID: currentUserID)
+            GroupAddMealSheet(
+                groupID: groupID, date: date, initialSlot: slot, isManager: isManager, currentUserID: currentUserID,
+                groupDefaultLocationText: groupDefaultLocationText
+            )
         }
     }
 }
@@ -1736,6 +1746,7 @@ private struct GroupAddMealSheet: View {
     let date: Date
     let isManager: Bool
     let currentUserID: String?
+    let groupDefaultLocationText: String?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -1792,11 +1803,15 @@ private struct GroupAddMealSheet: View {
     @State private var draftSyncErrorMessage: String?
     @State private var isSubmittingDraft = false
 
-    init(groupID: String, date: Date, initialSlot: MealSlot, isManager: Bool, currentUserID: String?) {
+    init(
+        groupID: String, date: Date, initialSlot: MealSlot, isManager: Bool, currentUserID: String?,
+        groupDefaultLocationText: String?
+    ) {
         self.groupID = groupID
         self.date = date
         self.isManager = isManager
         self.currentUserID = currentUserID
+        self.groupDefaultLocationText = groupDefaultLocationText
         _selectedSlot = State(initialValue: initialSlot)
         _selectedAction = State(initialValue: isManager ? .add : .suggest)
     }
@@ -1983,6 +1998,7 @@ private struct GroupAddMealSheet: View {
             .sheet(isPresented: $showAskRestaurant) {
                 NaturalLanguageRestaurantSearchView(
                     userCoordinate: locationProvider.coordinate,
+                    groupDefaultLocationText: groupDefaultLocationText,
                     onPick: { result in
                         handleRestaurantPick(name: result.name, isOrderIn: selectedKind == .orderIn, richResult: result)
                     }
