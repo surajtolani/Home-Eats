@@ -65,6 +65,29 @@ struct RecipeEditorView: View {
         return parts.isEmpty ? "Not set" : parts.joined(separator: " · ")
     }
 
+    /// Pulled out of `body`'s "Details" section as its own explicitly-typed
+    /// property — folded inline, this pushed the surrounding `Form`'s
+    /// already-large view-builder expression graph past the type
+    /// checker's complexity budget ("unable to type-check this expression
+    /// in reasonable time"). Splitting it out gives the checker a much
+    /// smaller expression to solve here, independent of everything else in
+    /// `body`.
+    private var taxonomyRow: some View {
+        Button {
+            showTaxonomySheet = true
+        } label: {
+            HStack {
+                Text("Meal Type & Cuisine")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(taxonomySummary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -90,19 +113,7 @@ struct RecipeEditorView: View {
                     Stepper("Prep: \(prepMinutes) min", value: $prepMinutes, in: 0...240, step: 5)
                     Stepper("Cook: \(cookMinutes) min", value: $cookMinutes, in: 0...480, step: 5)
                     TextField("Tags, comma separated", text: $tagsText)
-                    Button {
-                        showTaxonomySheet = true
-                    } label: {
-                        HStack {
-                            Text("Meal Type & Cuisine")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Text(taxonomySummary)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
+                    taxonomyRow
                 }
                 Section {
                     TextEditor(text: $ingredientsText)

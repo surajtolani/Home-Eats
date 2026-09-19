@@ -90,6 +90,65 @@ struct RestaurantListView: View {
         }
     }
 
+    /// Pulled out of `body`'s `List` as its own explicitly-typed property —
+    /// folded inline, this nested `ForEach`-inside-`Section`-inside-`ForEach`
+    /// pushed the surrounding `List`'s already-large view-builder
+    /// expression graph (several sibling `if`/`else if` branches already)
+    /// past the type checker's complexity budget ("unable to type-check
+    /// this expression in reasonable time"). Splitting it out, plus
+    /// `restaurantRow(_:)`/`deleteRestaurants(at:in:)` below, gives the
+    /// checker much smaller expressions to solve independently.
+    private var restaurantSections: some View {
+        ForEach(groupedByMetroArea, id: \.area) { group in
+            Section {
+                ForEach(group.restaurants) { restaurant in
+                    restaurantRow(restaurant)
+                }
+                .onDelete { offsets in
+                    deleteRestaurants(at: offsets, in: group.restaurants)
+                }
+            } header: {
+                Text(group.area)
+            }
+        }
+    }
+
+    // A hidden `NavigationLink` in the background, not a real
+    // `NavigationLink { } label: { }` — direct user request to get rid of
+    // the trailing disclosure chevron a real `NavigationLink` row always
+    // draws. Same pattern `RecipesHomeView.recipeCard` already uses for the
+    // same reason on Recipes' tiles.
+    private func restaurantRow(_ restaurant: Restaurant) -> some View {
+        restaurantTile(restaurant)
+            .background {
+                NavigationLink("") {
+                    RestaurantDetailView(restaurant: restaurant)
+                }
+                .opacity(0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .listRowSeparator(.hidden)
+    }
+
+    private func deleteRestaurants(at offsets: IndexSet, in sectionRestaurants: [Restaurant]) {
+        for index in offsets {
+            let restaurant = sectionRestaurants[index]
+            guard !CascadeCleanup.isRestaurantInAnyPlannedMeal(restaurantID: restaurant.id, in: modelContext) else {
+                deleteBlockedMessage = "\"\(restaurant.name)\" is in your meal plan. Remove it from the plan before deleting it."
+                continue
+            }
+            CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
+            // Same "immediate, online-only, captured before the local
+            // delete" pattern as `RecipesHomeView`'s own recipe delete —
+            // see `PersonalLibrarySyncService`'s doc comment.
+            if let backendID = restaurant.backendID {
+                Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
+            }
+            modelContext.delete(restaurant)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             searchFieldRow
@@ -111,49 +170,7 @@ struct RestaurantListView: View {
                         description: Text("No restaurants match the current filter.")
                     )
                 } else if !restaurants.isEmpty {
-                    ForEach(groupedByMetroArea, id: \.area) { group in
-                        Section {
-                            ForEach(group.restaurants) { restaurant in
-                                // A hidden `NavigationLink` in the background,
-                                // not a real `NavigationLink { } label: { }` —
-                                // direct user request to get rid of the
-                                // trailing disclosure chevron a real
-                                // `NavigationLink` row always draws. Same
-                                // pattern `RecipesHomeView.recipeCard` already
-                                // uses for the same reason on Recipes' tiles.
-                                restaurantTile(restaurant)
-                                    .background {
-                                        NavigationLink("") {
-                                            RestaurantDetailView(restaurant: restaurant)
-                                        }
-                                        .opacity(0)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    }
-                                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                                    .listRowSeparator(.hidden)
-                            }
-                            .onDelete { offsets in
-                                for index in offsets {
-                                    let restaurant = group.restaurants[index]
-                                    guard !CascadeCleanup.isRestaurantInAnyPlannedMeal(restaurantID: restaurant.id, in: modelContext) else {
-                                        deleteBlockedMessage = "\"\(restaurant.name)\" is in your meal plan. Remove it from the plan before deleting it."
-                                        continue
-                                    }
-                                    CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
-                                    // Same "immediate, online-only, captured before
-                                    // the local delete" pattern as `RecipesHomeView`'s
-                                    // own recipe delete — see
-                                    // `PersonalLibrarySyncService`'s doc comment.
-                                    if let backendID = restaurant.backendID {
-                                        Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
-                                    }
-                                    modelContext.delete(restaurant)
-                                }
-                            }
-                        } header: {
-                            Text(group.area)
-                        }
-                    }
+                    restaurantSections
                 }
             }
             .listStyle(.plain)
