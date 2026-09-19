@@ -1131,16 +1131,15 @@ struct GroupDaySlotsView: View {
                         .foregroundStyle(.secondary)
                         .help("Not synced yet")
                 }
-                // Direct user request, added because the earlier long-press
-                // affordance on each vote capsule turned out not to be
-                // discoverable: "next to the meal type... have an icon show
-                // up (only if there are suggestions) that says 'View
-                // Votes'." Only shown when this slot actually has
-                // suggestions — a slot with only already-decided meals has
-                // no votes to show. The long-press still works too (see
-                // `GroupSuggestionRow`'s `.contextMenu`) — this is just the
-                // clearly-labeled, always-visible way to reach the same
-                // information.
+                // Direct user request, replacing the earlier long-press
+                // affordance on each vote capsule — confirmed confusing on
+                // its own two counts: not discoverable, and (once found)
+                // gave no visual indication of which direction's voters a
+                // given long-press was even showing. "next to the meal
+                // type... have an icon show up (only if there are
+                // suggestions) that says 'View Votes'." Only shown when
+                // this slot actually has suggestions — a slot with only
+                // already-decided meals has no votes to show.
                 if !suggestions(for: slot).isEmpty {
                     Button {
                         votesSheetSlot = slot
@@ -1508,12 +1507,13 @@ private struct GroupPlannedMealRow: View {
 /// The sheet a slot's "View Votes" button opens — direct user request: "have
 /// an icon show up (only if there are suggestions) that says 'View Votes'
 /// and you can look to see for each meal, who voted thumbs up and who voted
-/// thumbs down." One section per suggestion in the slot, each listing its
-/// up/down voters by name — reads `suggestion.voters` directly (see that
-/// field's own doc comment on `GroupMealSuggestion`), the same data
-/// `GroupSuggestionRow`'s long-press context menu already surfaces, just in
-/// a single dedicated, clearly-labeled place instead of a gesture that
-/// turned out not to be discoverable.
+/// thumbs down." One section per suggestion in the slot, each with its own
+/// explicitly-labeled thumbs-up and thumbs-down rows (`voteRow(direction:suggestion:)`
+/// below) — reads `suggestion.voters` directly (see that field's own doc
+/// comment on `GroupMealSuggestion`). Replaces an earlier long-press context
+/// menu on each vote capsule, removed after direct user feedback that it
+/// was both hard to discover and, once found, didn't visually distinguish
+/// which direction's voters it was showing.
 private struct SlotVotesSheet: View {
     let slotName: String
     let suggestions: [GroupMealSuggestion]
@@ -1637,12 +1637,6 @@ private struct GroupSuggestionRow: View {
             // with an explicit `.brandCaption2` font and fixed padding has
             // no such wiggle room: what's specified here is what renders,
             // every time.
-            // Long-press either capsule to see who voted which way (direct
-            // user request: "need to have an ability to see who voted for
-            // each option") without adding a third visible control to an
-            // already-tight row — see the comment above `voteCapsule`'s own
-            // shrink-to-fit history for why nothing new gets added here
-            // that isn't as small as possible.
             Button {
                 onVote(.up)
             } label: {
@@ -1653,7 +1647,6 @@ private struct GroupSuggestionRow: View {
                 )
             }
             .buttonStyle(.plain)
-            .contextMenu { voterMenuItems(direction: .up) }
 
             Button {
                 onVote(.down)
@@ -1665,7 +1658,6 @@ private struct GroupSuggestionRow: View {
                 )
             }
             .buttonStyle(.plain)
-            .contextMenu { voterMenuItems(direction: .down) }
             // MANAGER only — mirrors `POST .../suggestions/:id/adopt`
             // exactly. Disabled while offline or still a not-yet-synced
             // placeholder row (the server doesn't know its real id yet).
@@ -1732,24 +1724,6 @@ private struct GroupSuggestionRow: View {
         )
     }
 
-    /// The long-press context menu content for one vote capsule — every
-    /// display name who voted that direction, or a plain "no votes yet" row
-    /// when there aren't any (still worth showing something rather than an
-    /// empty menu, since a long-press already committed to opening one).
-    /// `enumerated()`'s offset backs `ForEach`'s id rather than the name
-    /// itself, same reasoning as `RecipeDetailView.header`'s tag chips —
-    /// two members can share a display name.
-    @ViewBuilder
-    private func voterMenuItems(direction: VoteDirection) -> some View {
-        let names = suggestion.voters.filter { $0.direction == direction }.map(\.displayName)
-        if names.isEmpty {
-            Text("No votes yet")
-        } else {
-            ForEach(Array(names.enumerated()), id: \.offset) { _, name in
-                Text(name)
-            }
-        }
-    }
 }
 
 // MARK: - Add / suggest a meal (sheet)
