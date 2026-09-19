@@ -71,20 +71,26 @@ struct MediaTileAction {
 /// small icon-button row, restoring the exact original always-visible,
 /// no-swipe-required behavior on top of the new tile shape.
 ///
-/// **Actions sit in their own row below the meta info, not off to the
-/// side.** Direct, repeated report that a recipe's title and meta info
-/// (time, servings, source) were still getting cut off even after the
-/// tile grew taller — first traced to a horizontal row of up to four
-/// action icons eating most of the tile's width next to the title, then
-/// (after moving the icons to a trailing vertical column) to a direct
-/// follow-up ask to try tucking them under the meta info entirely instead.
-/// With the icons out of the title/meta column's row altogether, that
-/// column claims the tile's *entire* width via
-/// `.frame(maxWidth: .infinity)` below, instead of sharing it with
-/// anything: the title runs to the right edge and only wraps to a second
-/// line if it genuinely needs to, and the meta rows (time + servings, then
-/// source) have that same full width, with the action icons as one more
-/// row underneath the last of them.
+/// **Two or more actions sit in their own row below the meta info; exactly
+/// one stays as a corner icon instead.** Direct, repeated report that a
+/// recipe's title and meta info (time, servings, source) were still
+/// getting cut off even after the tile grew taller — first traced to a
+/// horizontal row of up to four action icons eating most of the tile's
+/// width next to the title, then (after moving the icons to a trailing
+/// vertical column) to a direct follow-up ask to try tucking them under
+/// the meta info entirely instead. That fixed it for Recipes' up-to-four
+/// icons, but a direct follow-up specifically about Restaurants' *single*
+/// favorite star ("if just the star, then that can maybe stay where it
+/// was") pointed out a single icon doesn't need — and reads oddly getting
+/// — a whole extra row to itself underneath cuisine/price/rating. So
+/// `actions.count > 1` renders the row-below-meta layout (Recipes); a lone
+/// action instead renders where it always has, a small icon at the tile's
+/// trailing edge (Restaurants' star) — still always-visible and directly
+/// tappable, just not consuming a whole row for one glyph. Either way, the
+/// title/meta column claims the tile's remaining width via
+/// `.frame(maxWidth: .infinity)` below rather than sharing it with a
+/// `Spacer`, so the title runs to the right edge and only wraps to a
+/// second line if it genuinely needs to.
 ///
 /// Deliberately NOT used for the Plan tab's Weekly agenda list (direct
 /// user request: "No need for the tile on the weekly tab" — that list
@@ -141,38 +147,35 @@ struct MediaTileRow<Thumbnail: View>: View {
                     .lineLimit(1)
                 }
 
-                if !actions.isEmpty {
+                if actions.count > 1 {
                     // One more row under the meta info, not off to the
-                    // trailing edge — see this type's own doc comment
-                    // ("Actions sit in their own row below the meta info").
-                    // Left-aligned like everything else in this column,
-                    // rather than spread out, so it reads as a compact row
-                    // of icons rather than a second action bar.
+                    // trailing edge — see this type's own doc comment. Only
+                    // for 2+ actions (Recipes); a single action (e.g.
+                    // Restaurants' favorite star) renders at the tile's
+                    // trailing edge instead, below. Left-aligned like
+                    // everything else in this column, rather than spread
+                    // out, so it reads as a compact row of icons rather
+                    // than a second action bar.
                     HStack(spacing: 14) {
                         ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                            if let onTap = action.onTap {
-                                Button(action: onTap) {
-                                    Image(systemName: action.icon)
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(action.tint)
-                                .accessibilityLabel(action.label)
-                            } else {
-                                Image(systemName: action.icon)
-                                    .allowsHitTesting(false)
-                                    .foregroundStyle(action.tint)
-                                    .accessibilityLabel(action.label)
-                            }
+                            actionButton(action)
                         }
                     }
                     .font(.brandCallout)
                     .padding(.top, 2)
                 }
             }
-            // Claims the tile's full remaining width — nothing else shares
-            // this row anymore now that actions moved into their own row
-            // inside this column (see this type's own doc comment).
+            // Claims the tile's remaining width. Nothing else shares this
+            // row when there are 2+ actions (they moved into their own row
+            // inside this column, above); a single action still sits
+            // trailing this column, below — see this type's own doc
+            // comment for why that one case is different.
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            if actions.count == 1 {
+                actionButton(actions[0])
+                    .font(.brandCallout)
+            }
         }
         .padding(10)
         .background(Color.brandCream, in: RoundedRectangle(cornerRadius: 16))
@@ -185,6 +188,27 @@ struct MediaTileRow<Thumbnail: View>: View {
     private var metaItemRows: [[(icon: String, text: String)]] {
         stride(from: 0, to: metaItems.count, by: 2).map { start in
             Array(metaItems[start..<min(start + 2, metaItems.count)])
+        }
+    }
+
+    /// One action icon, shared by both places it can render (the
+    /// row-below-meta layout for 2+ actions, and the single trailing icon
+    /// for exactly 1) so the tappable/non-tappable and tint/label handling
+    /// only lives in one place.
+    @ViewBuilder
+    private func actionButton(_ action: MediaTileAction) -> some View {
+        if let onTap = action.onTap {
+            Button(action: onTap) {
+                Image(systemName: action.icon)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(action.tint)
+            .accessibilityLabel(action.label)
+        } else {
+            Image(systemName: action.icon)
+                .allowsHitTesting(false)
+                .foregroundStyle(action.tint)
+                .accessibilityLabel(action.label)
         }
     }
 }
