@@ -1462,9 +1462,14 @@ private struct GroupPlannedMealRow: View {
             // MANAGER only — mirrors `DELETE /groups/:groupId/meal-plan/:id`
             // exactly (see routes/groupMealPlan.js).
             if isManager {
+                // `role: .destructive` alone doesn't render red on a
+                // `.swipeActions` button — see `PlannedMealRow`'s
+                // identical fix in DayDetailView.swift for the full
+                // explanation.
                 Button(role: .destructive, action: onRemove) {
                     Label("Remove", systemImage: "trash")
                 }
+                .tint(.red)
             }
         }
     }
@@ -1587,9 +1592,14 @@ private struct GroupSuggestionRow: View {
             // MANAGER, or the suggestion's own proposer — mirrors
             // `DELETE .../suggestions/:id` exactly.
             if canRemove {
+                // `role: .destructive` alone doesn't render red on a
+                // `.swipeActions` button — see `PlannedMealRow`'s
+                // identical fix in DayDetailView.swift for the full
+                // explanation.
                 Button(role: .destructive, action: onRemove) {
                     Label("Remove", systemImage: "trash")
                 }
+                .tint(.red)
             }
         }
     }

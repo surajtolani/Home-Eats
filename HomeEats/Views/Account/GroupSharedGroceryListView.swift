@@ -1088,9 +1088,13 @@ private struct GroupGroceryItemRow: View {
             // does the same thing (not redundant — some people reach for the
             // swipe out of habit, others the stepper; both do the same
             // thing).
+            // `role: .destructive` alone doesn't render red on a
+            // `.swipeActions` button — see `PlannedMealRow`'s identical
+            // fix in DayDetailView.swift for the full explanation.
             Button(role: .destructive, action: onDelete) {
                 Label("Remove", systemImage: "trash")
             }
+            .tint(.red)
             if isManager {
                 Button(action: onEdit) {
                     Label("Edit", systemImage: "pencil")

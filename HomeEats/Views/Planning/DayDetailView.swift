@@ -466,9 +466,17 @@ private struct PlannedMealRow: View {
             }
         }
         .swipeActions(edge: .trailing) {
+            // `role: .destructive` alone doesn't actually render red here —
+            // direct user report that it was showing the app's own global
+            // accent (olive) instead. A `.swipeActions` button always
+            // needs an explicit `.tint` (it doesn't fall back to a
+            // system-standard destructive red the way, say, a `Button`
+            // inside a `.alert` does); every destructive swipe action in
+            // the app gets this same explicit `.tint(.red)` now.
             Button(role: .destructive, action: onRemove) {
                 Label("Remove", systemImage: "trash")
             }
+            .tint(.red)
             if meal.date <= .now {
                 Button(action: onLog) {
                     Label("Log", systemImage: "checkmark.seal")
@@ -540,9 +548,12 @@ private struct SuggestionRow: View {
                 .controlSize(.small)
         }
         .swipeActions(edge: .trailing) {
+            // See `PlannedMealRow`'s identical swipe action above for why
+            // this needs an explicit `.tint(.red)`.
             Button(role: .destructive, action: onRemove) {
                 Label("Remove", systemImage: "trash")
             }
+            .tint(.red)
         }
         .contextMenu {
             Button(role: .destructive, action: onRemove) {
