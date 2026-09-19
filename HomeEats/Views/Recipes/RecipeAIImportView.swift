@@ -19,6 +19,19 @@ struct RecipeAIImportView: View {
     @State private var isExtracting = false
     @State private var errorMessage: String?
     @State private var draft: RecipeDraft?
+    /// Editable copies of `draft`'s fields, shown in editable form sections
+    /// once extraction succeeds so the user can fix anything the AI got
+    /// wrong (a misread ingredient quantity, a skipped step) before saving
+    /// rather than after. `draft` itself just gates whether those sections
+    /// (and the Save button) show at all; `saveDraft()` builds the saved
+    /// `Recipe` from these edited fields, not from `draft` directly.
+    @State private var draftTitle = ""
+    @State private var draftSummary = ""
+    @State private var draftServings = 4
+    @State private var draftPrepMinutes = 0
+    @State private var draftCookMinutes = 0
+    @State private var draftIngredientsText = ""
+    @State private var draftInstructionsText = ""
     @State private var showCamera = false
     /// Backs the "Add Anyway?" confirmation dialog — see
     /// `RecipeDuplicateChecker`'s own doc comment.
@@ -29,8 +42,8 @@ struct RecipeAIImportView: View {
     /// falls back to a title match — see `RecipeDuplicateChecker`'s own
     /// doc comment.
     private var duplicateMatch: Recipe? {
-        guard let draft else { return nil }
-        return RecipeDuplicateChecker.existingMatch(title: draft.title, sourceURL: nil, in: allRecipes)
+        guard draft != nil else { return nil }
+        return RecipeDuplicateChecker.existingMatch(title: draftTitle, sourceURL: nil, in: allRecipes)
     }
 
     private var canExtract: Bool {
@@ -93,14 +106,34 @@ struct RecipeAIImportView: View {
                         Text(errorMessage).foregroundStyle(.red)
                     }
                 }
-                if let draft {
-                    Section("Preview") {
-                        Text(draft.title).font(.brandHeadline)
-                        if let summary = draft.summary, !summary.isEmpty {
-                            Text(summary).font(.brandCaption).foregroundStyle(.secondary)
-                        }
-                        Text("\(draft.ingredientLines.count) ingredients, \(draft.instructions.count) steps")
-                            .font(.brandCaption)
+                if draft != nil {
+                    Section("Title") {
+                        TextField("Title", text: $draftTitle)
+                        TextField("Short description (optional)", text: $draftSummary)
+                    }
+                    Section("Details") {
+                        Stepper("Servings: \(draftServings)", value: $draftServings, in: 1...20)
+                        Stepper("Prep: \(draftPrepMinutes) min", value: $draftPrepMinutes, in: 0...240, step: 5)
+                        Stepper("Cook: \(draftCookMinutes) min", value: $draftCookMinutes, in: 0...480, step: 5)
+                    }
+                    Section {
+                        TextEditor(text: $draftIngredientsText)
+                            .frame(minHeight: 140)
+                    } header: {
+                        Text("Ingredients")
+                    } footer: {
+                        Text("One ingredient per line — fix anything the extraction got wrong before saving.")
+                            .font(.brandSubheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Section {
+                        TextEditor(text: $draftInstructionsText)
+                            .frame(minHeight: 160)
+                    } header: {
+                        Text("Instructions")
+                    } footer: {
+                        Text("One step per line.")
+                            .font(.brandSubheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -163,7 +196,15 @@ struct RecipeAIImportView: View {
         isExtracting = true
         defer { isExtracting = false }
         do {
-            draft = try await ClaudeRecipeService.extractRecipe(imageData: imageData, notesText: notesText)
+            let extracted = try await ClaudeRecipeService.extractRecipe(imageData: imageData, notesText: notesText)
+            draft = extracted
+            draftTitle = extracted.title
+            draftSummary = extracted.summary ?? ""
+            draftServings = extracted.servings ?? 4
+            draftPrepMinutes = extracted.prepMinutes ?? 0
+            draftCookMinutes = extracted.cookMinutes ?? 0
+            draftIngredientsText = extracted.ingredientLines.joined(separator: "\n")
+            draftInstructionsText = extracted.instructions.joined(separator: "\n")
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -178,8 +219,28 @@ struct RecipeAIImportView: View {
     }
 
     private func saveDraft() {
-        guard let draft else { return }
-        let recipe = draft.makeRecipe(createdByMemberID: activeUserSession.activeMemberID)
+        guard draft != nil else { return }
+        // Built from the edited fields above, not `draft` itself — see
+        // those `@State` properties' own doc comment for why.
+        let recipe = Recipe(
+            title: draftTitle.trimmingCharacters(in: .whitespaces),
+            source: .manual,
+            summary: draftSummary.isEmpty ? nil : draftSummary,
+            instructions: draftInstructionsText
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty },
+            ingredients: draftIngredientsText
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .map(IngredientLineParser.parse),
+            servings: draftServings,
+            prepMinutes: draftPrepMinutes,
+            cookMinutes: draftCookMinutes,
+            tags: ["AI"],
+            createdByMemberID: activeUserSession.activeMemberID
+        )
         recipe.photoData = imageData
         modelContext.insert(recipe)
         dismiss()
