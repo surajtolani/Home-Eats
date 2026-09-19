@@ -847,6 +847,22 @@ enum VoteDirection: String, Codable, Equatable {
     case down = "DOWN"
 }
 
+/// One member's vote on a `RemoteMealSuggestion`/`GroupMealSuggestion` —
+/// mirrors `serializeSuggestion(...)`'s own `voters` field in
+/// routes/groupMealPlan.js exactly. Direct user request: "need to have an
+/// ability to see who voted for each option." Used unchanged as both the
+/// wire type (`RemoteMealSuggestion.voters`) and the local SwiftData
+/// storage type (`GroupMealSuggestion.voters`) — same "plain Codable value
+/// type stored directly as an array" pattern `RecipeIngredientEntry` uses
+/// on `Recipe.ingredients`, and there's no local-only field either side
+/// would need that the other doesn't, so a single shared type avoids a
+/// pointless wire-to-local conversion step.
+struct SuggestionVoter: Codable, Hashable {
+    let userId: String
+    let displayName: String
+    let direction: VoteDirection
+}
+
 /// `GET /groups/:groupId/meal-plan`'s `suggestions` rows, and every
 /// suggestion-mutating route's response — exactly `serializeSuggestion(...)`
 /// in routes/groupMealPlan.js. `upvoteCount`/`downvoteCount` (not a single
@@ -869,12 +885,36 @@ struct RemoteMealSuggestion: Codable, Identifiable {
     let upvoteCount: Int
     let downvoteCount: Int
     let myVote: VoteDirection?
+    let voters: [SuggestionVoter]
 
     enum CodingKeys: String, CodingKey {
-        case id, date, slot, restaurantName, isOrderIn, createdAt, upvoteCount, downvoteCount, myVote
+        case id, date, slot, restaurantName, isOrderIn, createdAt, upvoteCount, downvoteCount, myVote, voters
         case groupID = "groupId"
         case recipeID = "recipeId"
         case proposedByUserID = "proposedByUserId"
+    }
+
+    /// Custom rather than synthesized only for `voters`, which
+    /// `decodeIfPresent(...) ?? []` rather than `decode(...)` — tolerates a
+    /// response from a moment where the client and backend deploys are
+    /// briefly mismatched (an older backend response with no `voters` key
+    /// at all, predating this field) by falling back to empty instead of
+    /// failing the whole decode over one added field.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        groupID = try container.decode(String.self, forKey: .groupID)
+        date = try container.decode(Date.self, forKey: .date)
+        slot = try container.decode(RemoteMealSlot.self, forKey: .slot)
+        recipeID = try container.decodeIfPresent(String.self, forKey: .recipeID)
+        restaurantName = try container.decodeIfPresent(String.self, forKey: .restaurantName)
+        isOrderIn = try container.decode(Bool.self, forKey: .isOrderIn)
+        proposedByUserID = try container.decode(String.self, forKey: .proposedByUserID)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        upvoteCount = try container.decode(Int.self, forKey: .upvoteCount)
+        downvoteCount = try container.decode(Int.self, forKey: .downvoteCount)
+        myVote = try container.decodeIfPresent(VoteDirection.self, forKey: .myVote)
+        voters = try container.decodeIfPresent([SuggestionVoter].self, forKey: .voters) ?? []
     }
 }
 

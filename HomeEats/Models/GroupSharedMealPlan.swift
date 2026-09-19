@@ -265,6 +265,16 @@ final class GroupMealSuggestion {
     /// (`myVote ?? lastKnownServerVote`) so it's correct regardless of how
     /// many local changes led up to it.
     var lastKnownServerVote: VoteDirection?
+    /// Who voted which way — mirrors the backend's own `voters` field (see
+    /// `serializeSuggestion(...)`'s doc comment in routes/groupMealPlan.js).
+    /// Direct user request: "need to have an ability to see who voted for
+    /// each option." Refreshed on every pull/push response, same as
+    /// `upvoteCount`/`downvoteCount` — never computed locally, since this
+    /// device only knows its *own* vote until the server says otherwise.
+    /// Defaulted so adding this to existing `GroupMealSuggestion` rows
+    /// stays a lightweight migration, same reasoning as `upvoteCount`'s own
+    /// doc comment on `GroupSharedGroceryItem.quantityCount`'s incident.
+    var voters: [SuggestionVoter] = []
     /// This row's sync-tracking state. `.pendingUpdate` here specifically
     /// means "the local `myVote` differs from `lastKnownServerVote` and
     /// still needs `POST .../vote` sent" — see that field's own doc comment
@@ -289,6 +299,7 @@ final class GroupMealSuggestion {
         myVote: VoteDirection?,
         upvoteCount: Int,
         downvoteCount: Int,
+        voters: [SuggestionVoter] = [],
         lastKnownServerVote: VoteDirection? = nil,
         syncState: GroupSyncState = .synced,
         serverUpdatedAt: Date? = nil
@@ -306,6 +317,7 @@ final class GroupMealSuggestion {
         self.myVote = myVote
         self.upvoteCount = upvoteCount
         self.downvoteCount = downvoteCount
+        self.voters = voters
         // Defaults to `myVote` itself when omitted — the natural "nothing
         // pending yet" starting point for a freshly-created-locally
         // suggestion (the proposer is always auto-voted up, mirroring the

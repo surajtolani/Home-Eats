@@ -1552,6 +1552,12 @@ private struct GroupSuggestionRow: View {
             // with an explicit `.brandCaption2` font and fixed padding has
             // no such wiggle room: what's specified here is what renders,
             // every time.
+            // Long-press either capsule to see who voted which way (direct
+            // user request: "need to have an ability to see who voted for
+            // each option") without adding a third visible control to an
+            // already-tight row — see the comment above `voteCapsule`'s own
+            // shrink-to-fit history for why nothing new gets added here
+            // that isn't as small as possible.
             Button {
                 onVote(.up)
             } label: {
@@ -1562,6 +1568,7 @@ private struct GroupSuggestionRow: View {
                 )
             }
             .buttonStyle(.plain)
+            .contextMenu { voterMenuItems(direction: .up) }
 
             Button {
                 onVote(.down)
@@ -1573,6 +1580,7 @@ private struct GroupSuggestionRow: View {
                 )
             }
             .buttonStyle(.plain)
+            .contextMenu { voterMenuItems(direction: .down) }
             // MANAGER only — mirrors `POST .../suggestions/:id/adopt`
             // exactly. Disabled while offline or still a not-yet-synced
             // placeholder row (the server doesn't know its real id yet).
@@ -1637,6 +1645,25 @@ private struct GroupSuggestionRow: View {
         .overlay(
             Capsule().strokeBorder(isActive ? tint.opacity(0.4) : Color.secondary.opacity(0.25))
         )
+    }
+
+    /// The long-press context menu content for one vote capsule — every
+    /// display name who voted that direction, or a plain "no votes yet" row
+    /// when there aren't any (still worth showing something rather than an
+    /// empty menu, since a long-press already committed to opening one).
+    /// `enumerated()`'s offset backs `ForEach`'s id rather than the name
+    /// itself, same reasoning as `RecipeDetailView.header`'s tag chips —
+    /// two members can share a display name.
+    @ViewBuilder
+    private func voterMenuItems(direction: VoteDirection) -> some View {
+        let names = suggestion.voters.filter { $0.direction == direction }.map(\.displayName)
+        if names.isEmpty {
+            Text("No votes yet")
+        } else {
+            ForEach(Array(names.enumerated()), id: \.offset) { _, name in
+                Text(name)
+            }
+        }
     }
 }
 

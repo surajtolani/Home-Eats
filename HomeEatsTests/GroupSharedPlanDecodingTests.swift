@@ -95,6 +95,38 @@ final class GroupSharedPlanDecodingTests: XCTestCase {
         XCTAssertEqual(response.suggestion.upvoteCount, 0)
         XCTAssertEqual(response.suggestion.downvoteCount, 3)
         XCTAssertNil(response.suggestion.myVote)
+        // No "voters" key at all in this fixture — same lenient
+        // `decodeIfPresent(...) ?? []` `testRemoteMealSuggestionDecodesVoters`'s
+        // own doc comment explains; falls back to empty rather than failing
+        // the whole decode.
+        XCTAssertEqual(response.suggestion.voters, [])
+    }
+
+    /// Direct user request: "need to have an ability to see who voted for
+    /// each option." `voters` mirrors `serializeSuggestion(...)`'s own
+    /// added field in routes/groupMealPlan.js exactly — one entry per vote,
+    /// each carrying the voter's id, display name, and direction.
+    func testRemoteMealSuggestionDecodesVoters() throws {
+        struct Fixture: Decodable { let suggestion: RemoteMealSuggestion }
+        let json = """
+        {
+          "suggestion": {
+            "id": "s3", "groupId": "g1", "date": "2024-06-14T00:00:00.000Z", "slot": "LUNCH",
+            "recipeId": "r2", "restaurantName": null, "isOrderIn": false,
+            "proposedByUserId": "u1", "createdAt": "2024-06-05T09:00:00.000Z",
+            "upvoteCount": 2, "downvoteCount": 1, "myVote": "UP",
+            "voters": [
+              { "userId": "u1", "displayName": "Priya", "direction": "UP" },
+              { "userId": "u2", "displayName": "Sam", "direction": "UP" },
+              { "userId": "u3", "displayName": "Alex", "direction": "DOWN" }
+            ]
+          }
+        }
+        """
+        let response = try decoder.decode(Fixture.self, from: data(json))
+        XCTAssertEqual(response.suggestion.voters.count, 3)
+        XCTAssertEqual(response.suggestion.voters.filter { $0.direction == .up }.map(\.displayName), ["Priya", "Sam"])
+        XCTAssertEqual(response.suggestion.voters.filter { $0.direction == .down }.map(\.displayName), ["Alex"])
     }
 
     /// Regression guard for the one case routes/groupMealPlan.js's own doc

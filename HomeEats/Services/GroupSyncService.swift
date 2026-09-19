@@ -422,6 +422,7 @@ enum GroupSyncService {
                     row.lastKnownServerVote = created.myVote
                     row.upvoteCount = created.upvoteCount
                     row.downvoteCount = created.downvoteCount
+                    row.voters = created.voters
                     row.syncState = .synced
                 } catch {
                     allOK = false
@@ -459,6 +460,7 @@ enum GroupSyncService {
                     row.lastKnownServerVote = updated.myVote
                     row.upvoteCount = updated.upvoteCount
                     row.downvoteCount = updated.downvoteCount
+                    row.voters = updated.voters
                     row.syncState = .synced
                 } catch {
                     allOK = false
@@ -760,6 +762,7 @@ enum GroupSyncService {
                 existing.lastKnownServerVote = remoteSuggestion.myVote
                 existing.upvoteCount = remoteSuggestion.upvoteCount
                 existing.downvoteCount = remoteSuggestion.downvoteCount
+                existing.voters = remoteSuggestion.voters
                 existing.syncState = .synced
             } else {
                 modelContext.insert(GroupMealSuggestion(
@@ -768,7 +771,7 @@ enum GroupSyncService {
                     isOrderIn: remoteSuggestion.isOrderIn, proposedByUserID: remoteSuggestion.proposedByUserID,
                     createdAt: remoteSuggestion.createdAt, myVote: remoteSuggestion.myVote,
                     upvoteCount: remoteSuggestion.upvoteCount, downvoteCount: remoteSuggestion.downvoteCount,
-                    lastKnownServerVote: remoteSuggestion.myVote, syncState: .synced
+                    voters: remoteSuggestion.voters, lastKnownServerVote: remoteSuggestion.myVote, syncState: .synced
                 ))
             }
         }

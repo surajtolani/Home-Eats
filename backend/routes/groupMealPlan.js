@@ -111,6 +111,19 @@ function serializePlannedMeal(meal) {
 // question once a vote has a direction, and a UI showing two distinct
 // thumbs-up/thumbs-down controls needs to know which one (if either) to
 // highlight for the caller, not just whether some vote of theirs exists.
+//
+// `voters` — direct user request: "need to have an ability to see who
+// voted for each option." Every caller of this needs `include: { votes: {
+// include: { user: ... } } }` (not just `votes: true`) for `vote.user` to
+// be populated — see the query sites below. Safe to expose to any group
+// member: this whole route is already gated by `requireMembership`, so
+// every caller is a fellow member of the same group the suggestion
+// belongs to — the same trust boundary every other per-member field in
+// this group-plan API (`decidedByUserId`, `proposedByUserId`, ...)
+// already crosses. Unlike the phone-number leak fixed in
+// `GET /groups/:groupId/invites`, `displayName` here is exactly what a
+// member already sees about every other member elsewhere in the group
+// (member lists, "decided by" attribution) — not new exposure.
 function serializeSuggestion(suggestion, viewerUserId) {
   const myVote = suggestion.votes.find((vote) => vote.userId === viewerUserId);
   return {
@@ -126,6 +139,11 @@ function serializeSuggestion(suggestion, viewerUserId) {
     upvoteCount: suggestion.votes.filter((vote) => vote.direction === "UP").length,
     downvoteCount: suggestion.votes.filter((vote) => vote.direction === "DOWN").length,
     myVote: myVote ? myVote.direction : null,
+    voters: suggestion.votes.map((vote) => ({
+      userId: vote.userId,
+      displayName: vote.user.displayName,
+      direction: vote.direction,
+    })),
   };
 }
 
@@ -178,7 +196,7 @@ router.get("/", asyncHandler(async (req, res) => {
     }),
     prisma.mealSuggestion.findMany({
       where: { groupId: req.params.groupId },
-      include: { votes: true },
+      include: { votes: { include: { user: { select: { id: true, displayName: true } } } } },
       orderBy: { date: "asc" },
     }),
   ]);
@@ -262,7 +280,7 @@ router.post("/suggestions", asyncHandler(async (req, res) => {
       // specifies a direction explicitly instead of relying on it).
       votes: { create: [{ userId: req.userId, direction: "UP" }] },
     },
-    include: { votes: true },
+    include: { votes: { include: { user: { select: { id: true, displayName: true } } } } },
   });
 
   res.status(201).json({ suggestion: serializeSuggestion(suggestion, req.userId) });
@@ -321,7 +339,7 @@ router.post("/suggestions/:id/vote", asyncHandler(async (req, res) => {
 
   const updated = await prisma.mealSuggestion.findUnique({
     where: { id: suggestion.id },
-    include: { votes: true },
+    include: { votes: { include: { user: { select: { id: true, displayName: true } } } } },
   });
   res.json({ suggestion: serializeSuggestion(updated, req.userId) });
 }));
