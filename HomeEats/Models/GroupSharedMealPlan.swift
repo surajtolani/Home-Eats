@@ -108,19 +108,60 @@ final class GroupPlannedMeal {
         self.serverUpdatedAt = serverUpdatedAt
     }
 
-    /// Midnight, local time — the one normalization every write path for
-    /// this model's `date` must go through (not just `init`), so a row
-    /// that's later *updated in place* (`GroupSyncService.reconcilePlannedMeals`'s
-    /// upsert path, which sets `existing.date` directly rather than
-    /// constructing a fresh instance) stays bucketed onto the same calendar
-    /// day as one that's freshly inserted — otherwise a pulled update could
-    /// silently leave a row keyed by a raw UTC timestamp instead, which
-    /// would still compare equal under `Date.isSameDay(as:)` (a calendar
-    /// comparison) but NOT under plain `Date` equality, which is exactly
-    /// what `GroupSharedMealPlanView.allDates`'s `Set` dedup relies on to
-    /// collapse same-day rows into one section.
+    /// A calendar with a *fixed* time zone (UTC) — used only by
+    /// `normalize(_:)` below, never for anything that should reflect this
+    /// device's own local time.
+    private static let utcCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    /// Midnight **UTC** — deliberately *not* midnight local time, unlike
+    /// the single-device `PlannedMeal.normalize`. This is the one
+    /// normalization every write path for this model's `date` must go
+    /// through (not just `init`): a row that's later *updated in place*
+    /// (`GroupSyncService.reconcilePlannedMeals`'s upsert path, which sets
+    /// `existing.date` directly rather than constructing a fresh instance)
+    /// must stay bucketed onto the same calendar day as one that's freshly
+    /// inserted, and every device sharing this group must land on that
+    /// *same* day regardless of what its own clock/time zone says.
+    ///
+    /// A real, confirmed bug: a member added to a group a week after a plan
+    /// existed saw one of its dates off by a day for several minutes, then
+    /// watched it "self-correct." Root cause — this used to be
+    /// `Calendar.current.startOfDay(for: date)`, and it wasn't only applied
+    /// once at creation: `GroupSyncService.reconcilePlannedMeals`/
+    /// `reconcileSuggestions` re-runs it on *every pull*, including for
+    /// rows this device didn't create, using *this device's own* current
+    /// time zone. A device that's still resolving its time zone right
+    /// after a fresh install/sign-in — exactly the moment a newly-added
+    /// member's device is in — can transiently report the wrong one,
+    /// re-bucket every existing shared row onto the wrong calendar day
+    /// under that wrong zone, then correct itself once the real time zone
+    /// settles on a later pull. That's exactly the "for several minutes,
+    /// then it fixed itself" symptom that was reported, and it could just
+    /// as easily hit any *other* member's device too, any time its
+    /// resolved time zone happened to disagree with the row's.
+    ///
+    /// Anchoring to UTC instead makes this function *pure*: the same
+    /// `Date` always normalizes to the same result, on any device, no
+    /// matter what time zone that device currently reports. Re-running it
+    /// during reconciliation is then a safe no-op instead of a
+    /// re-interpretation — which is what actually fixes the bug, since the
+    /// stored value can no longer drift depending on who last synced it.
+    ///
+    /// The trade-off: a device in a *positive* UTC-offset time zone (e.g.
+    /// IST) whose local midnight already falls on the *previous* calendar
+    /// day in UTC will have its own freshly-created rows normalized one
+    /// day earlier than what its own calendar showed at creation. That's a
+    /// narrower, single-device, self-consistent gap (every other member
+    /// still sees that row on the same day the creator's own app now
+    /// shows it, since normalization only ever runs once, at creation,
+    /// and never again) — a far better trade than the cross-device
+    /// inconsistency this fixes.
     static func normalize(_ date: Date) -> Date {
-        Calendar.current.startOfDay(for: date)
+        utcCalendar.startOfDay(for: date)
     }
 
     var isHomeCooked: Bool { recipeID != nil }
