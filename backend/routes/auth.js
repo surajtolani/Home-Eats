@@ -89,6 +89,19 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   const burstLimited = requestCodePhoneBurstLimiter.check(phoneNumber).limited;
   const phoneLimited = requestCodePhoneLimiter.check(phoneNumber).limited;
   const ipLimited = requestCodeIPLimiter.check(req.ip).limited;
+  // Forensic logging, added after a confirmed report of unprompted codes
+  // that this server has no other way to investigate (Render's own log
+  // retention is the only record of this route being hit at all — there's
+  // no separate audit table). Logs to stdout/Render's log stream only,
+  // never returned in any API response to any caller — the phone number
+  // here is already this account owner's own number by definition (it's
+  // what request-code was called with), and req.ip is the actual source of
+  // the request, which is exactly what's needed to tell "the owner's own
+  // device" apart from anything else. Intentionally logs every request,
+  // limited or not, so a blocked burst still shows up here.
+  console.log(
+    `[request-code] phone=${phoneNumber} ip=${req.ip} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
+  );
   if (burstLimited || phoneLimited || ipLimited) {
     return res.status(429).json({ error: "Too many verification code requests. Please wait a bit and try again." });
   }
