@@ -370,6 +370,37 @@ final class AccountModelsDecodingTests: XCTestCase {
         XCTAssertEqual(declined.displayLabel, "+15550000009") // unknown -> falls back to the raw number
     }
 
+    /// Regression guard for a real, confirmed leak fix: `GET
+    /// /:groupId/invites` used to send back `invitedPhoneNumber`
+    /// unconditionally to any fellow manager, not just whoever actually
+    /// created that invite — see `GroupSentInvite.invitedPhoneNumber`'s own
+    /// doc comment. The backend now sends `null` for an invite this viewer
+    /// didn't create; this checks that decodes cleanly (not a decode
+    /// failure from a suddenly-non-optional field) and that `displayLabel`
+    /// falls back to something that doesn't invent a phone number that was
+    /// never actually sent.
+    func testGroupSentInviteWithNoPhoneNumberFallsBackSafely() throws {
+        struct SentInvitesResponseFixture: Decodable { let invites: [GroupSentInvite] }
+        let json = """
+        {
+          "invites": [
+            {
+              "id": "inv3",
+              "invitedPhoneNumber": null,
+              "invitedUser": null,
+              "invitedBy": { "id": "u2", "displayName": "Bob", "phoneNumber": "+15550000002" },
+              "status": "DECLINED",
+              "createdAt": "2026-09-14T00:13:21.206Z"
+            }
+          ]
+        }
+        """
+        let response = try decoder.decode(SentInvitesResponseFixture.self, from: data(json))
+        let invite = response.invites[0]
+        XCTAssertNil(invite.invitedPhoneNumber)
+        XCTAssertEqual(invite.displayLabel, "Phone invite") // no number, no known user -> generic, not a crash/blank
+    }
+
     // MARK: - Recipe sharing (routes/recipeLibrary.js)
 
     func testSharedRecipeEntryUsesShareIdNotRecipeIdAsItsIdentity() throws {

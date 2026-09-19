@@ -351,11 +351,23 @@ struct GroupDetailView: View {
                     .font(.brandCaption)
                     .foregroundStyle(.secondary)
             case .declined:
-                Button("Resend") {
-                    Task { await resendInvite(invite) }
+                // Resending needs the real phone number, which the backend
+                // now only sends back to whichever manager actually created
+                // this specific invite — see `GroupSentInvite
+                // .invitedPhoneNumber`'s own doc comment. A fellow manager
+                // viewing someone else's declined invite just sees the
+                // status; only the original inviter gets the button.
+                if invite.invitedPhoneNumber != nil {
+                    Button("Resend") {
+                        Task { await resendInvite(invite) }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Text("Declined")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
         }
     }
@@ -468,8 +480,13 @@ struct GroupDetailView: View {
     /// work here no matter how the original invite was created or whether
     /// the caller and the invited person are (still, or now) friends.
     private func resendInvite(_ invite: GroupSentInvite) async {
+        // Only ever called from the "Resend" button above, which is itself
+        // only shown when `invitedPhoneNumber` is non-nil — see that
+        // property's own doc comment for why it's `nil` for an invite this
+        // viewer didn't create.
+        guard let phoneNumber = invite.invitedPhoneNumber else { return }
         do {
-            try await AccountsAPIClient.inviteToGroup(groupID: groupID, phoneNumber: invite.invitedPhoneNumber)
+            try await AccountsAPIClient.inviteToGroup(groupID: groupID, phoneNumber: phoneNumber)
             await load()
         } catch {
             actionFailure = error.localizedDescription

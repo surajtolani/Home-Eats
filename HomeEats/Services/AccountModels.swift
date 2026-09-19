@@ -360,7 +360,15 @@ enum GroupInviteStatus: String, Codable {
 /// recipient to themselves).
 struct GroupSentInvite: Codable, Identifiable {
     let id: String
-    let invitedPhoneNumber: String
+    /// `nil` unless the *signed-in caller* is the one who actually created
+    /// this specific invite — real, confirmed leak fix: this used to always
+    /// carry the real number, disclosed to *any* fellow manager viewing
+    /// this list even when they never typed or otherwise knew it
+    /// themselves (see `GET /:groupId/invites`'s own doc comment in
+    /// routes/groups.js for the full story). `displayLabel` and
+    /// `GroupDetailView.resendInvite` both fall back to treating a `nil`
+    /// here the same as "not this viewer's invite to manage."
+    let invitedPhoneNumber: String?
     /// `nil` unless `invitedPhoneNumber` already belongs to a Home Eats
     /// user — most invited numbers, especially to a stranger, belong to
     /// nobody yet (see the route's own doc comment on this specific field).
@@ -371,20 +379,15 @@ struct GroupSentInvite: Codable, Identifiable {
 
     /// What to show for who this invite named — the invited user's own
     /// name when they're already a Home Eats user with one set, otherwise
-    /// `invitedPhoneNumber`. Deliberately does NOT go through
-    /// `invitedUser?.displayNameOrPhoneNumber` (which no longer discloses a
-    /// phone number at all — see that property's own doc comment): this
-    /// specific screen is MANAGER-only and about an invite THIS group sent,
-    /// so the number here is already known to the viewer (they're the one
-    /// who typed it in to create the invite) — falling back to it isn't a
-    /// new disclosure, just showing the manager their own already-known
-    /// data instead of a generic "New User" that would actually be a
-    /// regression here.
+    /// `invitedPhoneNumber` when the viewer is allowed to see it (they're
+    /// the one who created this invite — see that field's own doc comment
+    /// on why it's `nil` for anyone else), otherwise a generic label that
+    /// doesn't disclose anything the viewer doesn't already have.
     var displayLabel: String {
         if let displayName = invitedUser?.displayName, !displayName.isEmpty {
             return displayName
         }
-        return invitedPhoneNumber
+        return invitedPhoneNumber ?? "Phone invite"
     }
 }
 

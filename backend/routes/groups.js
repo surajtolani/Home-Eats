@@ -565,12 +565,22 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
 // `publicUser` for `invitedBy` and separately resolves each
 // `invitedPhoneNumber` to a `PublicUser` when that number happens to
 // already belong to one (nullable — most invited numbers, especially to a
-// stranger, belong to nobody yet). Showing a fellow MANAGER an invited
-// number (and, when known, the account it belongs to) leaks nothing new
-// relative to what `publicMember` already exposes about every *current*
-// member's phone number to that same MANAGER — the trust boundary here is
-// "fellow manager of this group," identical to the one `GET /:groupId`
-// already relies on.
+// stranger, belong to nobody yet).
+//
+// The raw `invitedPhoneNumber` itself is scoped tighter than "fellow
+// manager of this group" — real, confirmed bug: an earlier version sent it
+// back to *any* manager viewing this list, on the theory that it "leaks
+// nothing new relative to what publicMember already exposes" — but
+// `publicUser` right above doesn't actually include phoneNumber at all (it
+// used to, and got stripped for exactly this reason — see
+// requestCodePhoneBurstLimiter's own doc comment in routes/auth.js on the
+// real incident that caused that). So a co-manager who never typed or
+// otherwise knew that number — including the invited-by-userId path, where
+// the inviter picked a friend by name and never saw their digits either —
+// got it disclosed here for the first time, reachable straight through to
+// the unauthenticated `/auth/request-code`. Only the manager who actually
+// created a given invite (`invitingUserId === req.userId`) gets its real
+// number back now; every other viewer gets `null`.
 //
 // `RESOLVED` and `CANCELLED` are excluded on purpose (only PENDING/DECLINED
 // come back): a RESOLVED invite is just an ordinary member now, already
@@ -605,7 +615,21 @@ router.get("/:groupId/invites", asyncHandler(async (req, res) => {
   res.json({
     invites: invites.map((invite) => ({
       id: invite.id,
-      invitedPhoneNumber: invite.invitedPhoneNumber,
+      // Real, confirmed leak: this used to send back invite.invitedPhoneNumber
+      // unconditionally to *any* manager viewing this list — not just the
+      // one who actually created that invite. A group with two+ managers
+      // meant a co-manager who never typed or otherwise knew that number
+      // (including the invited-by-userId path, where the inviter picked a
+      // friend by name and never saw their digits at all) got it disclosed
+      // here for the first time — exactly the same unauthenticated-
+      // `/auth/request-code`-scriptable exposure the `publicUser` fix above
+      // already closed for the friends list (see requestCodePhoneBurstLimiter's
+      // own doc comment in routes/auth.js on that earlier real incident).
+      // Only the manager who actually created this specific invite —
+      // `invitingUserId === req.userId` — gets the real number back now;
+      // everyone else gets `null`, which also disables "Resend" client-side
+      // for a row that isn't theirs (resending needs the real number too).
+      invitedPhoneNumber: invite.invitingUserId === req.userId ? invite.invitedPhoneNumber : null,
       invitedUser: invitedUserByPhone.has(invite.invitedPhoneNumber)
         ? publicUser(invitedUserByPhone.get(invite.invitedPhoneNumber))
         : null,
