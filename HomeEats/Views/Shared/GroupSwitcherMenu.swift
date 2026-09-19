@@ -28,12 +28,23 @@ import SwiftUI
 /// without inventing a color/avatar system this backend doesn't support —
 /// falling back to a generic "people" glyph before any group is active yet.
 ///
-/// **Also where a new group gets created from**, per the same request
-/// ("should be able to also add a new group directly from here"): a
-/// "Create New Group" entry at the bottom of the menu presents
+/// **A real sheet with a `List`, not a native `Menu`** (changed from a
+/// `Menu`-based picker) — direct user request: "on the right of each group
+/// name, can you add an icon to allow you to quickly go in and look at the
+/// members?" A `Menu`'s rows are single controls; there's no way to give a
+/// row two independently-tappable regions (switch vs. view members)
+/// inside one. `GroupSwitcherSheet` below is the replacement: each row is a
+/// name (tap to switch, dismiss) plus a separate trailing "view members"
+/// icon that pushes `GroupDetailView` right from this sheet. Rows are
+/// ordered by `activeGroupSession.groupsByLastAccessed` — direct user
+/// request: "can you sort by date last accessed?"
+///
+/// **Also where a new group gets created from**, per the same original
+/// request ("should be able to also add a new group directly from here"):
+/// a "Create New Group" row at the bottom of the sheet presents
 /// `CreateGroupView` (`GroupsListView`'s own group-creation form, reused
 /// as-is — see that view's own doc comment on why it's `internal`, not
-/// `private`, specifically for reuse like this) as a sheet. On success, this
+/// `private`, specifically for reuse like this). On success, this
 /// refreshes `activeGroupSession.groups` and switches straight to the
 /// newly-created group — the same "don't land somewhere one tap further
 /// away from what you just made" reasoning `GroupsListView`'s own
@@ -42,31 +53,21 @@ import SwiftUI
 /// to push into from a main tab's toolbar in the first place).
 struct GroupSwitcherMenu: View {
     @EnvironmentObject private var activeGroupSession: ActiveGroupSession
+    @State private var showSwitcher = false
     @State private var showCreateGroup = false
 
     var body: some View {
-        Menu {
-            ForEach(activeGroupSession.groups) { group in
-                Button {
-                    activeGroupSession.activeGroupID = group.id
-                } label: {
-                    if activeGroupSession.activeGroupID == group.id {
-                        Label(group.name, systemImage: "checkmark")
-                    } else {
-                        Text(group.name)
-                    }
-                }
-            }
-            Divider()
-            Button {
-                showCreateGroup = true
-            } label: {
-                Label("Create New Group", systemImage: "plus.circle")
-            }
+        Button {
+            showSwitcher = true
         } label: {
             circularIcon
         }
         .accessibilityLabel("Switch active group")
+        .sheet(isPresented: $showSwitcher) {
+            GroupSwitcherSheet(onCreateNewGroup: {
+                showCreateGroup = true
+            })
+        }
         .sheet(isPresented: $showCreateGroup) {
             CreateGroupView(onCreated: { created in
                 Task {
@@ -91,5 +92,81 @@ struct GroupSwitcherMenu: View {
             }
         }
         .frame(width: 30, height: 30)
+    }
+}
+
+/// The switcher's actual content — see `GroupSwitcherMenu`'s own doc
+/// comment for why this is a real sheet/`List` rather than a `Menu`.
+private struct GroupSwitcherSheet: View {
+    let onCreateNewGroup: () -> Void
+
+    @EnvironmentObject private var activeGroupSession: ActiveGroupSession
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(activeGroupSession.groupsByLastAccessed) { group in
+                        groupRow(group)
+                    }
+                }
+                Section {
+                    Button {
+                        // Dismiss this sheet first, then ask the parent to
+                        // present `CreateGroupView` — presenting a second
+                        // sheet from a view already inside one doesn't
+                        // work; the parent's own `.sheet` (a sibling of
+                        // this one, not nested inside it) is what actually
+                        // shows it, right after this one finishes closing.
+                        dismiss()
+                        onCreateNewGroup()
+                    } label: {
+                        Label("Create New Group", systemImage: "plus.circle")
+                    }
+                }
+            }
+            .navigationTitle("Switch Group")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func groupRow(_ group: GroupSummary) -> some View {
+        HStack {
+            Button {
+                activeGroupSession.activeGroupID = group.id
+                dismiss()
+            } label: {
+                HStack {
+                    if activeGroupSession.activeGroupID == group.id {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(Color.brandForest)
+                    }
+                    Text(group.name)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // The "quickly go in and look at the members" ask — a separate
+            // tap target from the row's own switch-to-this-group action
+            // above, not nested inside it (see this file's own doc comment
+            // on why a `Menu` couldn't do this at all).
+            NavigationLink {
+                GroupDetailView(groupID: group.id, groupName: group.name)
+            } label: {
+                Image(systemName: "person.2")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View \(group.name) members")
+        }
     }
 }

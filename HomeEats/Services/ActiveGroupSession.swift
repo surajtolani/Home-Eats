@@ -33,6 +33,12 @@ import Foundation
 @MainActor
 final class ActiveGroupSession: ObservableObject {
     private static let storageKey = "activeGroupID"
+    /// Per-group "last switched to" timestamps, keyed by group id — purely
+    /// local/per-device, same low-stakes `UserDefaults` storage as
+    /// `activeGroupID` itself (see this type's own doc comment on why).
+    /// Backs `groupsByLastAccessed` below — direct user request: "can you
+    /// sort by date last accessed?" in the group switcher.
+    private static let lastAccessedStorageKey = "groupLastAccessedTimestamps"
 
     /// Every group the signed-in caller belongs to, as of the last
     /// successful `refreshGroups()` call. `private(set)`: nothing outside
@@ -62,14 +68,52 @@ final class ActiveGroupSession: ObservableObject {
             guard oldValue != activeGroupID else { return }
             if let activeGroupID {
                 UserDefaults.standard.set(activeGroupID, forKey: Self.storageKey)
+                recordAccess(groupID: activeGroupID)
             } else {
                 UserDefaults.standard.removeObject(forKey: Self.storageKey)
             }
         }
     }
 
+    /// Loaded once at init, then kept in sync by `recordAccess(groupID:)` —
+    /// not `@Published` itself since nothing renders directly off this
+    /// dictionary, only off the `groupsByLastAccessed` ordering it produces.
+    private var lastAccessed: [String: Date]
+
     init() {
         activeGroupID = UserDefaults.standard.string(forKey: Self.storageKey)
+        lastAccessed = Self.loadLastAccessed()
+    }
+
+    private static func loadLastAccessed() -> [String: Date] {
+        guard let raw = UserDefaults.standard.dictionary(forKey: lastAccessedStorageKey) as? [String: Double] else {
+            return [:]
+        }
+        return raw.mapValues { Date(timeIntervalSince1970: $0) }
+    }
+
+    private func recordAccess(groupID: String) {
+        lastAccessed[groupID] = .now
+        let raw = lastAccessed.mapValues { $0.timeIntervalSince1970 }
+        UserDefaults.standard.set(raw, forKey: Self.lastAccessedStorageKey)
+    }
+
+    /// `groups`, ordered most-recently-switched-to first — direct user
+    /// request: "can you sort by date last accessed?" in the group
+    /// switcher. A group never recorded as accessed (e.g. just joined, or
+    /// present from before this feature existed) sorts after every group
+    /// that has one, keeping its relative position among other
+    /// never-accessed groups stable (`sorted(by:)` on `Array` has been a
+    /// stable sort since Swift 5) rather than reshuffling arbitrarily.
+    var groupsByLastAccessed: [GroupSummary] {
+        groups.sorted { lhs, rhs in
+            switch (lastAccessed[lhs.id], lastAccessed[rhs.id]) {
+            case let (l?, r?): return l > r
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (nil, nil): return false
+            }
+        }
     }
 
     /// The full `GroupSummary` for `activeGroupID`, or `nil` if nothing's
@@ -154,5 +198,7 @@ final class ActiveGroupSession: ObservableObject {
         groups = []
         activeGroupID = nil
         hasLoadedOnce = false
+        lastAccessed = [:]
+        UserDefaults.standard.removeObject(forKey: Self.lastAccessedStorageKey)
     }
 }
