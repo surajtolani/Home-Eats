@@ -4,17 +4,35 @@ import SwiftData
 /// `PlannedMeal.recipe`/`.restaurant` and `MealSuggestion.recipe`/`.restaurant`
 /// are plain optional references with no declared inverse relationship or
 /// delete rule, so SwiftData won't clean them up on its own when a `Recipe`
-/// or `Restaurant` is deleted — the plan and any suggestions just silently
-/// point at nothing (`displayTitle` falls through to "Planned"/"Suggestion"
-/// with no way to tell what it used to be). Call these *before* deleting the
-/// recipe/restaurant so the plan stays honest about what's actually left.
+/// or `Restaurant` is deleted.
+///
+/// Direct, pointed user report of exactly this: a recipe that was still
+/// decided into a shared group's plan got deleted, and that plan entry
+/// silently turned into a broken-looking "Planned" / "by Someone" row with
+/// no way to tell what it used to be — "should never delete a recipe... if
+/// it's already in a plan." `isRecipeInAnyPlannedMeal`/
+/// `isRestaurantInAnyPlannedMeal` below are the guard every recipe/
+/// restaurant delete flow now checks *first*: if either is true, the
+/// delete is refused outright (the caller shows an alert instead) rather
+/// than silently orphaning the plan the way it used to. A `MealSuggestion`
+/// is only a proposed candidate, not yet "in the plan" the way a decided
+/// `PlannedMeal` is, so it's still fine to quietly clean those up —
+/// `removeReferences` below still does exactly that, just without also
+/// deleting `PlannedMeal` rows anymore, since a delete that would need to
+/// touch one of those never reaches this function at all now.
 @MainActor
 enum CascadeCleanup {
-    static func removeReferences(toRecipeID recipeID: UUID, in context: ModelContext) {
+    static func isRecipeInAnyPlannedMeal(recipeID: UUID, in context: ModelContext) -> Bool {
         let meals = (try? context.fetch(FetchDescriptor<PlannedMeal>())) ?? []
-        for meal in meals where meal.recipe?.id == recipeID {
-            context.delete(meal)
-        }
+        return meals.contains { $0.recipe?.id == recipeID }
+    }
+
+    static func isRestaurantInAnyPlannedMeal(restaurantID: UUID, in context: ModelContext) -> Bool {
+        let meals = (try? context.fetch(FetchDescriptor<PlannedMeal>())) ?? []
+        return meals.contains { $0.restaurant?.id == restaurantID }
+    }
+
+    static func removeReferences(toRecipeID recipeID: UUID, in context: ModelContext) {
         let suggestions = (try? context.fetch(FetchDescriptor<MealSuggestion>())) ?? []
         for suggestion in suggestions where suggestion.recipe?.id == recipeID {
             context.delete(suggestion)
@@ -22,16 +40,6 @@ enum CascadeCleanup {
     }
 
     static func removeReferences(toRestaurantID restaurantID: UUID, in context: ModelContext) {
-        let meals = (try? context.fetch(FetchDescriptor<PlannedMeal>())) ?? []
-        for meal in meals where meal.restaurant?.id == restaurantID {
-            // A deleted meal's own pending "place your order" notification
-            // (if it had one) would otherwise still fire later, pointing at
-            // a plan that no longer exists.
-            if meal.orderReminderDate != nil {
-                NotificationScheduler.cancelOrderReminder(for: meal)
-            }
-            context.delete(meal)
-        }
         let suggestions = (try? context.fetch(FetchDescriptor<MealSuggestion>())) ?? []
         for suggestion in suggestions where suggestion.restaurant?.id == restaurantID {
             context.delete(suggestion)

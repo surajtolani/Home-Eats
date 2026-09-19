@@ -458,6 +458,17 @@ router.patch("/:recipeId", asyncHandler(async (req, res) => {
 // DELETE /recipe-library/:recipeId — owner only. Cascades to its
 // RecipeIngredient and RecipeShare rows (see the `onDelete: Cascade`s in
 // prisma/schema.prisma).
+//
+// Refuses to delete a recipe that's still decided into any group's shared
+// plan (`PlannedMeal.recipeId`) — direct user report: `PlannedMeal.recipeId`
+// is `onDelete: SetNull` specifically so a group's meal-plan *history*
+// survives an unrelated recipe cleanup elsewhere (see that model's own doc
+// comment in schema.prisma), but nulling the reference on a plan entry
+// that's still current/upcoming just leaves it looking broken ("Planned"/
+// an unattributed row) with no way to tell what it used to be — "should
+// never delete a recipe... if it's already in a plan." A `MealSuggestion`
+// (a proposed candidate, not yet adopted into the plan) doesn't block this
+// the same way; only an actually-decided `PlannedMeal` does.
 router.delete("/:recipeId", asyncHandler(async (req, res) => {
   const existing = await prisma.recipe.findUnique({ where: { id: req.params.recipeId } });
   if (!existing) {
@@ -465,6 +476,12 @@ router.delete("/:recipeId", asyncHandler(async (req, res) => {
   }
   if (existing.ownerId !== req.userId) {
     return res.status(403).json({ error: "Only the recipe's owner can delete it." });
+  }
+  const plannedMealCount = await prisma.plannedMeal.count({ where: { recipeId: existing.id } });
+  if (plannedMealCount > 0) {
+    return res.status(409).json({
+      error: "This recipe is still in a meal plan and can't be deleted. Remove it from the plan first.",
+    });
   }
   await prisma.recipe.delete({ where: { id: existing.id } });
   res.status(204).end();

@@ -11,6 +11,13 @@ struct RestaurantListView: View {
     @State private var showEditor = false
     @State private var showNaturalSearch = false
     @State private var showDuplicates = false
+    /// Direct user report: deleting a restaurant that was already decided
+    /// into a (possibly shared/group) meal plan used to silently leave
+    /// that plan entry broken — see `CascadeCleanup`'s own doc comment.
+    /// Set instead of deleting whenever
+    /// `CascadeCleanup.isRestaurantInAnyPlannedMeal` says the restaurant
+    /// being swiped away is still in use.
+    @State private var deleteBlockedMessage: String?
     @State private var searchText = ""
     @StateObject private var searchModel = RestaurantSearchModel()
     @StateObject private var locationProvider = UserLocationProvider()
@@ -68,6 +75,10 @@ struct RestaurantListView: View {
                         .onDelete { offsets in
                             for index in offsets {
                                 let restaurant = restaurants[index]
+                                guard !CascadeCleanup.isRestaurantInAnyPlannedMeal(restaurantID: restaurant.id, in: modelContext) else {
+                                    deleteBlockedMessage = "\"\(restaurant.name)\" is in your meal plan. Remove it from the plan before deleting it."
+                                    continue
+                                }
                                 CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
                                 // Same "immediate, online-only, captured before
                                 // the local delete" pattern as `RecipesHomeView`'s
@@ -135,6 +146,14 @@ struct RestaurantListView: View {
         }
         .sheet(isPresented: $showDuplicates) {
             DuplicateRestaurantsView()
+        }
+        .alert(
+            "Can't Delete Restaurant",
+            isPresented: Binding(get: { deleteBlockedMessage != nil }, set: { if !$0 { deleteBlockedMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteBlockedMessage ?? "")
         }
         // Opportunistic personal-library sync, same reasoning and pattern
         // as `RecipesHomeView`'s own identical `.task` — see

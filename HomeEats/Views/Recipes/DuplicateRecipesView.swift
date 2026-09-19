@@ -20,6 +20,11 @@ struct DuplicateRecipesView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Recipe.createdAt) private var allRecipes: [Recipe]
+    /// Same guard as `RecipesHomeView`'s own swipe-to-delete — see
+    /// `CascadeCleanup`'s doc comment. A duplicate still decided into a
+    /// meal plan isn't safe to blanket-delete via "Keep Oldest, Delete
+    /// Rest" either.
+    @State private var deleteBlockedMessage: String?
 
     private var myRecipes: [Recipe] {
         allRecipes.filter { $0.source != .library || $0.isSavedToCollection }
@@ -97,18 +102,43 @@ struct DuplicateRecipesView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .alert(
+                "Can't Delete Recipe",
+                isPresented: Binding(get: { deleteBlockedMessage != nil }, set: { if !$0 { deleteBlockedMessage = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteBlockedMessage ?? "")
+            }
         }
     }
 
-    /// Identical to `RecipesHomeView`'s own swipe-to-delete on "My
-    /// Recipes"/"Favorites" — see that screen's `.onDelete` for the twin
-    /// implementation this deliberately mirrors, same reasoning as
-    /// `DuplicateRestaurantsView.delete(_:)` for not factoring it out.
+    /// Identical to `RecipesHomeView.deleteRecipe(_:)` — see that method's
+    /// own doc comment for why this awaits the backend's own "still in a
+    /// group's plan" check before committing the local delete, same
+    /// reasoning as `DuplicateRestaurantsView.delete(_:)` for not
+    /// factoring this out into one shared function.
     private func delete(_ recipe: Recipe) {
-        CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-        if let backendRecipeID = recipe.backendRecipeID {
-            Task { try? await AccountsAPIClient.deleteRecipe(id: backendRecipeID) }
+        guard !CascadeCleanup.isRecipeInAnyPlannedMeal(recipeID: recipe.id, in: modelContext) else {
+            deleteBlockedMessage = "\"\(recipe.title)\" is in your meal plan. Remove it from the plan before deleting it."
+            return
         }
-        modelContext.delete(recipe)
+        guard let backendRecipeID = recipe.backendRecipeID else {
+            CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+            modelContext.delete(recipe)
+            return
+        }
+        Task {
+            do {
+                try await AccountsAPIClient.deleteRecipe(id: backendRecipeID)
+                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+                modelContext.delete(recipe)
+            } catch AccountsAPIError.server(let message) {
+                deleteBlockedMessage = message
+            } catch {
+                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+                modelContext.delete(recipe)
+            }
+        }
     }
 }

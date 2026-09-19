@@ -22,6 +22,11 @@ struct DuplicateRestaurantsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Restaurant.createdAt) private var restaurants: [Restaurant]
+    /// Same guard as `RestaurantListView`'s own swipe-to-delete — see
+    /// `CascadeCleanup`'s doc comment. A duplicate still decided into a
+    /// meal plan isn't safe to blanket-delete via "Keep Oldest, Delete
+    /// Rest" either.
+    @State private var deleteBlockedMessage: String?
 
     private var duplicateGroups: [[Restaurant]] {
         let grouped = Dictionary(grouping: restaurants) { $0.name.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -88,6 +93,14 @@ struct DuplicateRestaurantsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .alert(
+                "Can't Delete Restaurant",
+                isPresented: Binding(get: { deleteBlockedMessage != nil }, set: { if !$0 { deleteBlockedMessage = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteBlockedMessage ?? "")
+            }
         }
     }
 
@@ -97,6 +110,10 @@ struct DuplicateRestaurantsView: View {
     /// reads clearer inline than through a shared free function threading
     /// both a `ModelContext` and a captured restaurant through it).
     private func delete(_ restaurant: Restaurant) {
+        guard !CascadeCleanup.isRestaurantInAnyPlannedMeal(restaurantID: restaurant.id, in: modelContext) else {
+            deleteBlockedMessage = "\"\(restaurant.name)\" is in your meal plan. Remove it from the plan before deleting it."
+            return
+        }
         CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
         if let backendID = restaurant.backendID {
             Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }

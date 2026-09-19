@@ -16,6 +16,13 @@ struct RecipesHomeView: View {
     @State private var showRecommendSheet = false
     @State private var quickAddRecipe: Recipe?
     @State private var showDuplicates = false
+    /// Direct user report: deleting a recipe that was already decided into
+    /// a (possibly shared/group) meal plan used to silently leave that
+    /// plan entry broken ("Planned"/"by Someone" — see
+    /// `CascadeCleanup`'s own doc comment). Set instead of deleting
+    /// whenever `CascadeCleanup.isRecipeInAnyPlannedMeal` says the recipe
+    /// being swiped away is still in use.
+    @State private var deleteBlockedMessage: String?
 
     // MARK: Shared (backend recipe-sharing) state
     //
@@ -215,23 +222,7 @@ struct RecipesHomeView: View {
                                     // "Un-save" a library recipe instead of deleting the shared copy.
                                     recipe.isSavedToCollection = false
                                 } else {
-                                    CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-                                    // Fires the backend delete immediately,
-                                    // inline — same "immediate, online-only"
-                                    // pattern `GroupSyncService` already uses
-                                    // for adopt/accept, not a queued pending-
-                                    // delete state (see
-                                    // `PersonalLibrarySyncService`'s own doc
-                                    // comment on why this feature skips that
-                                    // machinery). Captured before the local
-                                    // delete below, since `recipe` isn't safe
-                                    // to read from afterward; `nil` (never
-                                    // synced) just means there's nothing on
-                                    // the server to delete.
-                                    if let backendRecipeID = recipe.backendRecipeID {
-                                        Task { try? await AccountsAPIClient.deleteRecipe(id: backendRecipeID) }
-                                    }
-                                    modelContext.delete(recipe)
+                                    deleteRecipe(recipe)
                                 }
                             }
                         }
@@ -302,6 +293,14 @@ struct RecipesHomeView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(publishErrorMessage ?? "")
+        }
+        .alert(
+            "Can't Delete Recipe",
+            isPresented: Binding(get: { deleteBlockedMessage != nil }, set: { if !$0 { deleteBlockedMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteBlockedMessage ?? "")
         }
         .sheet(isPresented: $showSignIn, onDismiss: {
             // Only continue into the pending Share/Add-to-Library action if
@@ -794,6 +793,47 @@ struct RecipesHomeView: View {
             }
         )
         return actions
+    }
+
+    /// Deletes a recipe from "My Recipes"/"Favorites" (swipe-to-delete, or
+    /// `DuplicateRecipesView`'s bulk cleanup) — blocked outright if it's
+    /// still in the local, personal plan (see `CascadeCleanup`'s own doc
+    /// comment). For a recipe that's also synced to the backend, this now
+    /// *waits* for the backend's own equivalent check — a recipe still
+    /// decided into a *group's* shared plan — before committing the local
+    /// delete, rather than firing that request in the background and
+    /// deleting locally regardless of what it says (the old "immediate,
+    /// online-only" behavior, which is exactly how a recipe still in a
+    /// group's plan ended up silently deleted out from under it, leaving
+    /// that plan entry as a broken "Planned"/"by Someone" row — direct
+    /// user report). A genuine connectivity failure (`AccountsAPIError`
+    /// case other than `.server`, e.g. offline) still falls back to the
+    /// previous offline-tolerant behavior — delete locally now, let the
+    /// next opportunistic sync reconcile — since there's no way to know
+    /// either way while offline, and blocking every delete just because
+    /// the network happens to be down would be its own regression.
+    private func deleteRecipe(_ recipe: Recipe) {
+        guard !CascadeCleanup.isRecipeInAnyPlannedMeal(recipeID: recipe.id, in: modelContext) else {
+            deleteBlockedMessage = "\"\(recipe.title)\" is in your meal plan. Remove it from the plan before deleting it."
+            return
+        }
+        guard let backendRecipeID = recipe.backendRecipeID else {
+            CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+            modelContext.delete(recipe)
+            return
+        }
+        Task {
+            do {
+                try await AccountsAPIClient.deleteRecipe(id: backendRecipeID)
+                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+                modelContext.delete(recipe)
+            } catch AccountsAPIError.server(let message) {
+                deleteBlockedMessage = message
+            } catch {
+                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+                modelContext.delete(recipe)
+            }
+        }
     }
 
     /// Direct user request for a recipe tile's exact meta layout: "below
