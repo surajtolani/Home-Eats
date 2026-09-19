@@ -84,6 +84,20 @@ final class Recipe {
     /// lightweight SwiftData migration, same reasoning as `isFavorite`'s own
     /// doc comment.
     var isPublishedToLibrary: Bool = false
+    /// `MealCourse.rawValue`s this recipe is tagged with (appetizer, main
+    /// course, dessert, etc.) — multi-select, since a dish can be more than
+    /// one (see `MealCourse`'s own doc comment). Stored as raw strings
+    /// rather than `[MealCourse]` directly since SwiftData doesn't need a
+    /// custom `Codable` value type here and this keeps it symmetric with
+    /// `tags`/`cuisines`. Defaulted so adding this to existing `Recipe`
+    /// rows stays a lightweight migration, same reasoning as `isFavorite`.
+    var mealCourses: [String] = []
+    /// `CuisineType.rawValue`s this recipe is tagged with — multi-select
+    /// for the same "could genuinely be more than one" reason as
+    /// `mealCourses`, auto-suggested once from the title/ingredients
+    /// (`CuisineType.guess`) and editable from there. Defaulted for the
+    /// same lightweight-migration reason as `mealCourses`.
+    var cuisines: [String] = []
     /// Who this recipe actually came from, for a `.shared` recipe only —
     /// the friend/group member who shared it (`SharedRecipeEntry.makeLocalRecipe()`),
     /// or the master-library publisher's name (`LibraryRecipeEntry
@@ -121,7 +135,9 @@ final class Recipe {
         createdByMemberID: UUID? = nil,
         backendRecipeID: String? = nil,
         isPublishedToLibrary: Bool = false,
-        sharedByName: String? = nil
+        sharedByName: String? = nil,
+        mealCourses: [String] = [],
+        cuisines: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -143,6 +159,8 @@ final class Recipe {
         self.backendRecipeID = backendRecipeID
         self.isPublishedToLibrary = isPublishedToLibrary
         self.sharedByName = sharedByName
+        self.mealCourses = mealCourses
+        self.cuisines = cuisines
     }
 
     var totalMinutes: Int { prepMinutes + cookMinutes }

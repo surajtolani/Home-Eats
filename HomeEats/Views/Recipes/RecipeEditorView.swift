@@ -25,6 +25,9 @@ struct RecipeEditorView: View {
     @State private var instructionsText: String
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var photoData: Data?
+    @State private var selectedMealCourses: Set<String>
+    @State private var selectedCuisines: Set<String>
+    @State private var showTaxonomySheet = false
     /// Backs the "Add Anyway?" confirmation dialog — see `duplicateMatch`'s
     /// own doc comment.
     @State private var showDuplicateConfirm = false
@@ -50,6 +53,16 @@ struct RecipeEditorView: View {
         _ingredientsText = State(initialValue: (existing?.ingredients ?? []).map(\.displayText).joined(separator: "\n"))
         _instructionsText = State(initialValue: (existing?.instructions ?? []).joined(separator: "\n"))
         _photoData = State(initialValue: existing?.photoData)
+        _selectedMealCourses = State(initialValue: Set(existing?.mealCourses ?? []))
+        _selectedCuisines = State(initialValue: Set(existing?.cuisines ?? []))
+    }
+
+    private var taxonomySummary: String {
+        let parts = [
+            selectedMealCourses.sorted().joined(separator: ", "),
+            selectedCuisines.sorted().joined(separator: ", "),
+        ].filter { !$0.isEmpty }
+        return parts.isEmpty ? "Not set" : parts.joined(separator: " · ")
     }
 
     var body: some View {
@@ -77,6 +90,19 @@ struct RecipeEditorView: View {
                     Stepper("Prep: \(prepMinutes) min", value: $prepMinutes, in: 0...240, step: 5)
                     Stepper("Cook: \(cookMinutes) min", value: $cookMinutes, in: 0...480, step: 5)
                     TextField("Tags, comma separated", text: $tagsText)
+                    Button {
+                        showTaxonomySheet = true
+                    } label: {
+                        HStack {
+                            Text("Meal Type & Cuisine")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(taxonomySummary)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
                 }
                 Section {
                     TextEditor(text: $ingredientsText)
@@ -127,6 +153,14 @@ struct RecipeEditorView: View {
             } message: { match in
                 Text("You already have a recipe called \"\(match.title)\". Add another one with the same name?")
             }
+            .sheet(isPresented: $showTaxonomySheet) {
+                RecipeTaxonomySheet(
+                    selectedCourses: $selectedMealCourses,
+                    selectedCuisines: $selectedCuisines,
+                    title: title,
+                    ingredientNames: ingredientsText.components(separatedBy: .newlines)
+                )
+            }
         }
     }
 
@@ -159,6 +193,8 @@ struct RecipeEditorView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         recipe.photoData = photoData
+        recipe.mealCourses = MealCourse.allCases.map(\.rawValue).filter(selectedMealCourses.contains)
+        recipe.cuisines = CuisineType.allCases.map(\.rawValue).filter(selectedCuisines.contains)
 
         if existing == nil {
             modelContext.insert(recipe)

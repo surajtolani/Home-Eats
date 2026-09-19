@@ -161,6 +161,17 @@ struct RecipeDetailView: View {
                     }
                 }
             }
+            if !recipe.mealCourses.isEmpty || !recipe.cuisines.isEmpty {
+                HStack {
+                    ForEach(Array((recipe.mealCourses + recipe.cuisines).enumerated()), id: \.offset) { _, label in
+                        Text(label)
+                            .font(.brandCaption2)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                    }
+                }
+            }
         }
     }
 
