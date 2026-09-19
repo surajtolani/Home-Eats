@@ -6,16 +6,17 @@ import SwiftUI
 /// spell out an otherwise-irrelevant generic parameter just to name a
 /// static property on a generic type (`MediaTileRow<EmptyView>.tileHeight`).
 ///
-/// Bumped from the original 64 — direct user report: at that size, with a
-/// real title/meta/actions combination (a two-word restaurant name, cuisine
-/// + price + rating, a favorite star; or a recipe's time + servings + up to
-/// four action icons), there wasn't enough room and text was getting cut
-/// off outright, not just tightly fit. 92 gives the title room to wrap to a
-/// genuine second line (see `title`'s own `.lineLimit(2)` below — also a
+/// Bumped from an original 64, then again from 92 — direct, repeated user
+/// report that even after the first bump, a real title/meta/actions
+/// combination (a two-word restaurant name, cuisine + price + rating, a
+/// favorite star; or a recipe's time + servings + source + up to four
+/// action icons) still ran out of room. 108 gives the title room to wrap to
+/// a genuine second line (see `title`'s own `.lineLimit(2)` below — also a
 /// direct ask: "if the name of restaurant needs to be in 2 lines that's
-/// fine") and the meta row room to wrap onto two lines of its own instead
-/// of squeezing every item onto one.
-let mediaTileHeight: CGFloat = 92
+/// fine"), the meta rows room for two lines of their own, and the action
+/// icons (now stacked vertically — see the trailing `VStack` in `body`)
+/// room to stack up to four without crowding.
+let mediaTileHeight: CGFloat = 108
 
 /// One always-visible action icon on a `MediaTileRow`'s trailing edge —
 /// a plain top-level type, not nested inside `MediaTileRow` itself, for
@@ -47,15 +48,16 @@ struct MediaTileAction {
 
 /// A horizontal media tile — a square thumbnail on the left, a bold title
 /// and a secondary meta row (icon + text pairs, e.g. "25 min" / "serves
-/// 4") stacked to its right, and a compact row of small, always-visible
-/// action icons at its trailing edge. Direct user request, modeled on a
-/// reference screenshot they attached, for one consistent tile format
-/// shared across the Plan tab's calendar view (a decided meal),
-/// Restaurants, and Recipes — "This tile should probably be a consistent
-/// size and format across all the other tiles" — with a shorter height
-/// than their reference image ("although I would make it shorter
-/// height"): `mediaTileHeight` above is the one place that height is set,
-/// so every call site stays in sync automatically if it's ever tuned.
+/// 4") stacked to its right, and a compact column of small, always-visible
+/// action icons running down its trailing edge. Direct user request,
+/// modeled on a reference screenshot they attached, for one consistent
+/// tile format shared across the Plan tab's calendar view (a decided
+/// meal), Restaurants, and Recipes — "This tile should probably be a
+/// consistent size and format across all the other tiles" — with a
+/// shorter height than their reference image ("although I would make it
+/// shorter height"): `mediaTileHeight` above is the one place that height
+/// is set, so every call site stays in sync automatically if it's ever
+/// tuned.
 ///
 /// **Every action stays directly on the tile, tappable with no gesture to
 /// discover.** An earlier version of this tile moved secondary actions
@@ -67,8 +69,22 @@ struct MediaTileAction {
 /// UI across the tabs." `actions` now takes as many icons as a call site
 /// actually needs (Restaurants: one, favorite; Recipes: up to four,
 /// quick-add/share/add-to-library/favorite; Plan: none), rendered as one
-/// small icon-button row, restoring the exact original always-visible,
+/// small icon-button column, restoring the exact original always-visible,
 /// no-swipe-required behavior on top of the new tile shape.
+///
+/// **Actions run top-to-bottom, not left-to-right.** Direct, repeated
+/// report that a recipe's title and meta info (time, servings, source)
+/// were still getting cut off even after the tile grew taller — a
+/// horizontal row of up to four action icons was eating most of the
+/// tile's width, squeezing the title/meta column into a fraction of the
+/// available space. Stacking the icons vertically instead shrinks that
+/// column down to one icon's width, so the title/meta column (which now
+/// claims the tile's full remaining width via `.frame(maxWidth: .infinity)`
+/// below, instead of competing with a `Spacer` for whatever's left) can
+/// actually use the room: the title runs to the right edge and only wraps
+/// to a second line if it genuinely needs to, and the meta rows (time +
+/// servings, then source, on their own lines) have the same full width to
+/// work with.
 ///
 /// Deliberately NOT used for the Plan tab's Weekly agenda list (direct
 /// user request: "No need for the tile on the weekly tab" — that list
@@ -83,7 +99,7 @@ struct MediaTileRow<Thumbnail: View>: View {
     var actions: [MediaTileAction] = []
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             thumbnail()
                 .frame(width: mediaTileHeight, height: mediaTileHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -102,14 +118,15 @@ struct MediaTileRow<Thumbnail: View>: View {
                     // one long `HStack` every item had to squeeze onto —
                     // direct user report that meta info (a recipe's time/
                     // servings, a restaurant's cuisine/price/rating) was
-                    // getting cut off with up to 3-4 items and the actions
-                    // column both competing for one line's worth of width.
-                    // Capped at 2 per row (not a full wrap-whatever-fits
-                    // flow layout) to keep this a plain, predictable VStack
-                    // of HStacks rather than a custom `Layout` — with at
-                    // most 4 meta items on any tile today, that's at most 2
-                    // extra lines, which `mediaTileHeight`'s own bump
-                    // already makes room for.
+                    // getting cut off with up to 3-4 items competing for one
+                    // line's worth of width. Capped at 2 per row (not a full
+                    // wrap-whatever-fits flow layout) to keep this a plain,
+                    // predictable VStack of HStacks rather than a custom
+                    // `Layout` — with at most 4 meta items on any tile
+                    // today, that's at most 2 rows, which naturally reads
+                    // as "time + servings" then "source" underneath it for
+                    // a recipe (see `RecipesHomeView.recipeMetaItems`),
+                    // which is exactly the requested order.
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(Array(metaItemRows.enumerated()), id: \.offset) { _, row in
                             HStack(spacing: 10) {
@@ -124,16 +141,17 @@ struct MediaTileRow<Thumbnail: View>: View {
                     .lineLimit(1)
                 }
             }
-            Spacer(minLength: 8)
+            // Claims the tile's full remaining width, instead of sharing a
+            // `Spacer` with the actions column below — see this type's own
+            // doc comment ("Actions run top-to-bottom, not left-to-right")
+            // for why that's what actually fixes the cut-off title/meta.
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if !actions.isEmpty {
-                // Spacing tightened from 14 -> 8 — direct user report that
-                // the action icons (up to 4, on a recipe tile) were taking
-                // too much of the tile's limited width, crowding out the
-                // meta row next to them. The icons themselves keep their
-                // existing tap target size (`.brandCallout`, same as
-                // before) — only the gap between them shrinks.
-                HStack(spacing: 8) {
+                // A column, not a row — see this type's own doc comment.
+                // Top-aligned so it reads as "coming down" from the title's
+                // own baseline, same as a direct user request phrased it.
+                VStack(spacing: 8) {
                     ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
                         if let onTap = action.onTap {
                             Button(action: onTap) {

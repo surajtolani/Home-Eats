@@ -798,6 +798,16 @@ struct RecipesHomeView: View {
         return actions
     }
 
+    /// Direct user request for a recipe tile's exact meta layout: "below
+    /// [the title] should be the time, # of people it serves. below that
+    /// should be the source (imported, shared by, etc.)." `MediaTileRow`
+    /// wraps these two at a time onto their own row, so time+servings (the
+    /// first two items below) land on one line and the source (the third,
+    /// when there is one) lands on its own line underneath — exactly this
+    /// order. No separate "favorite" entry here (an earlier version added
+    /// one) since the heart action icon in the tile's new icon column
+    /// already shows favorited state; a text item repeating it would push
+    /// a third, unwanted row onto the tile instead of just source.
     private func recipeMetaItems(_ recipe: Recipe) -> [(icon: String, text: String)] {
         var items: [(icon: String, text: String)] = []
         if recipe.totalMinutes > 0 {
@@ -809,9 +819,6 @@ struct RecipesHomeView: View {
         }
         if recipe.source == .shared {
             items.append((icon: "person.2", text: recipe.sharedAttributionCaption))
-        }
-        if recipe.isFavorite {
-            items.append((icon: "heart.fill", text: "favorite"))
         }
         return items
     }
