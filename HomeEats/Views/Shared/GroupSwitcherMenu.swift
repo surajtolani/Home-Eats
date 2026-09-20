@@ -97,11 +97,29 @@ struct GroupSwitcherMenu: View {
 
 /// The switcher's actual content — see `GroupSwitcherMenu`'s own doc
 /// comment for why this is a real sheet/`List` rather than a `Menu`.
+///
+/// **Compact sizing, not a full-height sheet** — direct user feedback that
+/// the sheet felt "massive and misized" next to the compact `Menu` this
+/// replaced. `.presentationDetents([.medium])` caps it at roughly half the
+/// screen instead of the default near-full-height sheet, and every row uses
+/// `.subheadline`/`.footnote` rather than a `List` row's default `.body`
+/// text, closer to the original `Menu`'s own compact row size.
 private struct GroupSwitcherSheet: View {
     let onCreateNewGroup: () -> Void
 
     @EnvironmentObject private var activeGroupSession: ActiveGroupSession
     @Environment(\.dismiss) private var dismiss
+    /// Backs the "view members" tap — a plain `@State` + `.navigationDestination(item:)`
+    /// push, not a `NavigationLink` embedded in the row. Direct user
+    /// feedback: a `NavigationLink` anywhere in a `List` row makes SwiftUI
+    /// add its own trailing disclosure chevron to that whole row
+    /// automatically, even when the link is just one of two controls in an
+    /// `HStack` — which duplicated with the `person.2` icon right next to
+    /// it ("there's no difference between the right arrow... and the image
+    /// for the icon"). Pushing programmatically instead means there's no
+    /// `NavigationLink` anywhere in the row for `List` to notice, so no
+    /// chevron gets added at all — just the one, intentional icon.
+    @State private var pushedGroup: GroupSummary?
 
     var body: some View {
         NavigationStack {
@@ -123,9 +141,11 @@ private struct GroupSwitcherSheet: View {
                         onCreateNewGroup()
                     } label: {
                         Label("Create New Group", systemImage: "plus.circle")
+                            .font(.subheadline)
                     }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle("Switch Group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -133,7 +153,12 @@ private struct GroupSwitcherSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .navigationDestination(item: $pushedGroup) { group in
+                GroupDetailView(groupID: group.id, groupName: group.name)
+            }
         }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 
     private func groupRow(_ group: GroupSummary) -> some View {
@@ -145,9 +170,11 @@ private struct GroupSwitcherSheet: View {
                 HStack {
                     if activeGroupSession.activeGroupID == group.id {
                         Image(systemName: "checkmark")
+                            .font(.footnote)
                             .foregroundStyle(Color.brandForest)
                     }
                     Text(group.name)
+                        .font(.subheadline)
                         .foregroundStyle(.primary)
                     Spacer()
                 }
@@ -158,11 +185,14 @@ private struct GroupSwitcherSheet: View {
             // The "quickly go in and look at the members" ask — a separate
             // tap target from the row's own switch-to-this-group action
             // above, not nested inside it (see this file's own doc comment
-            // on why a `Menu` couldn't do this at all).
-            NavigationLink {
-                GroupDetailView(groupID: group.id, groupName: group.name)
+            // on why a `Menu` couldn't do this at all). A plain `Button`
+            // setting `pushedGroup`, not a `NavigationLink` — see that
+            // property's own doc comment for why.
+            Button {
+                pushedGroup = group
             } label: {
                 Image(systemName: "person.2")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
