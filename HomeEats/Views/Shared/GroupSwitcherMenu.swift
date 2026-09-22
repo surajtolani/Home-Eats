@@ -60,9 +60,30 @@ struct GroupSwitcherMenu: View {
         Button {
             showSwitcher = true
         } label: {
-            circularIcon
+            HStack(spacing: 6) {
+                circularIcon
+                // A small caption next to the icon, not the big centered
+                // title this deliberately replaced (see this file's own
+                // doc comment) — direct fix for a real gap: the icon alone
+                // shows only a single initial, which doesn't actually say
+                // which group is active at a glance (two groups starting
+                // with the same letter render identically), so there was
+                // no way to confirm which group's data the Plan/Grocery
+                // tab was even showing without opening this menu. Kept
+                // deliberately small/secondary and truncated so it reads
+                // as a caption for the icon, not a second title competing
+                // with `BrandHeaderBanner`'s centered logo.
+                if let name = activeGroupSession.activeGroup?.name {
+                    Text(name)
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 90, alignment: .leading)
+                }
+            }
         }
-        .accessibilityLabel("Switch active group")
+        .accessibilityLabel("Switch active group, currently \(activeGroupSession.activeGroup?.name ?? "none selected")")
         .sheet(isPresented: $showSwitcher) {
             GroupSwitcherSheet(onCreateNewGroup: {
                 showCreateGroup = true

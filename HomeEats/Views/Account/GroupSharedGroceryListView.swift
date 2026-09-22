@@ -828,10 +828,10 @@ struct GroupSharedGroceryListView: View {
     /// *some* way to set a quantity or override the category `GroceryCategory
     /// .guess(fromIngredientName:)` gets wrong, or (for a `MANAGER`) to add
     /// straight into `.suggested`/`.staples` instead of the default
-    /// `.thisWeek`. The existing sheet (reachable via `addGroceriesButton`
-    /// -> "Add an Item" -> "Add a Custom Item," see `GroupAddGroceriesFlow
-    /// .swift`'s `AddItemSearchView`) covers exactly that "I want to set
-    /// more than just the name" case; this field covers the much more
+    /// `.thisWeek`. `AddGroupGroceryItemSheet` (reachable via
+    /// `addGroceriesButton` -> "Add an Item," see `GroupAddGroceriesFlow
+    /// .swift`'s `AddGroceriesSheet.body`) covers exactly that "I want to
+    /// set more than just the name" case; this field covers the much more
     /// common "just add milk" case the user asked for directly, without
     /// regressing the other one.
     private var quickAddField: some View {
@@ -1161,9 +1161,10 @@ private struct GroupQuantityStepper: View {
 /// `GroupMealSheetContent`. A fresh item always starts with no aisle
 /// explicitly chosen (`aisleManuallySet: false`, the model's own default),
 /// so it immediately falls back to its category's default aisle in "My
-/// Layout" rather than starting in "Unsorted." Not `private` — reused by
-/// `GroupAddGroceriesFlow.swift`'s `AddItemSearchView` ("Add a Custom
-/// Item"), which needs more than this screen's own name-only quick add.
+/// Layout" rather than starting in "Unsorted." Not `private` — reused
+/// directly by `GroupAddGroceriesFlow.swift`'s "Add an Item" row
+/// (`AddGroceriesSheet.body`), which needs more than this screen's own
+/// name-only quick add.
 struct AddGroupGroceryItemSheet: View {
     let groupID: String
     let isManager: Bool

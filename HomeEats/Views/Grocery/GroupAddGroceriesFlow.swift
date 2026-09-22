@@ -12,10 +12,13 @@ import SwiftData
 /// "From Your Household Groceries" list, all visible on screen at once —
 /// "is not that good right now and very confusing." This collapses all of
 /// that behind one button and a short, four-option flow instead, while
-/// keeping every underlying capability: typing a plain item (`AddItemSearchView`,
-/// which still opens the existing full add-item form for anyone who wants
-/// to set a quantity/category/section up front), generating ingredients
-/// from planned meals (`CookingListDaysView` -> `ReviewIngredientsView`,
+/// keeping every underlying capability: "Add an Item" opens
+/// `AddGroupGroceryItemSheet` (name/quantity/category/section) directly —
+/// this row used to push its own intermediate, name-only quick-add screen
+/// first (`AddItemSearchView`, removed), which just duplicated the
+/// always-visible quick-add field already on the main list; see that
+/// row's own doc comment in `AddGroceriesSheet.body`. Also: generating
+/// ingredients from planned meals (`CookingListDaysView` -> `ReviewIngredientsView`,
 /// the exact same `GroupGroceryListBuilder` resolution the old day-strip
 /// used), picking straight from a recipe with no meal plan involved at all
 /// (`RecipePickerForGroceriesView` -> the same `ReviewIngredientsView` —
@@ -24,8 +27,9 @@ import SwiftData
 /// "Household Groceries" catalog, now called "My Usuals" here to match the
 /// reference and tabbed by category (`MyUsualsPickerView`).
 ///
-/// **Role gating carries over unchanged**: every commit path here (`AddItemSearchView
-/// .submit`, `ReviewIngredientsView.commit`, `MyUsualsPickerView.commit`)
+/// **Role gating carries over unchanged**: every commit path here
+/// (`AddGroupGroceryItemSheet.submit`, `ReviewIngredientsView.commit`,
+/// `MyUsualsPickerView.commit`)
 /// uses the exact same MANAGER-adds-directly/PARTICIPANT-suggests split as
 /// every other add path on `GroupSharedGroceryListView` — see that view's
 /// own top-level doc comment on role gating. The one real behavior change:
@@ -51,18 +55,31 @@ struct AddGroceriesSheet: View {
 
     @Environment(\.dismiss) private var dismissSheet
     @State private var path = NavigationPath()
+    /// Backs "Add an Item" below — direct fix for a real gap: that row
+    /// used to push a plain name-only quick-add screen
+    /// (`AddItemSearchView`, now removed) that just duplicated the
+    /// always-visible quick-add field already at the top of the main
+    /// grocery list. This row now jumps straight to the one thing that
+    /// screen offered that the quick-add field can't — setting a
+    /// quantity/category up front — via the same `AddGroupGroceryItemSheet`
+    /// its old "Add a Custom Item" button opened, presented directly
+    /// instead of behind an extra, redundant screen.
+    @State private var showCustomItemSheet = false
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
                 Section {
-                    NavigationLink(value: AddGroceriesDestination.addItem) {
+                    Button {
+                        showCustomItemSheet = true
+                    } label: {
                         AddGroceriesOptionRow(
                             icon: "magnifyingglass",
                             title: "Add an Item",
-                            subtitle: isManager ? "Search or type to add anything" : "Search or type to suggest anything"
+                            subtitle: isManager ? "Set a name, quantity, and category" : "Suggest an item with a quantity and category"
                         )
                     }
+                    .buttonStyle(.plain)
                     NavigationLink(value: AddGroceriesDestination.cookingListDays) {
                         AddGroceriesOptionRow(
                             icon: "fork.knife",
@@ -94,10 +111,11 @@ struct AddGroceriesSheet: View {
                     Button("Close") { dismissSheet() }
                 }
             }
+            .sheet(isPresented: $showCustomItemSheet) {
+                AddGroupGroceryItemSheet(groupID: groupID, isManager: isManager)
+            }
             .navigationDestination(for: AddGroceriesDestination.self) { destination in
                 switch destination {
-                case .addItem:
-                    AddItemSearchView(groupID: groupID, isManager: isManager)
                 case .cookingListDays:
                     CookingListDaysView(groupID: groupID, isManager: isManager, isKnownOffline: isKnownOffline, path: $path)
                 case .pickRecipes:
@@ -122,7 +140,6 @@ struct AddGroceriesSheet: View {
 /// `Codable`) is all `NavigationPath` needs — see `GroupGroceryListBuilder
 /// .Candidate`'s own doc comment for why that type also conforms.
 private enum AddGroceriesDestination: Hashable {
-    case addItem
     case cookingListDays
     case pickRecipes
     case reviewIngredients([GroupGroceryListBuilder.Candidate])
@@ -147,99 +164,6 @@ private struct AddGroceriesOptionRow: View {
             }
         }
         .padding(.vertical, 4)
-    }
-}
-
-// MARK: - "Add an Item" (search/type, name-only quick add)
-
-/// A search-styled, name-only quick add — direct port of
-/// `GroupSharedGroceryListView.quickAddField`'s own submit logic, just given
-/// its own full screen (reached from the "Add Groceries" flow) instead of
-/// living inline at the top of the main list, per Q2's "simple reskin"
-/// scope call: the shared group list has no real product-variant catalog
-/// (rating/photos/brand options) the way the reference screenshot's search
-/// results imply — building one would mean growing the group data model a
-/// concept it doesn't have today. "Add a Custom Item" below still opens the
-/// existing, more detailed `AddGroupGroceryItemSheet` (quantity/category/
-/// section) for anyone who wants more control than a bare name gives.
-private struct AddItemSearchView: View {
-    let groupID: String
-    let isManager: Bool
-
-    @Environment(\.modelContext) private var modelContext
-    @EnvironmentObject private var accountSession: AccountSession
-
-    @State private var name = ""
-    @State private var recentlyAdded: [String] = []
-    @State private var showCustomItemSheet = false
-
-    var body: some View {
-        Form {
-            Section {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField(isManager ? "Type an item name" : "Type an item to suggest", text: $name)
-                        .submitLabel(.done)
-                        .onSubmit(submit)
-                    if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button(action: submit) {
-                            Image(systemName: "arrow.up.circle.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.brandForest)
-                    }
-                }
-            } footer: {
-                Text("Press Return to add it \u{2014} keep typing to add more, one after another.")
-                    .font(.brandSubheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !recentlyAdded.isEmpty {
-                Section("Just Added") {
-                    ForEach(recentlyAdded, id: \.self) { addedName in
-                        Label(addedName.titleCasedForDisplay, systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(Color.brandForest)
-                    }
-                }
-            }
-
-            Section {
-                Button {
-                    showCustomItemSheet = true
-                } label: {
-                    Label("Add a Custom Item", systemImage: "slider.horizontal.3")
-                }
-            } footer: {
-                Text("Can't find what you're looking for, or want to set a quantity or category up front? Add a custom item instead.")
-                    .font(.brandSubheadline)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .navigationTitle("Add an Item")
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showCustomItemSheet) {
-            AddGroupGroceryItemSheet(groupID: groupID, isManager: isManager)
-        }
-    }
-
-    private func submit() {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, let currentUserID = accountSession.currentUser?.id else { return }
-        let item = GroupSharedGroceryItem(
-            id: GroupSharedGroceryItem.newLocalPlaceholderID(),
-            groupID: groupID,
-            name: trimmedName,
-            category: GroceryCategory.guess(fromIngredientName: trimmedName),
-            section: isManager ? .thisWeek : .suggested,
-            addedByUserID: currentUserID,
-            syncState: .pendingCreate
-        )
-        modelContext.insert(item)
-        try? modelContext.save()
-        recentlyAdded.insert(trimmedName, at: 0)
-        name = ""
-        Task { _ = await GroupSyncService.sync(groupID: groupID, modelContext: modelContext) }
     }
 }
 
@@ -958,9 +882,9 @@ private struct MyUsualsPickerView: View {
 // MARK: - Confirmation
 
 /// The reference screenshot's "N items added" success screen — shown after
-/// `ReviewIngredientsView`/`MyUsualsPickerView` commit (not after
-/// `AddItemSearchView`, which is a live add-as-you-go screen with no single
-/// "batch" to confirm). Wording adapts to whether these actually landed on
+/// `ReviewIngredientsView`/`MyUsualsPickerView` commit (not after "Add an
+/// Item," a single-item form with its own "Add"/"Cancel" — no batch to
+/// confirm). Wording adapts to whether these actually landed on
 /// the real list or went into the `.suggested` queue for a MANAGER to
 /// review — see this file's own top-level doc comment on why a
 /// PARTICIPANT's picks still take that second path.
