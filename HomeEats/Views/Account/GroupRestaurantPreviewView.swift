@@ -39,6 +39,22 @@ struct GroupRestaurantPreviewView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let result = searchModel.results.first {
                 foundContent(result)
+            } else if let errorMessage = searchModel.errorMessage {
+                // Direct fix for a real gap: this used to always show
+                // "Couldn't Find <name>" whenever `results` was empty,
+                // even when the actual cause was a network failure rather
+                // than a genuine no-match — `RestaurantSearchModel` has
+                // carried its own `errorMessage` for exactly this
+                // distinction all along (see `RestaurantListView`'s own
+                // use of it), this screen just never read it.
+                VStack(spacing: 16) {
+                    ContentUnavailableView(
+                        "Couldn't Load This Restaurant",
+                        systemImage: "wifi.exclamationmark",
+                        description: Text(errorMessage)
+                    )
+                    Button("Retry") { searchModel.search(name) }
+                }
             } else {
                 notFoundContent
             }

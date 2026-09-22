@@ -38,6 +38,22 @@ struct RestaurantDetailView: View {
         .navigationTitle(restaurant.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Direct fix for a real gap: the header below already shows a
+            // star for a favorited restaurant, but there was no way to
+            // actually set/unset it from this screen — only from
+            // `RestaurantEditorView`'s own toggle. Matches
+            // `RecipeDetailView`'s identical heart-toggle button, just
+            // star/yellow to match this screen's own existing favorite
+            // indicator rather than introducing a second visual language
+            // for "favorited" on the same tab.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    restaurant.isFavorite.toggle()
+                } label: {
+                    Image(systemName: restaurant.isFavorite ? "star.fill" : "star")
+                }
+                .tint(.yellow)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Edit") { showEditor = true }
             }

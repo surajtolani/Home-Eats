@@ -43,11 +43,20 @@ struct GroupRecipePreviewView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView(
-                    "Couldn't Load Recipe",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(errorMessage ?? "This recipe may no longer be available.")
-                )
+                ContentUnavailableView {
+                    Label("Couldn't Load Recipe", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(errorMessage ?? "This recipe may no longer be available.")
+                } actions: {
+                    // Direct fix for a real gap: a transient network
+                    // failure here used to be a dead end — the only way
+                    // back was leaving and re-opening this screen. Most
+                    // failures reaching this state are exactly that kind
+                    // of transient blip (see `load()`'s own error
+                    // handling), so a Retry belongs here same as any other
+                    // fetch-failed state in this app.
+                    Button("Retry") { Task { await load() } }
+                }
             }
         }
         .navigationTitle(recipe?.title ?? cachedTitle ?? "Recipe")
