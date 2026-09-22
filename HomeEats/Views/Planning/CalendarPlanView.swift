@@ -364,10 +364,16 @@ private struct DayCell: View {
                 .lineLimit(1)
                 .frame(width: 30, height: 30)
                 .background {
+                    // `Color.brandOlive` directly, not `Color.accentColor`
+                    // — same fix, same reasoning, as `GroupDayCell`'s
+                    // identical change in GroupSharedMealPlanView.swift: a
+                    // real, confirmed report of this sometimes rendering
+                    // the system default blue instead of the app's own
+                    // green.
                     if isToday {
-                        Circle().fill(Color.accentColor)
+                        Circle().fill(Color.brandOlive)
                     } else if isSelected {
-                        Circle().stroke(Color.accentColor, lineWidth: 1.5)
+                        Circle().stroke(Color.brandOlive, lineWidth: 1.5)
                     }
                 }
                 .foregroundStyle(isToday ? Color.white : (isPast ? Color.secondary : Color.primary))

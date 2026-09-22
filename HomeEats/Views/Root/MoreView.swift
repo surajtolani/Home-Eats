@@ -24,6 +24,24 @@ struct MoreView: View {
             } label: {
                 Label("My Account", systemImage: "person.crop.circle")
             }
+            // Split out from "My Account" into their own top-level rows —
+            // direct fix for a real gap: "Friends" and "Groups" used to
+            // live nested two screens deep (More -> My Account -> "Friends
+            // & Groups"), which read as account-management chores rather
+            // than the day-to-day destinations most people are actually
+            // looking for. Still the exact same `FriendsListView`/
+            // `GroupsListView` screens SettingsView used to link to — see
+            // that view's own doc comment.
+            NavigationLink {
+                GroupsListView()
+            } label: {
+                Label("My Groups", systemImage: "person.3")
+            }
+            NavigationLink {
+                FriendsListView()
+            } label: {
+                Label("My Friends", systemImage: "person.2")
+            }
             NavigationLink {
                 MealHistoryView()
             } label: {

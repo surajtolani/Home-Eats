@@ -129,23 +129,13 @@ struct SettingsView: View {
                 Text("Your account is what your friends and groups see you as. Everything you do still works fully offline — this just needs a working connection the first time, and whenever you sync with a shared group.")
             }
 
-            // Its own section, not nested under "Account" — friends and
-            // groups are what most people are actually here to use day to
-            // day, not account-management chores like signing out.
-            if accountSession.isSignedIn {
-                Section("Friends & Groups") {
-                    NavigationLink {
-                        FriendsListView()
-                    } label: {
-                        Label("Friends", systemImage: "person.2")
-                    }
-                    NavigationLink {
-                        GroupsListView()
-                    } label: {
-                        Label("Groups", systemImage: "person.3")
-                    }
-                }
-            }
+            // Friends and Groups no longer live here — direct fix for a
+            // real gap: they used to be a section nested inside "My
+            // Account," which read as an account-management chore rather
+            // than the day-to-day destination most people are actually
+            // looking for. Both are now their own top-level rows in
+            // `MoreView` ("My Groups"/"My Friends"), sibling to "My
+            // Account" rather than buried inside it.
 
             // The old "Household name" field lived here — removed as part
             // of the app-creation pivot: a *group* (with a real name of its

@@ -615,10 +615,23 @@ private struct GroupDayCell: View {
                 .lineLimit(1)
                 .frame(width: 26, height: 26)
                 .background {
+                    // `Color.brandOlive` directly, not `Color.accentColor`
+                    // — direct fix for a real, confirmed report: this
+                    // sometimes rendered the system default blue instead
+                    // of the app's own green. `accentColor` reads whatever
+                    // `.tint(...)` is in effect in the environment at this
+                    // point in the view tree, which SwiftUI doesn't always
+                    // propagate reliably into every presentation context
+                    // (a `.sheet`, in particular); `brandOlive` is the
+                    // literal named color asset `.tint(.brandOlive)` in
+                    // HomeEatsApp.swift sets as the app-wide accent in the
+                    // first place (see BrandTheme.swift's own doc comment
+                    // on it), so referencing it directly can never fall
+                    // back to anything else regardless of context.
                     if isToday {
-                        Circle().fill(Color.accentColor)
+                        Circle().fill(Color.brandOlive)
                     } else if isSelected {
-                        Circle().stroke(Color.accentColor, lineWidth: 1.5)
+                        Circle().stroke(Color.brandOlive, lineWidth: 1.5)
                     }
                 }
                 .foregroundStyle(isToday ? Color.white : (isPast ? Color.secondary : Color.primary))
