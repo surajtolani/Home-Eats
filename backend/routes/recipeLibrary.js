@@ -3,12 +3,12 @@
 // groups layer built in Phase 1. Mounted at `/recipe-library` in index.js
 // (deliberately NOT under `/recipes/*`, even though nothing here collides
 // method+path with the existing `/recipes/extract`/`/recipes/recommend` —
-// those are unrelated, unauthenticated, Claude-powered routes registered
-// directly on `app` rather than as a router, and keeping this feature's
-// auth-required CRUD+sharing API under its own distinct prefix avoids any
-// risk of the two ever being confused with each other, in code or in the
-// README). Every route here requires auth (mounted behind requireAuth in
-// index.js), same as friends/groups.
+// those are unrelated, Claude-powered routes registered directly on `app`
+// rather than as a router (also behind requireAuth, just not through this
+// router), and keeping this feature's CRUD+sharing API under its own
+// distinct prefix avoids any risk of the two ever being confused with each
+// other, in code or in the README). Every route here requires auth
+// (mounted behind requireAuth in index.js), same as friends/groups.
 "use strict";
 
 const express = require("express");
@@ -686,6 +686,47 @@ router.post("/:recipeId/publish", asyncHandler(async (req, res) => {
     data: { visibility: "PUBLIC", publishedAnonymously: parsed.data.anonymous },
   });
   res.json({ recipe: serializeRecipe(updated) });
+}));
+
+const ReportSchema = z.object({
+  reason: z.enum(["INAPPROPRIATE", "SPAM_OR_MISLEADING", "OTHER"]),
+}).strict();
+
+// POST /recipe-library/:recipeId/report
+// Body: { reason: "INAPPROPRIATE" | "SPAM_OR_MISLEADING" | "OTHER" } —
+// direct fix for a real gap: GET /recipe-library/master shows every user's
+// published recipes to every OTHER signed-in user, with no way to flag one
+// that turns out to be spam, offensive, or otherwise not what it claims to
+// be. Callable on anything the caller can actually see (`loadRecipeForViewer`
+// — the same check GET /:recipeId itself uses), not just PUBLIC recipes,
+// since a SHARED recipe from a friend/group can be just as reportable.
+// This is v1: it records the report (`RecipeReport`'s own doc comment in
+// schema.prisma) for a human to review directly against the database —
+// there's no moderation queue UI, auto-hide threshold, or notification to
+// the recipe's owner yet, all deliberately out of scope for now. Re-filing
+// is idempotent (upsert on the recipeId+reporterId unique constraint,
+// updating `reason`/`createdAt` rather than adding a second row) so one
+// user can't pad the count against a recipe they simply dislike.
+router.post("/:recipeId/report", asyncHandler(async (req, res) => {
+  const { recipe, allowed } = await loadRecipeForViewer(req.params.recipeId, req.userId);
+  if (!recipe) {
+    return res.status(404).json({ error: "Recipe not found." });
+  }
+  if (!allowed) {
+    return res.status(403).json({ error: "You don't have access to this recipe." });
+  }
+
+  const parsed = ReportSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+  }
+
+  await prisma.recipeReport.upsert({
+    where: { recipeId_reporterId: { recipeId: recipe.id, reporterId: req.userId } },
+    create: { recipeId: recipe.id, reporterId: req.userId, reason: parsed.data.reason },
+    update: { reason: parsed.data.reason, createdAt: new Date() },
+  });
+  res.status(201).json({ ok: true });
 }));
 
 module.exports = router;

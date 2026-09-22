@@ -89,9 +89,10 @@ model User {
 
   // Recipe sharing (Phase 2a) — see the Recipe/RecipeShare doc comments
   // below for the full model.
-  ownedRecipes         Recipe[]      @relation("RecipeOwner")
-  recipeSharesReceived RecipeShare[] @relation("RecipeShareUserTarget")
-  recipeSharesSent     RecipeShare[] @relation("RecipeShareSharer")
+  ownedRecipes         Recipe[]       @relation("RecipeOwner")
+  recipeSharesReceived RecipeShare[]  @relation("RecipeShareUserTarget")
+  recipeSharesSent     RecipeShare[]  @relation("RecipeShareSharer")
+  recipeReportsFiled   RecipeReport[]
 
   // Personal restaurant library — see the Restaurant model below. Unlike
   // Recipe, there is no sharing step at all yet: every restaurant is
@@ -478,6 +479,7 @@ model Recipe {
   owner       User               @relation("RecipeOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   ingredients RecipeIngredient[]
   shares      RecipeShare[]
+  reports     RecipeReport[]
 
   // Group meal planning (Phase 3) — a recipe-based PlannedMeal/
   // MealSuggestion references back to the same Recipe row it was decided/
@@ -544,6 +546,39 @@ model RecipeShare {
   @@unique([recipeId, sharedWithGroupId])
   @@index([sharedWithUserId])
   @@index([sharedWithGroupId])
+}
+
+// A flag on a recipe, filed by a signed-in user — direct fix for a real
+// gap: `GET /recipe-library/master` (RecipeVisibility.PUBLIC) shows every
+// user's published recipes to every OTHER signed-in user, with nothing to
+// do if one turns out to be spam, offensive, or otherwise not what it
+// claims to be. `reason` is one of `RecipeReportReason` below, free text is
+// deliberately not offered (nothing here parses it) to keep this simple:
+// this exists to flag a recipe for a human to look at
+// (`SELECT * FROM "RecipeReport"` for now — there's no admin review UI
+// yet, this is v1: capture the signal, not act on it automatically), not
+// to build a moderation queue UI. `@@unique([recipeId, reporterId])` makes
+// filing a second report for the same recipe idempotent (upsert, not a
+// duplicate row) rather than letting one user pad the count against a
+// recipe they dislike.
+model RecipeReport {
+  id         String             @id @default(uuid())
+  recipeId   String
+  reporterId String
+  reason     RecipeReportReason
+  createdAt  DateTime           @default(now())
+
+  recipe   Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  reporter User   @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@unique([recipeId, reporterId])
+  @@index([recipeId])
+}
+
+enum RecipeReportReason {
+  INAPPROPRIATE
+  SPAM_OR_MISLEADING
+  OTHER
 }
 
 // A user's personal restaurant library — the backend counterpart of the

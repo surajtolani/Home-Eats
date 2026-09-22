@@ -1010,6 +1010,9 @@ private struct LibraryRecipeDetailView: View {
                     }
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                ReportRecipeButton(recipeID: entry.recipeID)
+            }
         }
     }
 }
@@ -1113,6 +1116,9 @@ private struct SharedRecipeDetailView: View {
                         onSave()
                     }
                 }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                ReportRecipeButton(recipeID: entry.recipeID)
             }
         }
     }

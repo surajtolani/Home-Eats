@@ -966,6 +966,36 @@ extension AccountsAPIClient {
     static func publishRecipeToLibrary(id recipeID: String, anonymous: Bool) async throws {
         try await sendNoContent("POST", path: "recipe-library/\(recipeID)/publish", body: ["anonymous": anonymous])
     }
+
+    /// Flags a recipe for a human to review — direct fix for a real gap:
+    /// anyone signed in can see any published-to-the-library (or
+    /// shared-with-them) recipe with no way to flag one that's spam,
+    /// offensive, or otherwise not what it claims to be. Callable on
+    /// anything the caller can already view, matching the backend's own
+    /// `loadRecipeForViewer` check — not just Library entries. Re-filing on
+    /// the same recipe is idempotent server-side (see the route's own doc
+    /// comment in routes/recipeLibrary.js), so this never needs to check
+    /// "have I already reported this" before calling.
+    static func reportRecipe(id recipeID: String, reason: RecipeReportReason) async throws {
+        try await sendNoContent("POST", path: "recipe-library/\(recipeID)/report", body: ["reason": reason.rawValue])
+    }
+}
+
+/// Mirrors `RecipeReportReason` in backend/prisma/schema.prisma exactly —
+/// used by `AccountsAPIClient.reportRecipe(id:reason:)`.
+enum RecipeReportReason: String {
+    case inappropriate = "INAPPROPRIATE"
+    case spamOrMisleading = "SPAM_OR_MISLEADING"
+    case other = "OTHER"
+
+    /// Shown in the report confirmation dialog (`ReportRecipeButton`).
+    var displayName: String {
+        switch self {
+        case .inappropriate: return "Inappropriate content"
+        case .spamOrMisleading: return "Spam or misleading"
+        case .other: return "Other"
+        }
+    }
 }
 
 // MARK: - Personal restaurant library (routes/restaurants.js, mounted at

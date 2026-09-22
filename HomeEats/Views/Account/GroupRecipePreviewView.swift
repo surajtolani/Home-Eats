@@ -125,6 +125,9 @@ struct GroupRecipePreviewView: View {
                     Button("Save to My Recipes") { save(recipe) }
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                ReportRecipeButton(recipeID: recipeID)
+            }
         }
     }
 
