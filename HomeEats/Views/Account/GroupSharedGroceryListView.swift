@@ -661,6 +661,29 @@ struct GroupSharedGroceryListView: View {
     private var myLayoutSections: some View {
         let unassigned = purchasableItems.filter { resolvedAisleID(for: $0) == nil }.sorted(by: orderIndexIsBefore)
 
+        // Direct fix for a real gap: a brand-new group's "My Layout" is
+        // deliberately empty (see this view's own top-level doc comment on
+        // why), but the ONLY way to learn that setting up sections is even
+        // possible used to be a line of footer text below pointing at "the
+        // toggle row's own menu" — easy to miss entirely, since nothing
+        // about this screen otherwise hints that menu has anything to do
+        // with sections. A direct, tappable prompt right where the empty
+        // section itself would be reads as an actual call to action
+        // instead of a buried setting.
+        if visibleAisles.isEmpty {
+            Section {
+                Button {
+                    showAislesManager = true
+                } label: {
+                    Label("Set Up Your Own Sections", systemImage: "square.grid.2x2")
+                }
+            } footer: {
+                Text("Group items the way your store is laid out — produce, dairy, whatever makes sense for you.")
+                    .font(.brandSubheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
         if !unassigned.isEmpty {
             Section {
                 ForEach(unassigned) { item in
