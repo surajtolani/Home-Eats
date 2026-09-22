@@ -3,6 +3,13 @@ import SwiftData
 import MapKit
 import CoreLocation
 
+enum RestaurantSortOption: String, CaseIterable, Identifiable {
+    case name = "Name (A–Z)"
+    case rating = "Rating"
+    case recentlyAdded = "Recently Added"
+    var id: String { rawValue }
+}
+
 struct RestaurantListView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var accountSession: AccountSession
@@ -17,6 +24,7 @@ struct RestaurantListView: View {
     /// cuisines" design this backs.
     @State private var selectedMetroAreas: Set<String> = []
     @State private var selectedCuisines: Set<String> = []
+    @State private var sortOption: RestaurantSortOption = .name
     /// Direct user report: deleting a restaurant that was already decided
     /// into a (possibly shared/group) meal plan used to silently leave
     /// that plan entry broken — see `CascadeCleanup`'s own doc comment.
@@ -78,15 +86,40 @@ struct RestaurantListView: View {
         }
     }
 
+    /// Orders restaurants *within* one metro-area group per `sortOption` —
+    /// direct fix for a real gap: there was previously no way to sort at
+    /// all besides the fixed alphabetical order groups always used. A
+    /// `nil` rating (unrated) always sorts last under `.rating`, same
+    /// "unknown sorts to the bottom, not the top" convention as
+    /// `sortedWithOtherLast`'s own "Other" handling just above.
+    private func sorted(_ restaurants: [Restaurant]) -> [Restaurant] {
+        switch sortOption {
+        case .name:
+            return restaurants.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .rating:
+            return restaurants.sorted { lhs, rhs in
+                switch (lhs.rating, rhs.rating) {
+                case let (l?, r?): return l > r
+                case (nil, nil): return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                case (nil, _): return false
+                case (_, nil): return true
+                }
+            }
+        case .recentlyAdded:
+            return restaurants.sorted { $0.createdAt > $1.createdAt }
+        }
+    }
+
     /// `filteredRestaurants` grouped into metro-area sections, sorted
     /// alphabetically with "Other" (no derivable metro area — see
     /// `Restaurant.metroArea`'s own doc comment) always last. Direct user
     /// request: "can we sort this by metro area and it should
-    /// automatically get categorized as such."
+    /// automatically get categorized as such." — `sortOption` (see
+    /// `sorted(_:)` above) only decides the order *within* each area.
     private var groupedByMetroArea: [(area: String, restaurants: [Restaurant])] {
         let groups = Dictionary(grouping: filteredRestaurants) { $0.metroArea ?? Self.otherLabel }
         return sortedWithOtherLast(Set(groups.keys)).map { area in
-            (area: area, restaurants: (groups[area] ?? []).sorted { $0.name < $1.name })
+            (area: area, restaurants: sorted(groups[area] ?? []))
         }
     }
 
@@ -147,6 +180,9 @@ struct RestaurantListView: View {
     var body: some View {
         VStack(spacing: 0) {
             searchFieldRow
+            if !isSearchActive {
+                filterSortRow
+            }
             List {
                 if isSearchActive {
                     searchResultsSection
@@ -209,18 +245,6 @@ struct RestaurantListView: View {
                     Image(systemName: "checkmark.circle.trianglebadge.exclamationmark")
                 }
                 .accessibilityLabel("Find Duplicate Restaurants")
-            }
-            // Direct user request: "let's add a filter button where you
-            // can 'show all', select metro areas or select/unselect
-            // cuisines." Filled when a filter is actually active so it
-            // reads as a status, not just an action.
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showFilterSheet = true
-                } label: {
-                    Image(systemName: isFiltering ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                }
-                .accessibilityLabel("Filter Restaurants")
             }
         }
         .sheet(isPresented: $showEditor) {
@@ -311,6 +335,37 @@ struct RestaurantListView: View {
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal)
         .padding(.vertical, 8)
+    }
+
+    /// Filter (metro area/cuisine, multi-select) and Sort, directly below
+    /// the search bar — moved here from a toolbar icon (Filter used to be
+    /// its own `ToolbarItem`), same reasoning as `RecipesHomeView`'s
+    /// identical row: a filter/sort control is about *this screen's list*,
+    /// not a navigation-bar-level action. Hidden while actively searching
+    /// (`isSearchActive`) — filtering/sorting the saved library doesn't
+    /// apply to live search results, which have their own separate
+    /// `searchResultsSection`.
+    private var filterSortRow: some View {
+        HStack(spacing: 8) {
+            Button {
+                showFilterSheet = true
+            } label: {
+                Label("Filter", systemImage: isFiltering ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+            }
+            Spacer()
+            Menu {
+                Picker("Sort", selection: $sortOption) {
+                    ForEach(RestaurantSortOption.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+            } label: {
+                Label(sortOption.rawValue, systemImage: "arrow.up.arrow.down")
+            }
+        }
+        .font(.brandSubheadline)
+        .padding(.horizontal)
+        .padding(.bottom, 8)
     }
 
     /// The `MediaTileRow`-based row for a saved restaurant — direct user

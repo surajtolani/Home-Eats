@@ -16,6 +16,21 @@ struct RecipesHomeView: View {
     @State private var showRecommendSheet = false
     @State private var quickAddRecipe: Recipe?
     @State private var showDuplicates = false
+    /// Backs the filter/sort row below the search bar — direct fix for a
+    /// real gap: the Recipe Library mixed built-in/community recipes with
+    /// no way to narrow them down by meal type or cuisine, and no sort
+    /// besides the fixed default ranking. `showTaxonomyFilterSheet` reuses
+    /// `RecipeTaxonomySheet` unchanged (same multi-select course/cuisine
+    /// picker `RecipeEditorView` already uses when adding a recipe — direct
+    /// user request to reuse it here rather than building a second,
+    /// parallel picker) — passing empty `title`/`ingredientNames` so its
+    /// own auto-guess-a-cuisine step (which only matters when adding a
+    /// single new recipe) simply has nothing to guess from and never fires
+    /// unexpectedly here.
+    @State private var showTaxonomyFilterSheet = false
+    @State private var filterCourses: Set<String> = []
+    @State private var filterCuisines: Set<String> = []
+    @State private var sortOption: RecipeSortOption = .recommended
     /// Direct user report: deleting a recipe that was already decided into
     /// a (possibly shared/group) meal plan used to silently leave that
     /// plan entry broken ("Planned"/"by Someone" — see
@@ -79,6 +94,13 @@ struct RecipesHomeView: View {
         case favorites = "Favorites"
         case library = "Library"
         case shared = "Shared"
+        var id: String { rawValue }
+    }
+
+    enum RecipeSortOption: String, CaseIterable, Identifiable {
+        case recommended = "Recommended"
+        case nameAZ = "Name (A–Z)"
+        case recentlyAdded = "Recently Added"
         var id: String { rawValue }
     }
 
@@ -159,11 +181,49 @@ struct RecipesHomeView: View {
         .padding(.vertical, 8)
     }
 
+    /// Filter (meal type/cuisine, multi-select) and Sort, directly below
+    /// the search bar — direct fix for a real gap: the Recipe Library mixed
+    /// built-in/community recipes with no way to narrow them down at all,
+    /// and no sort besides a fixed default ranking. Placed as its own row
+    /// rather than in the toolbar, matching `RestaurantListView`'s
+    /// identical row (moved there from a toolbar icon for the same
+    /// reason — a filter/sort control is about *this screen's list*, not a
+    /// navigation-bar-level action).
+    private var filterSortRow: some View {
+        HStack(spacing: 8) {
+            Button {
+                showTaxonomyFilterSheet = true
+            } label: {
+                Label(
+                    "Filter",
+                    systemImage: isFilteringRecipes ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle"
+                )
+            }
+            Spacer()
+            Menu {
+                Picker("Sort", selection: $sortOption) {
+                    ForEach(RecipeSortOption.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+            } label: {
+                Label(sortOption.rawValue, systemImage: "arrow.up.arrow.down")
+            }
+        }
+        .font(.brandSubheadline)
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+
     private var myRecipes: [Recipe] {
         allRecipes.filter { $0.source != .library || $0.isSavedToCollection }
     }
     private var libraryRecipes: [Recipe] {
         allRecipes.filter { $0.source == .library && !$0.isSavedToCollection }
+    }
+
+    private var isFilteringRecipes: Bool {
+        !filterCourses.isEmpty || !filterCuisines.isEmpty
     }
 
     private var displayedRecipes: [Recipe] {
@@ -177,10 +237,24 @@ struct RecipesHomeView: View {
         if !searchText.isEmpty {
             base = base.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
         }
-        // Library stays alphabetical (its own @Query sort); "mine" and
-        // "favorites" are both really views onto the same recipes, so both
-        // get the same recency-weighted ranking.
-        return section == .library ? base : RecommendationEngine.rank(recipes: base, history: history)
+        if !filterCourses.isEmpty {
+            base = base.filter { !Set($0.mealCourses).isDisjoint(with: filterCourses) }
+        }
+        if !filterCuisines.isEmpty {
+            base = base.filter { !Set($0.cuisines).isDisjoint(with: filterCuisines) }
+        }
+        switch sortOption {
+        case .recommended:
+            // Library stays alphabetical (its own @Query sort) even under
+            // "Recommended" — the ranking is a "mine"/"favorites" concept
+            // (weighted by your own meal history), meaningless for recipes
+            // nobody here has ever cooked.
+            return section == .library ? base : RecommendationEngine.rank(recipes: base, history: history)
+        case .nameAZ:
+            return base.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .recentlyAdded:
+            return base.sorted { $0.createdAt > $1.createdAt }
+        }
     }
 
     var body: some View {
@@ -194,16 +268,34 @@ struct RecipesHomeView: View {
 
             searchFieldRow
 
+            if section != .shared {
+                filterSortRow
+            }
+
             List {
                 if section == .shared {
                     sharedSectionContent
                 } else {
                     if displayedRecipes.isEmpty {
-                        ContentUnavailableView(
-                            emptyStateTitle,
-                            systemImage: section == .favorites ? "heart" : "book.closed",
-                            description: Text(emptyStateDescription)
-                        )
+                        // Direct fix for a real gap: filtering (or
+                        // searching) a section down to zero matches used
+                        // to show the exact same "add your first recipe"
+                        // empty state as a genuinely empty section — same
+                        // "No Matches" distinction `RestaurantListView`'s
+                        // own filter already makes.
+                        if sectionHasAnyRecipes {
+                            ContentUnavailableView(
+                                "No Matches",
+                                systemImage: "line.3.horizontal.decrease.circle",
+                                description: Text("No recipes match the current filter or search.")
+                            )
+                        } else {
+                            ContentUnavailableView(
+                                emptyStateTitle,
+                                systemImage: section == .favorites ? "heart" : "book.closed",
+                                description: Text(emptyStateDescription)
+                            )
+                        }
                     }
                     if section == .library {
                         ForEach(displayedRecipes) { recipe in
@@ -274,6 +366,14 @@ struct RecipesHomeView: View {
         }
         .sheet(isPresented: $showImportSheet) {
             RecipeImportView()
+        }
+        .sheet(isPresented: $showTaxonomyFilterSheet) {
+            RecipeTaxonomySheet(
+                selectedCourses: $filterCourses,
+                selectedCuisines: $filterCuisines,
+                title: "",
+                ingredientNames: []
+            )
         }
         .sheet(item: $quickAddRecipe) { recipe in
             QuickAddToPlanSheet(recipe: recipe)
@@ -713,6 +813,15 @@ struct RecipesHomeView: View {
             } catch {
                 publishErrorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private var sectionHasAnyRecipes: Bool {
+        switch section {
+        case .mine: return !myRecipes.isEmpty
+        case .favorites: return !myRecipes.filter { $0.isFavorite }.isEmpty
+        case .library: return !libraryRecipes.isEmpty
+        case .shared: return true // Unused — `.shared` never reaches this branch.
         }
     }
 
