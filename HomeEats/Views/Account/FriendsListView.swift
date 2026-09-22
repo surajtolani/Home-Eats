@@ -153,7 +153,18 @@ struct FriendsListView: View {
 
     private func incomingRequestRow(_ request: IncomingFriendRequest) -> some View {
         HStack {
-            Text(request.from.displayNameOrPhoneNumber)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(request.from.displayNameOrPhoneNumber)
+                // Direct fix for a real gap: a plain "be my friend"
+                // request and one that also invites you into a group used
+                // to render identically here — see `IncomingFriendRequest
+                // .linkedGroupName`'s own doc comment.
+                if let linkedGroupName = request.linkedGroupName {
+                    Text("Invites you to \(linkedGroupName)")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer()
             Button("Accept") { Task { await respond(to: request.friendshipID, accept: true) } }
                 .buttonStyle(.borderedProminent)

@@ -371,12 +371,45 @@ async function loadFriendshipsFor(userId) {
   const incomingRequests = [];
   const outgoingRequests = [];
 
+  // Which incoming requests are actually tied to a group invite, and which
+  // are a plain "be my friend" ask — direct fix for a real gap: the same
+  // `Invite` a group invite creates ALSO just sends a friend request (see
+  // `resolveInvitesForAcceptedFriendship` above and its own doc comment),
+  // and until now the client had no way to tell the two apart — every
+  // incoming request rendered identically, even though only a group-linked
+  // one actually adds the accepter to a group. An `Invite` isn't a direct
+  // foreign key on `Friendship` (they're only correlated later, by
+  // requester + phone number, at accept time — same query
+  // `resolveInvitesForAcceptedFriendship` itself uses), so this mirrors
+  // that correlation here purely for display: one query for every PENDING,
+  // group-linked Invite addressed to this user's own phone number, mapped
+  // by whoever sent it.
+  const linkedGroupNameByRequesterId = new Map();
+  if (rows.some((row) => row.status === "PENDING" && row.recipientId === userId)) {
+    const me = await prisma.user.findUnique({ where: { id: userId }, select: { phoneNumber: true } });
+    if (me?.phoneNumber) {
+      const groupInvites = await prisma.invite.findMany({
+        where: { invitedPhoneNumber: me.phoneNumber, status: "PENDING", groupId: { not: null } },
+        include: { group: true },
+      });
+      for (const invite of groupInvites) {
+        if (invite.group && !linkedGroupNameByRequesterId.has(invite.invitingUserId)) {
+          linkedGroupNameByRequesterId.set(invite.invitingUserId, invite.group.name);
+        }
+      }
+    }
+  }
+
   for (const row of rows) {
     const other = row.requesterId === userId ? row.recipient : row.requester;
     if (row.status === "ACCEPTED") {
       friends.push(publicUser(other));
     } else if (row.status === "PENDING" && row.recipientId === userId) {
-      incomingRequests.push({ friendshipId: row.id, from: publicUser(other) });
+      incomingRequests.push({
+        friendshipId: row.id,
+        from: publicUser(other),
+        linkedGroupName: linkedGroupNameByRequesterId.get(row.requesterId) ?? null,
+      });
     } else if (row.status === "PENDING" && row.requesterId === userId) {
       outgoingRequests.push({ friendshipId: row.id, to: publicUser(other) });
     }

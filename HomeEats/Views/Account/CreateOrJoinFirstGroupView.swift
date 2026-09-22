@@ -93,7 +93,17 @@ struct CreateOrJoinFirstGroupView: View {
                         } header: {
                             Text("Waiting For You")
                         } footer: {
-                            Text("Accepting a request that was sent as part of a group invite adds you to that group right away.")
+                            // No longer an unconditional claim about every
+                            // row in this section — direct fix for a real
+                            // gap: a friend request sent as part of a
+                            // group invite and a plain "be my friend"
+                            // request look identical here, but only the
+                            // former actually adds you to a group on
+                            // accept. Each row now says so itself
+                            // (`incomingRequestRow`'s own caption) when
+                            // true; this footer just explains what that
+                            // per-row label means.
+                            Text("A request that names a group adds you to it right away when accepted.")
                         }
                     }
 
@@ -136,7 +146,18 @@ struct CreateOrJoinFirstGroupView: View {
 
     private func incomingRequestRow(_ request: IncomingFriendRequest) -> some View {
         HStack {
-            Text(request.from.displayNameOrPhoneNumber)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(request.from.displayNameOrPhoneNumber)
+                // Direct fix for a real gap: without this, a plain "be my
+                // friend" request and one that also invites you into a
+                // group rendered identically — see `IncomingFriendRequest
+                // .linkedGroupName`'s own doc comment.
+                if let linkedGroupName = request.linkedGroupName {
+                    Text("Invites you to \(linkedGroupName)")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer()
             if respondingToID == request.friendshipID {
                 ProgressView()

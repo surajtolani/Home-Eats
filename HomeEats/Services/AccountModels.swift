@@ -121,11 +121,21 @@ struct PublicUser: Codable, Identifiable, Equatable, Hashable {
 struct IncomingFriendRequest: Codable, Identifiable {
     let friendshipID: String
     let from: PublicUser
+    /// The group this request was sent as part of an invite for, or `nil`
+    /// for a plain "be my friend" request with no group attached. A group
+    /// invite (`GroupDetailView`'s "Invite" sheet) sends a friend request
+    /// under the hood — see `Invite`'s own doc comment in schema.prisma —
+    /// so an incoming request here can genuinely be either kind, and
+    /// accepting one only "adds you to a group right away" (the promise
+    /// `CreateOrJoinFirstGroupView`/`FriendsListView` used to make about
+    /// EVERY incoming request, unconditionally) when this is non-nil.
+    let linkedGroupName: String?
     var id: String { friendshipID }
 
     enum CodingKeys: String, CodingKey {
         case friendshipID = "friendshipId"
         case from
+        case linkedGroupName
     }
 }
 
