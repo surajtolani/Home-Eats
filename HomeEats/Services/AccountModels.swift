@@ -829,6 +829,12 @@ struct RemotePlannedMeal: Codable, Identifiable {
     let restaurantName: String?
     let isOrderIn: Bool
     let decidedByUserID: String
+    /// The decider's display name, denormalized straight off the `User`
+    /// row rather than resolved from the group's current member list — see
+    /// `GroupPlannedMeal.decidedByDisplayName`'s own doc comment for why
+    /// that distinction matters (a departed member's name still needs to
+    /// show correctly). `nil` only from a backend predating this field.
+    let decidedByDisplayName: String?
     let decidedAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -836,6 +842,7 @@ struct RemotePlannedMeal: Codable, Identifiable {
         case groupID = "groupId"
         case recipeID = "recipeId"
         case decidedByUserID = "decidedByUserId"
+        case decidedByDisplayName
     }
 }
 
@@ -891,6 +898,10 @@ struct RemoteMealSuggestion: Codable, Identifiable {
     let restaurantName: String?
     let isOrderIn: Bool
     let proposedByUserID: String
+    /// Same "denormalized, not resolved from the current member list"
+    /// fix, same reasoning, as `RemotePlannedMeal.decidedByDisplayName` —
+    /// see `GroupMealSuggestion.proposedByDisplayName`'s own doc comment.
+    let proposedByDisplayName: String?
     let createdAt: Date
     let upvoteCount: Int
     let downvoteCount: Int
@@ -902,6 +913,7 @@ struct RemoteMealSuggestion: Codable, Identifiable {
         case groupID = "groupId"
         case recipeID = "recipeId"
         case proposedByUserID = "proposedByUserId"
+        case proposedByDisplayName
     }
 
     /// Custom rather than synthesized only for `voters`, which
@@ -920,6 +932,7 @@ struct RemoteMealSuggestion: Codable, Identifiable {
         restaurantName = try container.decodeIfPresent(String.self, forKey: .restaurantName)
         isOrderIn = try container.decode(Bool.self, forKey: .isOrderIn)
         proposedByUserID = try container.decode(String.self, forKey: .proposedByUserID)
+        proposedByDisplayName = try container.decodeIfPresent(String.self, forKey: .proposedByDisplayName)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         upvoteCount = try container.decode(Int.self, forKey: .upvoteCount)
         downvoteCount = try container.decode(Int.self, forKey: .downvoteCount)

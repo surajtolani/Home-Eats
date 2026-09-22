@@ -948,8 +948,21 @@ struct GroupDaySlotsView: View {
             .sorted { $0.createdAt < $1.createdAt }
     }
 
-    private func memberName(_ userID: String) -> String {
-        group?.members.first(where: { $0.id == userID })?.displayNameOrPhoneNumber ?? "Someone"
+    /// Prefers the live member list (reflects a recent name change), falls
+    /// back to `cachedDisplayName` — the denormalized name a `PlannedMeal`/
+    /// `MealSuggestion` carries on its own (`GroupPlannedMeal
+    /// .decidedByDisplayName`/`GroupMealSuggestion.proposedByDisplayName`)
+    /// — when `userID` isn't (or is no longer) in `group.members`, and only
+    /// falls all the way back to "Someone" when neither is available (a row
+    /// pulled before that denormalized field existed on the backend, from
+    /// someone who's since left). Direct fix for a real gap: this used to
+    /// only ever check the live list, so a departed member's own
+    /// contribution read as anonymized even though the data itself was
+    /// never actually deleted.
+    private func memberName(_ userID: String, cachedDisplayName: String? = nil) -> String {
+        group?.members.first(where: { $0.id == userID })?.displayNameOrPhoneNumber
+            ?? cachedDisplayName
+            ?? "Someone"
     }
 
     /// One single "Add Another Meal" entry point for the whole day, not one
@@ -1133,7 +1146,9 @@ struct GroupDaySlotsView: View {
             // to live without that particular conflict.
             ForEach(meals(for: slot)) { meal in
                 GroupPlannedMealRow(
-                    meal: meal, memberName: memberName(meal.decidedByUserID), isManager: isManager,
+                    meal: meal,
+                    memberName: memberName(meal.decidedByUserID, cachedDisplayName: meal.decidedByDisplayName),
+                    isManager: isManager,
                     pushedTarget: $pushedTarget,
                     onRemove: { removePlannedMeal(meal) }
                 )
@@ -1141,7 +1156,8 @@ struct GroupDaySlotsView: View {
             }
             ForEach(suggestions(for: slot)) { suggestion in
                 GroupSuggestionRow(
-                    suggestion: suggestion, proposerName: memberName(suggestion.proposedByUserID),
+                    suggestion: suggestion,
+                    proposerName: memberName(suggestion.proposedByUserID, cachedDisplayName: suggestion.proposedByDisplayName),
                     isManager: isManager,
                     canRemove: isManager || suggestion.proposedByUserID == currentUserID,
                     isKnownOffline: isKnownOffline,

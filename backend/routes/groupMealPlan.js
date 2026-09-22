@@ -81,6 +81,21 @@ async function recipeVisibleToUser(recipeId, userId) {
   return Boolean(groupShare);
 }
 
+// `decidedByDisplayName` — direct fix for a real gap: a member who later
+// leaves (or is removed from) the group stops appearing in
+// `GET /groups/:groupId`'s own `members` list, but their already-decided
+// meals and suggestions were never deleted (no cascade exists from
+// GroupMembership to PlannedMeal/MealSuggestion — leaving a group only
+// removes that join-table row). The iOS client used to resolve "who
+// decided this" purely by looking the id up in the CURRENT member list,
+// which fell back to a generic "Someone" for anyone no longer in it —
+// reading as if their contribution had been anonymized, even though the
+// underlying data was intact the whole time. Denormalizing the display
+// name here (same reasoning `voters` below already uses for a vote's
+// name) means a departed member's name keeps showing correctly
+// regardless of whether they're still a member. Every caller passing a
+// `meal` here must `include: { decidedByUser: { select: { displayName:
+// true } } }` — see the query sites below.
 function serializePlannedMeal(meal) {
   return {
     id: meal.id,
@@ -91,6 +106,7 @@ function serializePlannedMeal(meal) {
     restaurantName: meal.restaurantName,
     isOrderIn: meal.isOrderIn,
     decidedByUserId: meal.decidedByUserId,
+    decidedByDisplayName: meal.decidedByUser?.displayName ?? null,
     decidedAt: meal.decidedAt,
   };
 }
@@ -135,6 +151,12 @@ function serializeSuggestion(suggestion, viewerUserId) {
     restaurantName: suggestion.restaurantName,
     isOrderIn: suggestion.isOrderIn,
     proposedByUserId: suggestion.proposedByUserId,
+    // Same "keep showing the real name even after they leave the group"
+    // fix, same reasoning, as `serializePlannedMeal`'s own
+    // `decidedByDisplayName` above. Every caller passing a `suggestion`
+    // here must `include: { proposedByUser: { select: { displayName:
+    // true } } }` — see the query sites below.
+    proposedByDisplayName: suggestion.proposedByUser?.displayName ?? null,
     createdAt: suggestion.createdAt,
     upvoteCount: suggestion.votes.filter((vote) => vote.direction === "UP").length,
     downvoteCount: suggestion.votes.filter((vote) => vote.direction === "DOWN").length,
@@ -192,11 +214,15 @@ router.get("/", asyncHandler(async (req, res) => {
   const [plannedMeals, suggestions] = await Promise.all([
     prisma.plannedMeal.findMany({
       where: { groupId: req.params.groupId },
+      include: { decidedByUser: { select: { displayName: true } } },
       orderBy: { date: "asc" },
     }),
     prisma.mealSuggestion.findMany({
       where: { groupId: req.params.groupId },
-      include: { votes: { include: { user: { select: { id: true, displayName: true } } } } },
+      include: {
+        proposedByUser: { select: { displayName: true } },
+        votes: { include: { user: { select: { id: true, displayName: true } } } },
+      },
       orderBy: { date: "asc" },
     }),
   ]);
@@ -232,6 +258,7 @@ router.post("/", asyncHandler(async (req, res) => {
       isOrderIn: data.recipeId ? false : data.isOrderIn,
       decidedByUserId: req.userId,
     },
+    include: { decidedByUser: { select: { displayName: true } } },
   });
 
   res.status(201).json({ plannedMeal: serializePlannedMeal(meal) });
@@ -280,7 +307,10 @@ router.post("/suggestions", asyncHandler(async (req, res) => {
       // specifies a direction explicitly instead of relying on it).
       votes: { create: [{ userId: req.userId, direction: "UP" }] },
     },
-    include: { votes: { include: { user: { select: { id: true, displayName: true } } } } },
+    include: {
+      proposedByUser: { select: { displayName: true } },
+      votes: { include: { user: { select: { id: true, displayName: true } } } },
+    },
   });
 
   res.status(201).json({ suggestion: serializeSuggestion(suggestion, req.userId) });
@@ -339,7 +369,10 @@ router.post("/suggestions/:id/vote", asyncHandler(async (req, res) => {
 
   const updated = await prisma.mealSuggestion.findUnique({
     where: { id: suggestion.id },
-    include: { votes: { include: { user: { select: { id: true, displayName: true } } } } },
+    include: {
+      proposedByUser: { select: { displayName: true } },
+      votes: { include: { user: { select: { id: true, displayName: true } } } },
+    },
   });
   res.json({ suggestion: serializeSuggestion(updated, req.userId) });
 }));
@@ -372,6 +405,7 @@ router.post("/suggestions/:id/adopt", asyncHandler(async (req, res) => {
         isOrderIn: suggestion.isOrderIn,
         decidedByUserId: req.userId,
       },
+      include: { decidedByUser: { select: { displayName: true } } },
     });
     await tx.mealSuggestion.delete({ where: { id: suggestion.id } });
     return created;

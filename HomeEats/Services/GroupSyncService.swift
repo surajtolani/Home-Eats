@@ -364,6 +364,7 @@ enum GroupSyncService {
                     }
                     row.id = created.id
                     row.decidedByUserID = created.decidedByUserID
+                    row.decidedByDisplayName = created.decidedByDisplayName
                     row.decidedAt = created.decidedAt
                     row.serverUpdatedAt = created.decidedAt
                     row.syncState = .synced
@@ -417,6 +418,7 @@ enum GroupSyncService {
                         continue
                     }
                     row.id = created.id
+                    row.proposedByDisplayName = created.proposedByDisplayName
                     row.createdAt = created.createdAt
                     row.myVote = created.myVote
                     row.lastKnownServerVote = created.myVote
@@ -706,6 +708,7 @@ enum GroupSyncService {
                 existing.restaurantName = remoteMeal.restaurantName
                 existing.isOrderIn = remoteMeal.isOrderIn
                 existing.decidedByUserID = remoteMeal.decidedByUserID
+                existing.decidedByDisplayName = remoteMeal.decidedByDisplayName
                 existing.decidedAt = remoteMeal.decidedAt
                 existing.syncState = .synced
                 existing.serverUpdatedAt = remoteMeal.decidedAt
@@ -713,7 +716,8 @@ enum GroupSyncService {
                 modelContext.insert(GroupPlannedMeal(
                     id: remoteMeal.id, groupID: groupID, date: remoteMeal.date, slot: remoteMeal.slot.localSlot,
                     recipeID: remoteMeal.recipeID, cachedRecipeTitle: title, restaurantName: remoteMeal.restaurantName,
-                    isOrderIn: remoteMeal.isOrderIn, decidedByUserID: remoteMeal.decidedByUserID, decidedAt: remoteMeal.decidedAt,
+                    isOrderIn: remoteMeal.isOrderIn, decidedByUserID: remoteMeal.decidedByUserID,
+                    decidedByDisplayName: remoteMeal.decidedByDisplayName, decidedAt: remoteMeal.decidedAt,
                     syncState: .synced, serverUpdatedAt: remoteMeal.decidedAt
                 ))
             }
@@ -757,6 +761,7 @@ enum GroupSyncService {
                 existing.restaurantName = remoteSuggestion.restaurantName
                 existing.isOrderIn = remoteSuggestion.isOrderIn
                 existing.proposedByUserID = remoteSuggestion.proposedByUserID
+                existing.proposedByDisplayName = remoteSuggestion.proposedByDisplayName
                 existing.createdAt = remoteSuggestion.createdAt
                 existing.myVote = remoteSuggestion.myVote
                 existing.lastKnownServerVote = remoteSuggestion.myVote
@@ -769,6 +774,7 @@ enum GroupSyncService {
                     id: remoteSuggestion.id, groupID: groupID, date: remoteSuggestion.date, slot: remoteSuggestion.slot.localSlot,
                     recipeID: remoteSuggestion.recipeID, cachedRecipeTitle: title, restaurantName: remoteSuggestion.restaurantName,
                     isOrderIn: remoteSuggestion.isOrderIn, proposedByUserID: remoteSuggestion.proposedByUserID,
+                    proposedByDisplayName: remoteSuggestion.proposedByDisplayName,
                     createdAt: remoteSuggestion.createdAt, myVote: remoteSuggestion.myVote,
                     upvoteCount: remoteSuggestion.upvoteCount, downvoteCount: remoteSuggestion.downvoteCount,
                     voters: remoteSuggestion.voters, lastKnownServerVote: remoteSuggestion.myVote, syncState: .synced

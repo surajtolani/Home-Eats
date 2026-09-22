@@ -64,6 +64,19 @@ final class GroupPlannedMeal {
     var restaurantName: String?
     var isOrderIn: Bool
     var decidedByUserID: String
+    /// The decider's display name at the time this row was last pulled —
+    /// direct fix for a real gap: a decider who later leaves (or is
+    /// removed from) the group stops appearing in `GET /groups/:groupId`'s
+    /// own `members` list, but this row is never deleted (leaving a group
+    /// only removes the join-table row, not their already-decided meals —
+    /// see `serializePlannedMeal`'s own doc comment in
+    /// routes/groupMealPlan.js). Resolving "who decided this" purely by
+    /// looking `decidedByUserID` up in the CURRENT member list used to fall
+    /// back to a generic "Someone" for anyone no longer in it. `nil` only
+    /// for a row pulled before this field existed on the backend — falls
+    /// back to the same member-list lookup in that case (see
+    /// `GroupSharedMealPlanView.memberName(_:)`).
+    var decidedByDisplayName: String?
     var decidedAt: Date
     /// This row's sync-tracking state — see `GroupSyncState`'s own doc
     /// comment for the full push/pull/reconcile design. Never
@@ -90,6 +103,7 @@ final class GroupPlannedMeal {
         restaurantName: String? = nil,
         isOrderIn: Bool = false,
         decidedByUserID: String,
+        decidedByDisplayName: String? = nil,
         decidedAt: Date = .now,
         syncState: GroupSyncState = .synced,
         serverUpdatedAt: Date? = nil
@@ -103,6 +117,7 @@ final class GroupPlannedMeal {
         self.restaurantName = restaurantName
         self.isOrderIn = isOrderIn
         self.decidedByUserID = decidedByUserID
+        self.decidedByDisplayName = decidedByDisplayName
         self.decidedAt = decidedAt
         self.syncState = syncState
         self.serverUpdatedAt = serverUpdatedAt
@@ -216,6 +231,14 @@ final class GroupMealSuggestion {
     var restaurantName: String?
     var isOrderIn: Bool
     var proposedByUserID: String
+    /// Same "keep showing the real name even after they leave the group"
+    /// fix, same reasoning, as `GroupPlannedMeal.decidedByDisplayName` —
+    /// `nil` only for a row pulled before this field existed on the
+    /// backend, or created locally before this device's first push
+    /// (`GroupSyncService.pushSuggestions` fills it in from the create
+    /// response), falling back to the same member-list lookup in that
+    /// case.
+    var proposedByDisplayName: String?
     var createdAt: Date
     /// The *signed-in caller's* own vote on this suggestion — `nil` (no
     /// vote), `.up`, or `.down` — the local mirror of the backend's own
@@ -295,6 +318,7 @@ final class GroupMealSuggestion {
         restaurantName: String? = nil,
         isOrderIn: Bool = false,
         proposedByUserID: String,
+        proposedByDisplayName: String? = nil,
         createdAt: Date = .now,
         myVote: VoteDirection?,
         upvoteCount: Int,
@@ -313,6 +337,7 @@ final class GroupMealSuggestion {
         self.restaurantName = restaurantName
         self.isOrderIn = isOrderIn
         self.proposedByUserID = proposedByUserID
+        self.proposedByDisplayName = proposedByDisplayName
         self.createdAt = createdAt
         self.myVote = myVote
         self.upvoteCount = upvoteCount
