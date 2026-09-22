@@ -60,6 +60,14 @@ struct GroupDetailView: View {
     /// `FriendsListView`'s `actionFailure` — see its doc comment) would hide
     /// the very screen someone needs to try again from.
     @State private var actionFailure: String?
+    /// Backs the Leave/Remove `.confirmationDialog` below — direct fix for
+    /// a real gap: `memberRow`'s "Leave"/"Remove" buttons used to fire
+    /// `remove(_:)` on a single tap with no confirmation at all, for an
+    /// action with no undo (see `remove(_:)`'s own doc comment on why
+    /// there's only one route either way). Set instead of calling
+    /// `remove(_:)` directly; the dialog itself (in `body`) reads
+    /// `isSelf` off this to pick "Leave"-vs-"Remove" wording.
+    @State private var memberPendingRemoval: GroupMember?
 
     /// The signed-in caller's own role in *this* group — same
     /// `group?.myRole(currentUserID:)` convention `GroupSharedMealPlanView`/
@@ -126,10 +134,18 @@ struct GroupDetailView: View {
                     }
                     .disabled(!isManager)
                 }
-                Section("Members") {
+                Section {
                     ForEach(group.members) { member in
                         memberRow(member)
                     }
+                } header: {
+                    Text("Members")
+                } footer: {
+                    // Direct fix for a real gap: nothing on this screen (or
+                    // anywhere else) ever explained what "Manager" vs.
+                    // "Member" actually lets someone do — the labels/badges
+                    // were there, the meaning wasn't.
+                    Text("Managers can rename the group, set its default location, invite or remove members, and promote/demote other Managers. Members can do everything else — plan meals and manage the grocery list.")
                 }
                 // Not part of Phase 5 itself — see `GroupSentInvite`'s own
                 // doc comment in AccountModels.swift and
@@ -213,6 +229,27 @@ struct GroupDetailView: View {
         } message: { message in
             Text(message)
         }
+        .confirmationDialog(
+            "Are you sure?",
+            isPresented: Binding(
+                get: { memberPendingRemoval != nil },
+                set: { isPresented in if !isPresented { memberPendingRemoval = nil } }
+            ),
+            presenting: memberPendingRemoval
+        ) { member in
+            let isSelf = member.id == accountSession.currentUser?.id
+            Button(isSelf ? "Leave Group" : "Remove", role: .destructive) {
+                Task { await remove(member.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { member in
+            let isSelf = member.id == accountSession.currentUser?.id
+            Text(
+                isSelf
+                    ? "You'll need a new invite to rejoin this group."
+                    : "\(member.displayNameOrPhoneNumber) will need a new invite to rejoin this group."
+            )
+        }
     }
 
     // Name only, no phone-number subtitle — same "identify people by who
@@ -260,12 +297,12 @@ struct GroupDetailView: View {
             // just 403 for a non-manager tapping it on someone else).
             if isSelf {
                 Button("Leave", role: .destructive) {
-                    Task { await remove(member.id) }
+                    memberPendingRemoval = member
                 }
                 .buttonStyle(.borderless)
             } else if isManager {
                 Button("Remove", role: .destructive) {
-                    Task { await remove(member.id) }
+                    memberPendingRemoval = member
                 }
                 .buttonStyle(.borderless)
             }
