@@ -61,6 +61,7 @@ enum GooglePlacesService {
     enum ServiceError: LocalizedError {
         case notConfigured
         case requestFailed
+        case notSignedIn
 
         var errorDescription: String? {
             switch self {
@@ -68,8 +69,34 @@ enum GooglePlacesService {
                 return "Google search isn't set up yet."
             case .requestFailed:
                 return "Couldn't search right now — check your connection."
+            case .notSignedIn:
+                return "Sign in to search."
             }
         }
+    }
+
+    /// A `URLRequest` for one of this backend's own JSON-returning routes,
+    /// with the signed-in user's Bearer token attached — these all now
+    /// require auth server-side (see index.js's own comment on why: an
+    /// unauthenticated route that forwards to a billed Anthropic/Google
+    /// call had no way to attribute or cap abuse). Every screen that can
+    /// reach one of these calls is already behind `RootView`'s sign-in
+    /// gate, so a missing token here would mean something's gone wrong
+    /// elsewhere, not a real, expected case — but this fails with a clear
+    /// error instead of silently sending an unauthenticated request that
+    /// the server would just reject anyway. Not used by `photoURL(for:)`
+    /// below, which builds a URL for `AsyncImage` to load directly — an
+    /// image load has no way to attach a header, so that one endpoint
+    /// deliberately stays unauthenticated server-side (rate-limited
+    /// instead — see its own route in index.js).
+    private static func authorizedRequest(url: URL, method: String = "GET") throws -> URLRequest {
+        guard let token = KeychainTokenStore.readToken() else {
+            throw ServiceError.notSignedIn
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
     }
 
     /// `near`, when available, biases (and ranks) results toward that
@@ -93,7 +120,7 @@ enum GooglePlacesService {
         components?.queryItems = queryItems
         guard let url = components?.url else { throw ServiceError.requestFailed }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(for: try authorizedRequest(url: url))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ServiceError.requestFailed
         }
@@ -124,8 +151,7 @@ enum GooglePlacesService {
         guard isConfigured, let base = URL(string: baseURLString) else {
             throw ServiceError.notConfigured
         }
-        var request = URLRequest(url: base.appendingPathComponent("restaurants/search-natural"))
-        request.httpMethod = "POST"
+        var request = try authorizedRequest(url: base.appendingPathComponent("restaurants/search-natural"), method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["query": query]
         if let coordinate {
@@ -222,7 +248,7 @@ enum GooglePlacesService {
         components?.queryItems = [URLQueryItem(name: "placeId", value: placeID)]
         guard let url = components?.url else { throw ServiceError.requestFailed }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(for: try authorizedRequest(url: url))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ServiceError.requestFailed
         }
@@ -272,7 +298,7 @@ enum GooglePlacesService {
         components?.queryItems = [URLQueryItem(name: "q", value: query)]
         guard let url = components?.url else { throw ServiceError.requestFailed }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(for: try authorizedRequest(url: url))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ServiceError.requestFailed
         }
@@ -290,7 +316,7 @@ enum GooglePlacesService {
         }
         let url = base.appendingPathComponent("cities").appendingPathComponent(placeID)
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(for: try authorizedRequest(url: url))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ServiceError.requestFailed
         }

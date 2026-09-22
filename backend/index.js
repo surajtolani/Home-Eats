@@ -13,12 +13,15 @@
 // Verify, JWT secret).
 "use strict";
 
+const dns = require("dns").promises;
+const net = require("net");
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const { zodOutputFormat } = require("@anthropic-ai/sdk/helpers/zod");
 const { z } = require("zod");
 const { prisma } = require("./lib/prisma");
 const { requireAuth } = require("./middleware/requireAuth");
+const { createRateLimiter } = require("./lib/rateLimit");
 const authRouter = require("./routes/auth");
 const meRouter = require("./routes/me");
 const friendsRouter = require("./routes/friends");
@@ -71,6 +74,82 @@ function anthropicClient(res) {
     return null;
   }
   return anthropic;
+}
+
+// Per-user (keyed by requireAuth's req.userId) rate limits for the Places/
+// Claude proxy routes below — every one of these forwards to a billed
+// Google or Anthropic call, and until now had no auth AND no rate limit at
+// all, so any scripted caller who found the URL could run up this
+// deployment's Google/Anthropic bill indefinitely with zero attribution.
+// These limits are generous relative to real usage (a debounced city-search
+// field can easily fire a couple hundred times in an active session) — they
+// exist only to blunt abuse, not to constrain normal use.
+const restaurantsSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
+const restaurantsSearchNaturalLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+const restaurantsDetailsLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
+const citiesSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 300 });
+const citiesDetailsLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
+const recipesExtractLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
+const recipesRecommendLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+// The two routes below that stay unauthenticated on purpose (AsyncImage
+// can't attach an Authorization header — see each route's own comment) are
+// rate-limited by IP instead of by user.
+const restaurantsPhotoIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 600 });
+const recipeImageProxyIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 600 });
+
+// A small middleware factory wrapping lib/rateLimit.js's `check` in
+// Express's usual (req, res, next) shape — `keyFn` picks what to key the
+// limit on (req.userId once requireAuth has run, or req.ip for the two
+// routes that stay unauthenticated).
+function rateLimited(limiter, keyFn) {
+  return (req, res, next) => {
+    const result = limiter.check(keyFn(req));
+    if (result.limited) {
+      return res.status(429).json({ error: "Too many requests. Please try again shortly." });
+    }
+    next();
+  };
+}
+
+const byUserId = (req) => req.userId;
+const byIP = (req) => req.ip;
+
+// Rejects a resolved IP that points at loopback, a private (RFC1918) range,
+// or link-local — including 169.254.169.254, the address every major cloud
+// provider serves instance credentials from. Used by GET /recipes/image-proxy
+// below to stop that route being used to make *this server* fetch an
+// internal/otherwise-unintended target on an attacker's behalf. This checks
+// the IP a hostname resolves to, not the hostname text itself, specifically
+// so a hostname that looks external but resolves to one of these
+// (attacker-controlled DNS) is still caught. Known, accepted limitation:
+// this is a lookup-time check, not a fetch-time one, so a DNS answer that
+// changes between this check and the actual fetch (DNS rebinding) isn't
+// fully closed — acceptable here since the route only ever returns opaque,
+// size-capped, image/*-typed bytes back to the caller who supplied the URL,
+// never anything else about the response (no headers, no error detail).
+function isPrivateOrLoopbackIP(ip) {
+  if (net.isIPv4(ip)) {
+    const parts = ip.split(".").map(Number);
+    if (parts[0] === 127) return true; // loopback
+    if (parts[0] === 10) return true; // 10.0.0.0/8
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
+    if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+    if (parts[0] === 169 && parts[1] === 254) return true; // link-local, incl. cloud metadata
+    if (parts[0] === 0) return true;
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1") return true; // loopback
+    if (lower.startsWith("fe80:")) return true; // link-local
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique local
+    if (lower.startsWith("::ffff:")) {
+      const mapped = lower.split(":").pop();
+      if (net.isIPv4(mapped)) return isPrivateOrLoopbackIP(mapped);
+    }
+    return false;
+  }
+  return true; // not a recognizable IP at all — reject rather than guess.
 }
 
 // Shared shape for one recipe, whether it came from a photo, typed notes, or
@@ -164,11 +243,12 @@ app.use("/groups/:groupId/grocery", requireAuth, groupGroceryRouter);
 // --- Recipe sharing (Phase 2a) ----------------------------------------
 // Recipes moving from purely on-device storage to something that can be
 // shared between people, built on the friends/groups layer above. Mounted
-// at `/recipe-library` — a distinct prefix from the unauthenticated,
-// Claude-powered `/recipes/extract` and `/recipes/recommend` routes further
-// down this file, so there's no risk of the two ever colliding or being
-// confused with each other even though nothing here would actually clash
-// method+path with those. See routes/recipeLibrary.js and
+// at `/recipe-library` — a distinct prefix from the Claude-powered
+// `/recipes/extract` and `/recipes/recommend` routes further down this file
+// (both also behind requireAuth, just registered directly on `app` rather
+// than through this router), so there's no risk of the two ever colliding
+// or being confused with each other even though nothing here would
+// actually clash method+path with those. See routes/recipeLibrary.js and
 // backend/README.md's "Recipe sharing" section.
 app.use("/recipe-library", requireAuth, recipeLibraryRouter);
 
@@ -178,11 +258,12 @@ app.use("/recipe-library", requireAuth, recipeLibraryRouter);
 // incident: a missing SwiftData migration default wiped a user's entire
 // local store, restaurants included, which had no server copy to recover
 // from). Mounted at `/restaurants/library`, not bare `/restaurants` — that
-// prefix is already the unauthenticated Google-Places-proxy search API
-// registered directly on `app` just below (`/restaurants/search`,
-// `/restaurants/search-natural`, `/restaurants/photo`, `/restaurants/details`),
-// same "own distinct, never-colliding prefix" choice `/recipe-library`
-// makes relative to `/recipes/*`.
+// prefix is already the Google-Places-proxy search API registered directly
+// on `app` just below (`/restaurants/search`, `/restaurants/search-natural`,
+// `/restaurants/photo`, `/restaurants/details` — every one but `/photo`
+// also behind requireAuth, same as this router), same "own distinct,
+// never-colliding prefix" choice `/recipe-library` makes relative to
+// `/recipes/*`.
 app.use("/restaurants/library", requireAuth, restaurantsRouter);
 
 // --- Personal meal history -------------------------------------------------
@@ -301,8 +382,12 @@ async function geocode(locationText) {
 // GET /restaurants/search?q=<free text query>
 // Mirrors what the app needs for RestaurantListView's search-and-add flow:
 // name, address, a map link, plus the descriptors MapKit's free search
-// can't provide at all — rating, price, and cuisine.
-app.get("/restaurants/search", async (req, res) => {
+// can't provide at all — rating, price, and cuisine. Requires auth (see
+// requireAuth's own doc comment) — every screen that can reach this call is
+// already behind RootView's sign-in gate, so this costs real callers
+// nothing; it just closes off the route to a scripted caller with no
+// account who found the URL.
+app.get("/restaurants/search", requireAuth, rateLimited(restaurantsSearchLimiter, byUserId), async (req, res) => {
   const query = (req.query.q || "").toString().trim();
   if (!query) {
     return res.status(400).json({ error: "Missing required query param 'q'." });
@@ -361,7 +446,11 @@ const NaturalSearchQuerySchema = z.object({
   locationText: z.string().nullable(),
 });
 
-app.post("/restaurants/search-natural", async (req, res) => {
+app.post(
+  "/restaurants/search-natural",
+  requireAuth,
+  rateLimited(restaurantsSearchNaturalLimiter, byUserId),
+  async (req, res) => {
   const query = (req.body?.query || "").toString().trim();
   if (!query) {
     return res.status(400).json({ error: "Missing required field 'query'." });
@@ -431,10 +520,10 @@ app.post("/restaurants/search-natural", async (req, res) => {
   // a location actually named in the sentence and the device's current
   // location: the caller already resolved which group (if any) this search
   // is happening in and sends its text here directly, rather than this
-  // route taking a groupId and looking it up itself — this route has no
-  // auth at all (registered directly on `app`, not behind requireAuth; see
-  // this file's own comment above this route), so it can't safely verify
-  // group membership before reading a group's data itself.
+  // route taking a groupId and looking it up itself — this route only
+  // verifies the caller is signed in (requireAuth above), not that they
+  // belong to any particular group, so it still can't safely look up a
+  // group's own data itself.
   const fallbackLocationText = (req.body?.fallbackLocationText || "").toString().trim() || null;
   let usedFallbackLocation = false;
   if (!locationBias && fallbackLocationText) {
@@ -458,7 +547,8 @@ app.post("/restaurants/search-natural", async (req, res) => {
     console.error("Places API request threw", error);
     res.status(502).json({ error: "Places API request failed." });
   }
-});
+  }
+);
 
 // GET /restaurants/photo?name=<photo resource name>&maxWidthPx=<n>
 // Fetches an actual photo's bytes from Google using the server-side key and
@@ -477,7 +567,7 @@ app.post("/restaurants/search-natural", async (req, res) => {
 // match this shape is rejected outright rather than passed through.
 const PHOTO_NAME_PATTERN = /^places\/[^/?#&]+\/photos\/[^/?#&]+$/;
 
-app.get("/restaurants/photo", async (req, res) => {
+app.get("/restaurants/photo", rateLimited(restaurantsPhotoIPLimiter, byIP), async (req, res) => {
   const name = (req.query.name || "").toString().trim();
   if (!name) {
     return res.status(400).json({ error: "Missing required query param 'name'." });
@@ -520,7 +610,7 @@ app.get("/restaurants/photo", async (req, res) => {
 // since Place Details is its own billed request. `placeId` is the `id`
 // field from a /restaurants/search result, saved on the app's Restaurant
 // row as `googlePlaceID`.
-app.get("/restaurants/details", async (req, res) => {
+app.get("/restaurants/details", requireAuth, rateLimited(restaurantsDetailsLimiter, byUserId), async (req, res) => {
   const placeId = (req.query.placeId || "").toString().trim();
   if (!placeId) {
     return res.status(400).json({ error: "Missing required query param 'placeId'." });
@@ -615,13 +705,13 @@ const CITY_DETAILS_FIELD_MASK = "addressComponents";
 // specifically asking for a city. Powers the profile's City field's
 // type-ahead dropdown (see CitySearchField.swift in the iOS app) — tapping
 // one of these predictions is what GET /cities/:placeID below turns into an
-// actual city/state/country triple. Unauthenticated, same as /restaurants/*
-// above: this is the same "public convenience API proxy" shape, just for
-// city lookup instead of restaurant lookup — and it needs to work even
-// before a JWT exists for some callers (RootView's profile-completion gate,
-// reached by an account that verified its phone number but never finished
-// onboarding).
-app.get("/cities/search", async (req, res) => {
+// actual city/state/country triple. Requires auth, same as every other
+// billed-API proxy route in this file — including from RootView's
+// profile-completion gate: that screen only ever appears after `POST
+// /auth/verify-code` has already succeeded and saved a token (see
+// AccountSession.completeSignIn), so a valid Bearer token is always
+// available by the time this can be reached.
+app.get("/cities/search", requireAuth, rateLimited(citiesSearchLimiter, byUserId), async (req, res) => {
   const query = (req.query.q || "").toString().trim();
   if (!query) {
     return res.status(400).json({ error: "Missing required query param 'q'." });
@@ -693,8 +783,8 @@ app.get("/cities/search", async (req, res) => {
 // `null` if Google's response doesn't include that component for this
 // particular place (see extractAddressComponent above); the iOS side
 // leaves the corresponding field/picker untouched rather than clearing it
-// when that happens. Unauthenticated, same reasoning as /cities/search.
-app.get("/cities/:placeID", async (req, res) => {
+// when that happens. Requires auth, same reasoning as /cities/search.
+app.get("/cities/:placeID", requireAuth, rateLimited(citiesDetailsLimiter, byUserId), async (req, res) => {
   const placeID = (req.params.placeID || "").toString().trim();
   if (!placeID) {
     return res.status(400).json({ error: "Missing required path param 'placeID'." });
@@ -734,7 +824,7 @@ app.get("/cities/:placeID", async (req, res) => {
 // imageBase64 or notesText required. Powers "add a recipe from a photo or
 // notes" instead of typing it all in by hand: a photo of a recipe card / a
 // screenshot / a handwritten note, plain typed notes, or both together.
-app.post("/recipes/extract", async (req, res) => {
+app.post("/recipes/extract", requireAuth, rateLimited(recipesExtractLimiter, byUserId), async (req, res) => {
   const client = anthropicClient(res);
   if (!client) return;
 
@@ -787,7 +877,7 @@ app.post("/recipes/extract", async (req, res) => {
 // "Show More Ideas" button (RecommendMealView) re-calling this with the
 // titles already shown, so a second batch is genuinely new suggestions
 // rather than Claude just repeating (or trivially rewording) the first one.
-app.post("/recipes/recommend", async (req, res) => {
+app.post("/recipes/recommend", requireAuth, rateLimited(recipesRecommendLimiter, byUserId), async (req, res) => {
   const client = anthropicClient(res);
   if (!client) return;
 
@@ -821,6 +911,93 @@ app.post("/recipes/recommend", async (req, res) => {
   } catch (error) {
     console.error("Recipe recommendation failed", error);
     res.status(502).json({ error: "Recipe recommendation failed." });
+  }
+});
+
+// GET /recipes/image-proxy?url=<a recipe's own imported photo URL>
+// A recipe imported from a URL (RecipeImportService/SchemaOrgRecipeParser
+// on the iOS side) carries that source page's own photo URL verbatim as
+// `Recipe.imageName` — previously loaded straight from that arbitrary host
+// via AsyncImage (RecipeThumbnail.swift / GroupRecipePreviewView.swift).
+// That meant every time a recipe with a photo was viewed, the app made a
+// direct request to whatever host that recipe's source page happened to
+// use for its image: a real, confirmed finding, since that request handed
+// the viewer's IP address (and effectively which recipe/photo they were
+// looking at) to a third party neither the app nor this backend has any
+// relationship with — a de-facto tracking beacon baked into an ordinary
+// recipe view. Proxying through here means the app only ever talks to
+// this server for images, same as `/restaurants/photo` above.
+//
+// Deliberately unauthenticated, same reasoning as `/restaurants/photo`:
+// AsyncImage has no way to attach an Authorization header to an image
+// load, so an endpoint it points at can't require one — rate-limited by
+// IP instead. `isPrivateOrLoopbackIP` (defined near the top of this file)
+// guards against this route being used to make *this server* fetch an
+// internal/otherwise-unintended target on an attacker's behalf, since
+// `url` here — unlike every other proxied request in this file — can name
+// literally any host, not just Google's.
+const RECIPE_IMAGE_PROXY_MAX_BYTES = 8 * 1024 * 1024; // Well above any real recipe photo.
+
+app.get("/recipes/image-proxy", rateLimited(recipeImageProxyIPLimiter, byIP), async (req, res) => {
+  const rawURL = (req.query.url || "").toString().trim();
+  if (!rawURL) {
+    return res.status(400).json({ error: "Missing required query param 'url'." });
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(rawURL);
+  } catch (error) {
+    return res.status(400).json({ error: "Invalid 'url'." });
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return res.status(400).json({ error: "Invalid 'url'." });
+  }
+
+  try {
+    const addresses = await dns.lookup(parsed.hostname, { all: true });
+    if (addresses.length === 0 || addresses.some((address) => isPrivateOrLoopbackIP(address.address))) {
+      return res.status(400).json({ error: "That image can't be loaded." });
+    }
+  } catch (error) {
+    return res.status(400).json({ error: "That image can't be loaded." });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let imageResponse;
+    try {
+      imageResponse = await fetch(parsed.toString(), { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!imageResponse.ok) {
+      return res.status(502).json({ error: "Couldn't fetch that image." });
+    }
+    const contentType = imageResponse.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().startsWith("image/")) {
+      return res.status(400).json({ error: "That URL isn't an image." });
+    }
+    const contentLengthHeader = imageResponse.headers.get("content-length");
+    if (contentLengthHeader && Number(contentLengthHeader) > RECIPE_IMAGE_PROXY_MAX_BYTES) {
+      return res.status(413).json({ error: "That image is too large." });
+    }
+
+    const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    if (buffer.length > RECIPE_IMAGE_PROXY_MAX_BYTES) {
+      return res.status(413).json({ error: "That image is too large." });
+    }
+
+    res.set("Content-Type", contentType);
+    // A recipe's own imported photo essentially never changes once
+    // imported — same day-long cache as /restaurants/photo above.
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(buffer);
+  } catch (error) {
+    console.error("Recipe image proxy request threw", error);
+    res.status(502).json({ error: "Couldn't fetch that image." });
   }
 });
 

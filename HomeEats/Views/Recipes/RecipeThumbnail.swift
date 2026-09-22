@@ -34,7 +34,7 @@ struct RecipeThumbnail: View {
 
     private func remoteURL(_ imageName: String) -> URL? {
         guard imageName.lowercased().hasPrefix("http") else { return nil }
-        return URL(string: imageName)
+        return RecipeImageProxy.url(for: imageName)
     }
 
     /// A generic fork-and-knife placeholder reads as identical, undifferentiated

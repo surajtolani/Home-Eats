@@ -19,6 +19,7 @@ enum ClaudeRecipeServiceError: LocalizedError {
     case notConfigured
     case requestFailed
     case noRecipeFound
+    case notSignedIn
     /// A non-2xx response that came with the backend's own `{ error }`
     /// body — surfaced verbatim rather than folded into the generic
     /// `.requestFailed` message. Direct user report that "Recommend a
@@ -39,6 +40,8 @@ enum ClaudeRecipeServiceError: LocalizedError {
             return "Couldn't find a recipe there. Try a clearer photo or a bit more detail in your notes."
         case .serverMessage(let message):
             return message
+        case .notSignedIn:
+            return "Sign in to use this feature."
         }
     }
 }
@@ -89,9 +92,13 @@ enum ClaudeRecipeService {
         guard isConfigured, let base = URL(string: baseURLString) else {
             throw ClaudeRecipeServiceError.notConfigured
         }
+        guard let token = KeychainTokenStore.readToken() else {
+            throw ClaudeRecipeServiceError.notSignedIn
+        }
         var request = URLRequest(url: base.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         // Well beyond `URLSession`'s 60s default. This backend is a
         // free-tier Render deployment that spins down after inactivity and
