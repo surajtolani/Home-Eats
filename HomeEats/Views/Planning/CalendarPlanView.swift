@@ -211,19 +211,19 @@ struct CalendarPlanView: View {
 
     private var legend: some View {
         HStack(spacing: 16) {
-            legendItem(color: .brandForest, label: "Cooking")
-            legendItem(color: .brandTerracotta, label: "Eating out")
-            legendItem(color: .brandHoney, label: "Order in")
-            legendItem(color: .brandSage, label: "Suggested")
+            legendItem(.homeCooked)
+            legendItem(.eatingOut)
+            legendItem(.orderingIn)
+            legendItem(.suggested)
         }
         .font(.brandCaption)
         .foregroundStyle(.secondary)
     }
 
-    private func legendItem(color: Color, label: String) -> some View {
+    private func legendItem(_ kind: MealStatusKind) -> some View {
         HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(label)
+            MealStatusDot(kind: kind)
+            Text(kind.label)
         }
     }
 
@@ -393,13 +393,13 @@ private struct DayCell: View {
     @ViewBuilder
     private var statusDot: some View {
         if meals.contains(where: { $0.isHomeCooked }) {
-            Circle().fill(Color.brandForest).frame(width: 6, height: 6)
+            MealStatusDot(kind: .homeCooked)
         } else if meals.contains(where: { $0.isEatingOut }) {
-            Circle().fill(Color.brandTerracotta).frame(width: 6, height: 6)
+            MealStatusDot(kind: .eatingOut)
         } else if meals.contains(where: { $0.isOrderingIn }) {
-            Circle().fill(Color.brandHoney).frame(width: 6, height: 6)
+            MealStatusDot(kind: .orderingIn)
         } else if hasSuggestions {
-            Circle().fill(Color.brandSage).frame(width: 6, height: 6)
+            MealStatusDot(kind: .suggested)
         } else {
             Color.clear.frame(width: 6, height: 6)
         }

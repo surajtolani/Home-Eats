@@ -382,19 +382,19 @@ struct GroupSharedMealPlanView: View {
 
     private var legend: some View {
         HStack(spacing: 16) {
-            legendItem(color: .brandForest, label: "Cooking")
-            legendItem(color: .brandTerracotta, label: "Eating out")
-            legendItem(color: .brandHoney, label: "Order in")
-            legendItem(color: .brandSage, label: "Suggested")
+            legendItem(.homeCooked)
+            legendItem(.eatingOut)
+            legendItem(.orderingIn)
+            legendItem(.suggested)
         }
         .font(.brandCaption)
         .foregroundStyle(.secondary)
     }
 
-    private func legendItem(color: Color, label: String) -> some View {
+    private func legendItem(_ kind: MealStatusKind) -> some View {
         HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(label)
+            MealStatusDot(kind: kind)
+            Text(kind.label)
         }
     }
 
@@ -668,13 +668,13 @@ private struct GroupDayCell: View {
         } else {
             HStack(spacing: 3) {
                 if hasHomeCooked {
-                    Circle().fill(Color.brandForest).frame(width: 6, height: 6)
+                    MealStatusDot(kind: .homeCooked)
                 }
                 if hasEatingOut {
-                    Circle().fill(Color.brandTerracotta).frame(width: 6, height: 6)
+                    MealStatusDot(kind: .eatingOut)
                 }
                 if hasOrderingIn {
-                    Circle().fill(Color.brandHoney).frame(width: 6, height: 6)
+                    MealStatusDot(kind: .orderingIn)
                 }
                 // Suggested only shown once nothing's actually decided yet
                 // for the day — once at least one meal IS decided, a
@@ -683,7 +683,7 @@ private struct GroupDayCell: View {
                 // detail screen is where that suggestion is still fully
                 // visible and actionable.
                 if hasSuggestions && !hasHomeCooked && !hasEatingOut && !hasOrderingIn {
-                    Circle().fill(Color.brandSage).frame(width: 6, height: 6)
+                    MealStatusDot(kind: .suggested)
                 }
             }
         }
