@@ -84,22 +84,29 @@ struct ProfileCompletionStepView: View {
                         countryInput = country
                     }
                 }
-                // State/Country are `Picker`s from a predetermined list, not
-                // free text — direct user request. `Text("Select a
-                // state"/"Select a country").tag("")` is a real, selectable
-                // placeholder row (not a disabled prompt) specifically so an
-                // untouched field stays genuinely empty — `canSave` below
-                // needs a real "nothing chosen yet" state, and a `Picker`
-                // with no explicit placeholder row would otherwise default
-                // to silently pre-selecting its first real option, which
-                // would let someone "complete" their profile with a
-                // state/country they never actually picked.
-                Picker("State", selection: $stateInput) {
-                    Text("Select a state").tag("")
-                    ForEach(USState.all, id: \.self) { state in
-                        Text(state).tag(state)
-                    }
-                }
+                // State is filled in automatically from whichever city was
+                // just picked above — never a separate manual entry —
+                // direct user request: state should come from the same
+                // verified Google Places lookup the city itself does,
+                // rather than either a free-text field (which no one
+                // downstream could verify) or a fixed picker list (which
+                // this used to be, and which only ever offered the 50 US
+                // states — a real bug for the first non-US account that hit
+                // this screen, since there was then no valid state to pick
+                // at all). See `AutoFilledFieldRow` below.
+                AutoFilledFieldRow(label: "State", value: stateInput)
+                // Country stays a `Picker` from a fixed, worldwide list —
+                // direct user request. `Text("Select a country").tag("")`
+                // is a real, selectable placeholder row (not a disabled
+                // prompt) specifically so an untouched field stays
+                // genuinely empty — `canSave` below needs a real "nothing
+                // chosen yet" state, and a `Picker` with no explicit
+                // placeholder row would otherwise default to silently
+                // pre-selecting its first real option, which would let
+                // someone "complete" their profile with a country they
+                // never actually picked. Still overwritten automatically by
+                // the city pick above when Google's response includes one,
+                // same as before.
                 Picker("Country", selection: $countryInput) {
                     Text("Select a country").tag("")
                     ForEach(CountryCode.all) { country in
@@ -113,7 +120,7 @@ struct ProfileCompletionStepView: View {
                 // that used to be true only for city/country, and is no
                 // longer true for any of these five: every account needs
                 // all five to use Home Eats, full stop.
-                Text("Shown to friends and group members when you share recipes or invite them. Every account needs a first name, last name, city, state, and country — there's no adding these later.")
+                Text("Shown to friends and group members when you share recipes or invite them. Every account needs a first name, last name, city, state, and country — there's no adding these later. State fills in automatically once you pick a city; if a city has no state/province on file with Google, try a nearby larger city instead.")
             }
             .disabled(isLoading)
 

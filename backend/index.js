@@ -674,10 +674,12 @@ app.get("/restaurants/details", requireAuth, rateLimited(restaurantsDetailsLimit
 
 // Reads one address component's `longText` (not `shortText`) out of a Place
 // Details response by its Google `types` value. `longText` specifically —
-// not the abbreviated `shortText` — so a result lines up with the iOS
-// app's own `USState.all`/`CountryCode.all` lists, which are written out in
-// full ("California"/"United States", not "CA"/"US"): see GET
-// /cities/:placeID below, which is the only caller. Returns `null` when
+// not the abbreviated `shortText` — so a result reads the same full-word
+// way the iOS app's own `CountryCode.all` list does ("United States", not
+// "US") — State has no such fixed list to match anymore (see
+// `AutoFilledFieldRow` in the iOS app), it's just whatever this returns,
+// verbatim. See GET /cities/:placeID below, which is the only caller.
+// Returns `null` when
 // that component type isn't present at all in the response — Google
 // doesn't guarantee every one of locality/administrative_area_level_1/
 // country is present for every place (a small town might have no

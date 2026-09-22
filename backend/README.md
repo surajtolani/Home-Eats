@@ -127,32 +127,43 @@ The server calls `prisma.$connect()` before it starts listening, so it will
 refuse to start at all without a reachable `DATABASE_URL` — even if you
 only care about the restaurant/recipe routes above.
 
-Check it's working:
+Check it's working. `/health` is the only route below that needs no token at
+all; every Places/Claude proxy route (`/restaurants/search*`,
+`/restaurants/details`, `/cities/*`, `/recipes/extract`,
+`/recipes/recommend`) now requires one too — get one first via
+`/auth/request-code` + `/auth/verify-code`:
 
 ```bash
 curl "http://localhost:4000/health"
-curl "http://localhost:4000/restaurants/search?q=pizza+near+me"
-curl -X POST "http://localhost:4000/restaurants/search-natural" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "casual pizza place near Greenwich"}'
-curl "http://localhost:4000/cities/search?q=Green"
-curl "http://localhost:4000/cities/ChIJnQ5tX9lQWokR0HeeAd-VXOs"
-curl -X POST "http://localhost:4000/recipes/extract" \
-  -H "Content-Type: application/json" \
-  -d '{"notesText": "Grandma'\''s pancakes: 2 cups flour, 2 eggs, 1.5 cups milk. Mix and cook on a griddle."}'
-curl -X POST "http://localhost:4000/recipes/recommend" \
-  -H "Content-Type: application/json" \
-  -d '{"ingredients": ["chicken thighs", "rice", "broccoli"]}'
 
-# Accounts: request a code, verify it, then call an authenticated route
+# Accounts: request a code, verify it — every call below needs this token
 curl -X POST "http://localhost:4000/auth/request-code" \
   -H "Content-Type: application/json" \
   -d '{"phoneNumber": "+14155551234"}'
 curl -X POST "http://localhost:4000/auth/verify-code" \
   -H "Content-Type: application/json" \
   -d '{"phoneNumber": "+14155551234", "code": "123456"}'
-# ^ copy the "token" from that response's JSON for the next call
+# ^ copy the "token" from that response's JSON for every call below
 curl "http://localhost:4000/me" -H "Authorization: Bearer <token>"
+
+curl "http://localhost:4000/restaurants/search?q=pizza+near+me" \
+  -H "Authorization: Bearer <token>"
+curl -X POST "http://localhost:4000/restaurants/search-natural" \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"query": "casual pizza place near Greenwich"}'
+curl "http://localhost:4000/cities/search?q=Green" \
+  -H "Authorization: Bearer <token>"
+curl "http://localhost:4000/cities/ChIJnQ5tX9lQWokR0HeeAd-VXOs" \
+  -H "Authorization: Bearer <token>"
+curl -X POST "http://localhost:4000/recipes/extract" \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"notesText": "Grandma'\''s pancakes: 2 cups flour, 2 eggs, 1.5 cups milk. Mix and cook on a griddle."}'
+curl -X POST "http://localhost:4000/recipes/recommend" \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"ingredients": ["chicken thighs", "rice", "broccoli"]}'
+
+# /restaurants/photo and /recipes/image-proxy stay unauthenticated (an
+# AsyncImage load can't attach a header) but are rate-limited by IP instead.
 
 # Recipe sharing: create a recipe, then list "my recipes"
 curl -X POST "http://localhost:4000/recipe-library" \
@@ -221,16 +232,17 @@ sync). That's the only change needed on the app side:
 
 Two more endpoints on the same Google Places proxy as `/restaurants/*`
 above, powering the profile's City field's type-ahead (see
-`CitySearchField.swift` in the iOS app). Both unauthenticated, matching how
-`/restaurants/*` is mounted — this needs to work even for an account that
-verified its phone number but hasn't finished onboarding yet (`RootView`'s
-profile-completion gate, reached before a JWT means anything to this app in
-practice).
+`CitySearchField.swift` in the iOS app). Both require a Bearer token, same
+as `/restaurants/*`. That's safe for `ProfileCompletionStepView`'s call
+site too, even though it can appear right after phone verification and
+before a profile is otherwise "complete" — `POST /auth/verify-code` already
+saves a token before that screen is ever reached (see
+`AccountSession.completeSignIn`), so one is always available by then.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/cities/search?q=<partial city name>` | Proxies Places API (New)'s Autocomplete endpoint (`POST places.googleapis.com/v1/places:autocomplete`), restricted to city-level results via `includedPrimaryTypes: ["locality"]`. Returns `{ predictions: [{ placeID, mainText, secondaryText }] }` — `mainText`/`secondaryText` are Google's own `structuredFormat` split of a prediction ("Greenwich" / "CT, USA"), exactly what a dropdown row wants. `400` if `q` is missing/empty, `500` if `GOOGLE_PLACES_API_KEY` isn't configured, `502` if the Places API call itself fails. |
-| GET | `/cities/:placeID` | Proxies Places API (New)'s Place Details endpoint (`GET places.googleapis.com/v1/places/{placeID}`), field-masked to `addressComponents` only. Returns `{ city, state, country }`, each pulled from the component whose `types` includes `locality`/`administrative_area_level_1`/`country` respectively, using that component's `longText` (not `shortText`) so a result lines up with the iOS app's own `USState.all`/`CountryCode.all` full-name lists ("California", not "CA"). This is the call that actually makes "pre-populates everything" work — a prediction's own display text from `/cities/search` isn't reliably parseable into precise city/state/country across locales/formats, so the app makes this separate, structured-data call once, right after a suggestion is tapped. Any of the three can legitimately come back `null` if Google's response has no matching component for that place — the iOS side leaves the corresponding field/picker untouched rather than clearing it when that happens, so an already-picked State/Country never gets silently blanked out by an incomplete Details response. `400` if `placeID` is missing, `500`/`502` same as above. |
+| GET | `/cities/search?q=<partial city name>` | Proxies Places API (New)'s Autocomplete endpoint (`POST places.googleapis.com/v1/places:autocomplete`), restricted to city-level results via `includedPrimaryTypes: ["locality"]`. Returns `{ predictions: [{ placeID, mainText, secondaryText }] }` — `mainText`/`secondaryText` are Google's own `structuredFormat` split of a prediction ("Greenwich" / "CT, USA"), exactly what a dropdown row wants. `400` if `q` is missing/empty, `401` if not authenticated, `429` if rate-limited, `500` if `GOOGLE_PLACES_API_KEY` isn't configured, `502` if the Places API call itself fails. |
+| GET | `/cities/:placeID` | Proxies Places API (New)'s Place Details endpoint (`GET places.googleapis.com/v1/places/{placeID}`), field-masked to `addressComponents` only. Returns `{ city, state, country }`, each pulled from the component whose `types` includes `locality`/`administrative_area_level_1`/`country` respectively, using that component's `longText` (not `shortText`) so a result reads in full words ("California", not "CA") the same way the iOS app's `CountryCode.all` list does — State has no fixed list of its own to match anymore (see `AutoFilledFieldRow` in the iOS app), it's just whatever this returns, verbatim. This is the call that actually makes "pre-populates everything" work — a prediction's own display text from `/cities/search` isn't reliably parseable into precise city/state/country across locales/formats, so the app makes this separate, structured-data call once, right after a suggestion is tapped. Any of the three can legitimately come back `null` if Google's response has no matching component for that place — the iOS side leaves the corresponding field/picker untouched rather than clearing it when that happens, so an already-picked State/Country never gets silently blanked out by an incomplete Details response. `400` if `placeID` is missing, `401`/`429`/`500`/`502` same as above. |
 
 ## 5. Accounts, friends, and groups
 
@@ -843,10 +855,12 @@ wiped a user's entire local store (see `prisma/schema.prisma`'s own doc
 comment on the `Restaurant` model, and the iOS `HomeEatsApp.swift`'s on
 `ModelContainer` creation, for the full story). Routes live in
 `routes/restaurants.js`, mounted at `/restaurants/library` — deliberately
-NOT bare `/restaurants`, which is already the unauthenticated Google-Places-
-proxy search API (`/restaurants/search`, `/restaurants/search-natural`,
+NOT bare `/restaurants`, which is already the Google-Places-proxy search
+API (`/restaurants/search`, `/restaurants/search-natural`,
 `/restaurants/photo`, `/restaurants/details`) registered directly on `app`
-in `index.js`. Every route here requires auth. No sharing/visibility
+in `index.js` — every one of those but `/photo` also requires auth, same as
+this router, `/photo` stays open (rate-limited by IP instead) since an
+AsyncImage load can't attach an Authorization header. No sharing/visibility
 concept at all, unlike recipe-library — every restaurant here is simply
 "the caller's own."
 
@@ -895,11 +909,12 @@ nothing to sync it to across devices, so a restored entry simply has no
 ## Notes
 
 - New routes here (`/recipe-library`) are mounted separately from the
-  pre-existing, unauthenticated `/recipes/extract` and `/recipes/recommend`
-  routes in `index.js` (Claude-powered recipe extraction/recommendation,
-  with no accounts involved at all) — different prefix entirely, so there's
-  no risk of the two ever colliding or being confused with each other, even
-  though nothing here would actually clash method+path with those.
+  pre-existing `/recipes/extract` and `/recipes/recommend` routes in
+  `index.js` (Claude-powered recipe extraction/recommendation — both also
+  behind requireAuth, just registered directly on `app` rather than through
+  this router) — different prefix entirely, so there's no risk of the two
+  ever colliding or being confused with each other, even though nothing
+  here would actually clash method+path with those.
 - Free-tier Render web services spin down after inactivity and take a few
   seconds to wake back up on the next request — fine for a household app,
   worth knowing so a "slow first search"/"slow first recommendation" isn't

@@ -64,17 +64,19 @@ struct EditProfileView: View {
                         countryInput = country
                     }
                 }
-                // State/Country are `Picker`s from a predetermined list, not
-                // free text — direct user request; same reasoning as
+                // State is filled in automatically from whichever city was
+                // just picked above, never typed directly — see
+                // `ProfileCompletionStepView`'s identical change (and its
+                // own doc comment on `AutoFilledFieldRow`) for why: this
+                // used to be a `Picker` offering only the 50 US states,
+                // which had no valid option at all for a non-US account.
+                AutoFilledFieldRow(label: "State", value: stateInput)
+                // Country stays a `Picker` from a fixed, worldwide list —
+                // direct user request; same reasoning as
                 // `ProfileCompletionStepView`'s identical change, including
-                // why each has a real, selectable "Select a ..." placeholder
-                // row rather than defaulting to the first real option.
-                Picker("State", selection: $stateInput) {
-                    Text("Select a state").tag("")
-                    ForEach(USState.all, id: \.self) { state in
-                        Text(state).tag(state)
-                    }
-                }
+                // why it has a real, selectable "Select a country"
+                // placeholder row rather than defaulting to the first real
+                // option.
                 Picker("Country", selection: $countryInput) {
                     Text("Select a country").tag("")
                     ForEach(CountryCode.all) { country in
@@ -84,8 +86,11 @@ struct EditProfileView: View {
             } footer: {
                 // No longer "optional, not shown to anyone yet" — all five
                 // fields on this screen are mandatory now (see `canSave`
-                // above), same as the rest of this account's profile.
-                Text("Shown to friends and group members when you share recipes or invite them.")
+                // above), same as the rest of this account's profile. State
+                // fills in automatically once you pick a city; if a city
+                // has no state/province on file with Google, try a nearby
+                // larger city instead.
+                Text("Shown to friends and group members when you share recipes or invite them. State fills in automatically once you pick a city.")
             }
             if let errorMessage {
                 Section {
