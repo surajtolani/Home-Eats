@@ -108,7 +108,7 @@ struct GroupRecipePreviewView: View {
                     }
                 }
 
-                if let sourceURL = recipe.sourceURL, let url = URL(string: sourceURL) {
+                if let url = SafeWebLink.url(from: recipe.sourceURL) {
                     Link(destination: url) {
                         Label("View Original Recipe", systemImage: "arrow.up.right.square")
                     }

@@ -179,7 +179,22 @@ const cookMinutesField = z.number().int().nonnegative().nullable();
 // Generous ceiling for either a page URL or a long image URL — same
 // "bound the request body, not the realistic use case" reasoning as every
 // other max() here.
-const sourceUrlField = z.string().trim().max(2000).nullable();
+//
+// `sourceUrlField` additionally requires an http(s) scheme — a real,
+// confirmed finding: any signed-in user (a total stranger, once a recipe
+// is published PUBLIC — see POST /:recipeId/publish below) could set this
+// to a phishing page or an arbitrary URL scheme, and the client opens it
+// directly as a tappable link with no validation of its own
+// (RecipeDetailView.swift's "View Original Recipe"). Rejecting anything
+// that isn't http/https here closes that off at the one place every
+// recipe's sourceUrl is ever written.
+const httpUrlPattern = /^https?:\/\//i;
+const sourceUrlField = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((value) => httpUrlPattern.test(value), "sourceUrl must be an http(s) URL.")
+  .nullable();
 const imageNameField = z.string().trim().max(2000).nullable();
 
 const CreateRecipeSchema = z.object({

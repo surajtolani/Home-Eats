@@ -54,6 +54,21 @@ const requestCodePhoneBurstLimiter = createRateLimiter({ windowMs: 60 * 1000, ma
 const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 3 });
 const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
 
+// POST /verify-code had no rate limiting of its own at all — unlike
+// /request-code right above it, which stacks three limiters specifically
+// because of a real past incident. Twilio Verify does cap check attempts
+// per *pending* verification on its own side, but with nothing in front of
+// this route, an attacker who has (or is guessing) a target's phone number
+// could script rapid wrong-code submissions and drive that person's own
+// pending verification into Twilio's max-attempts lockout right as they're
+// trying to sign in — a cheap, scriptable denial-of-service against one
+// specific person, with this server offering no resistance of its own.
+// 10/hour per phone number is generous for a real user who mistypes a code
+// a few times; 30/hour per IP is the same "shared household/office IP"
+// looseness `requestCodeIPLimiter` above uses.
+const verifyCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10 });
+const verifyCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+
 function firstIssue(error, fallback) {
   return error.issues[0]?.message || fallback;
 }
@@ -154,6 +169,14 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: firstIssue(parsed.error, "Invalid phoneNumber or code.") });
   }
   const { phoneNumber, code } = parsed.data;
+
+  // Checked (and counted) after body validation, before the billed Twilio
+  // call — same ordering reasoning as /request-code's own limiters above.
+  const phoneLimited = verifyCodePhoneLimiter.check(phoneNumber).limited;
+  const ipLimited = verifyCodeIPLimiter.check(req.ip).limited;
+  if (phoneLimited || ipLimited) {
+    return res.status(429).json({ error: "Too many attempts. Please wait a bit and try again." });
+  }
 
   if (!process.env.JWT_SECRET) {
     console.error("JWT_SECRET is not configured.");

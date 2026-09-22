@@ -988,7 +988,7 @@ private struct LibraryRecipeDetailView: View {
                     }
                 }
 
-                if let sourceURL = entry.sourceURL, let url = URL(string: sourceURL) {
+                if let url = SafeWebLink.url(from: entry.sourceURL) {
                     Link(destination: url) {
                         Label("View Original Recipe", systemImage: "arrow.up.right.square")
                     }
@@ -1092,7 +1092,7 @@ private struct SharedRecipeDetailView: View {
                     }
                 }
 
-                if let sourceURL = entry.sourceURL, let url = URL(string: sourceURL) {
+                if let url = SafeWebLink.url(from: entry.sourceURL) {
                     Link(destination: url) {
                         Label("View Original Recipe", systemImage: "arrow.up.right.square")
                     }
