@@ -587,8 +587,17 @@ struct GroupSharedGroceryListView: View {
     private var byCategorySections: some View {
         if purchasableItems.isEmpty {
             Section {
-                Text("Nothing on your list yet. Type something above, or tap Prepopulate Groceries below.")
-                    .foregroundStyle(.secondary)
+                // Same `ContentUnavailableView` convention every other
+                // empty state in this app already uses (RecipesHomeView,
+                // GroupRecipePreviewView, ...) — this one was still a bare
+                // `Text`, reading as noticeably plainer than the rest of
+                // the app right next to it.
+                ContentUnavailableView(
+                    "Nothing on Your List Yet",
+                    systemImage: "cart",
+                    description: Text("Type something above, or tap Prepopulate Groceries below.")
+                )
+                .listRowBackground(Color.clear)
             }
         }
         ForEach(purchasableByCategory, id: \.0) { category, categoryItems in

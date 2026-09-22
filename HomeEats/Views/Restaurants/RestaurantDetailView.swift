@@ -25,6 +25,7 @@ struct RestaurantDetailView: View {
 
     var body: some View {
         RestaurantInfoScaffold(
+            name: restaurant.name,
             descriptorLine: restaurant.descriptorLine,
             address: restaurant.address,
             photoNames: restaurant.googlePhotoNames,
@@ -94,6 +95,7 @@ struct RestaurantSearchResultDetailView: View {
 
     var body: some View {
         RestaurantInfoScaffold(
+            name: result.name,
             descriptorLine: result.descriptorLine,
             address: result.address,
             photoNames: result.photoNames,
@@ -137,6 +139,7 @@ struct RestaurantSearchResultDetailView: View {
 /// navigation title/toolbar (Edit vs. Add — see each view's own doc
 /// comment).
 private struct RestaurantInfoScaffold: View {
+    let name: String
     let descriptorLine: String?
     let address: String?
     let photoNames: [String]
@@ -254,7 +257,40 @@ private struct RestaurantInfoScaffold: View {
                 }
                 .buttonStyle(.bordered)
             }
+
+            // A plain, native share sheet (text + a Maps link) — direct
+            // fix for a real gap: there was no way at all to pass a
+            // restaurant along to someone outside the app (a text to a
+            // friend, an email). Deliberately NOT a second in-app
+            // sharing/library system alongside recipe-library's — the
+            // scope here is just "let someone send this restaurant to
+            // someone else," which iOS's own share sheet already covers.
+            ShareLink(item: shareText) {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(.bordered)
         }
+    }
+
+    private var shareText: String {
+        var lines = [name]
+        if let descriptorLine, !descriptorLine.isEmpty { lines.append(descriptorLine) }
+        if let address, !address.isEmpty { lines.append(address) }
+        lines.append(googleMapsSearchURL.absoluteString)
+        return lines.joined(separator: "\n")
+    }
+
+    /// A Google Maps search link for this restaurant, built from its name
+    /// (unlike `openInGoogleMaps()`'s own query below, which doesn't
+    /// include it — that's an existing, separate quirk of that function
+    /// left untouched here) plus its address when there is one. Non-
+    /// optional with a bare-Maps fallback since `ShareLink(item:)` needs a
+    /// concrete value, not something that can fail to build.
+    private var googleMapsSearchURL: URL {
+        let query = [name, address].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        return URL(string: "https://www.google.com/maps/search/?api=1&query=\(encoded)")
+            ?? URL(string: "https://www.google.com/maps")!
     }
 
     /// Hours/phone/reviews, pulled directly from Google — only shown when
