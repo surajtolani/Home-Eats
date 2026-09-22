@@ -31,6 +31,13 @@ struct RecipeEditorView: View {
     /// Backs the "Add Anyway?" confirmation dialog — see `duplicateMatch`'s
     /// own doc comment.
     @State private var showDuplicateConfirm = false
+    /// Backs the "Delete Recipe" confirmation dialog below — direct fix
+    /// for a real gap: an existing recipe could only ever be deleted by
+    /// finding it again in the list and swiping, never from its own
+    /// edit screen. Only shown when `existing != nil` — nothing to
+    /// delete for a recipe that isn't saved yet.
+    @State private var showDeleteConfirm = false
+    @State private var deleteBlockedMessage: String?
 
     /// Direct user request: "Recipes... should not be able to be added
     /// twice." Only meaningful for a brand-new recipe (`existing == nil`)
@@ -135,6 +142,13 @@ struct RecipeEditorView: View {
                         .font(.brandSubheadline)
                         .foregroundStyle(.secondary)
                 }
+                if existing != nil {
+                    Section {
+                        Button("Delete Recipe", role: .destructive) {
+                            showDeleteConfirm = true
+                        }
+                    }
+                }
             }
             .navigationTitle(existing == nil ? "New Recipe" : "Edit Recipe")
             .navigationBarTitleDisplayMode(.inline)
@@ -146,6 +160,28 @@ struct RecipeEditorView: View {
                     Button("Save") { attemptSave() }
                         .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+            }
+            .confirmationDialog(
+                "Delete \"\(existing?.title ?? "")\"?",
+                isPresented: $showDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Recipe", role: .destructive) { Task { await deleteExisting() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This can't be undone.")
+            }
+            .alert(
+                "Can't Delete This Recipe",
+                isPresented: Binding(
+                    get: { deleteBlockedMessage != nil },
+                    set: { isPresented in if !isPresented { deleteBlockedMessage = nil } }
+                ),
+                presenting: deleteBlockedMessage
+            ) { _ in
+                Button("OK") {}
+            } message: { message in
+                Text(message)
             }
             .onChange(of: selectedPhotoItem) { _, newItem in
                 Task {
@@ -211,5 +247,15 @@ struct RecipeEditorView: View {
             modelContext.insert(recipe)
         }
         dismiss()
+    }
+
+    /// See `RecipeDeletion`'s own doc comment for the actual delete/block
+    /// rules, shared with `RecipesHomeView`'s swipe-to-delete.
+    private func deleteExisting() async {
+        guard let existing else { return }
+        switch await RecipeDeletion.attempt(existing, in: modelContext) {
+        case .deleted: dismiss()
+        case .blocked(let message): deleteBlockedMessage = message
+        }
     }
 }

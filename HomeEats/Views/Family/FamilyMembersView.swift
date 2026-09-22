@@ -77,6 +77,12 @@ private struct FamilyMemberEditorView: View {
     @State private var colorHex: String
 
     private static let palette = ["4E9F3D", "2E86AB", "E4572E", "9B5DE5", "F4A259", "168AAD", "D64550", "5C7457"]
+    /// Human-readable names for `palette`, in the same order — a bare
+    /// `Color(hex:)` swatch has nothing for VoiceOver to announce beyond
+    /// "image" with no further description; these give each one a real
+    /// accessibility label. Direct fix for a real gap: someone using
+    /// VoiceOver had no way to tell these eight swatches apart at all.
+    private static let paletteNames = ["Green", "Blue", "Orange Red", "Purple", "Peach", "Teal", "Red", "Olive"]
 
     init(existing: FamilyMember? = nil) {
         self.existing = existing
@@ -92,16 +98,29 @@ private struct FamilyMemberEditorView: View {
                 Toggle("Kid", isOn: $isChild)
                 Section("Color") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
-                        ForEach(Self.palette, id: \.self) { hex in
-                            Circle()
-                                .fill(Color(hex: hex))
-                                .frame(width: 36, height: 36)
-                                .overlay {
-                                    if hex == colorHex {
-                                        Image(systemName: "checkmark").foregroundStyle(.white)
+                        ForEach(Array(Self.palette.enumerated()), id: \.element) { index, hex in
+                            let isSelected = hex == colorHex
+                            // A `Button`, not a bare `.onTapGesture` (what
+                            // this used to be) — a plain shape with a tap
+                            // gesture isn't recognized as an interactive
+                            // element by VoiceOver at all, let alone
+                            // labeled, so this swatch grid was entirely
+                            // unusable without sight.
+                            Button {
+                                colorHex = hex
+                            } label: {
+                                Circle()
+                                    .fill(Color(hex: hex))
+                                    .frame(width: 36, height: 36)
+                                    .overlay {
+                                        if isSelected {
+                                            Image(systemName: "checkmark").foregroundStyle(.white)
+                                        }
                                     }
-                                }
-                                .onTapGesture { colorHex = hex }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(Self.paletteNames[index])
+                            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                         }
                     }
                     .padding(.vertical, 4)

@@ -131,21 +131,16 @@ struct RestaurantListView: View {
             .listRowSeparator(.hidden)
     }
 
+    /// See `RestaurantDeletion`'s own doc comment for the actual
+    /// delete/block rules, shared with `RestaurantEditorView`'s "Delete
+    /// Restaurant" button.
     private func deleteRestaurants(at offsets: IndexSet, in sectionRestaurants: [Restaurant]) {
         for index in offsets {
             let restaurant = sectionRestaurants[index]
-            guard !CascadeCleanup.isRestaurantInAnyPlannedMeal(restaurantID: restaurant.id, in: modelContext) else {
-                deleteBlockedMessage = "\"\(restaurant.name)\" is in your meal plan. Remove it from the plan before deleting it."
-                continue
+            switch RestaurantDeletion.attempt(restaurant, in: modelContext) {
+            case .deleted: break
+            case .blocked(let message): deleteBlockedMessage = message
             }
-            CascadeCleanup.removeReferences(toRestaurantID: restaurant.id, in: modelContext)
-            // Same "immediate, online-only, captured before the local
-            // delete" pattern as `RecipesHomeView`'s own recipe delete —
-            // see `PersonalLibrarySyncService`'s doc comment.
-            if let backendID = restaurant.backendID {
-                Task { try? await AccountsAPIClient.deleteRestaurant(id: backendID) }
-            }
-            modelContext.delete(restaurant)
         }
     }
 

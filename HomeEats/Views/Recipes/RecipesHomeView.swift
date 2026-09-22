@@ -803,42 +803,14 @@ struct RecipesHomeView: View {
     }
 
     /// Deletes a recipe from "My Recipes"/"Favorites" (swipe-to-delete, or
-    /// `DuplicateRecipesView`'s bulk cleanup) — blocked outright if it's
-    /// still in the local, personal plan (see `CascadeCleanup`'s own doc
-    /// comment). For a recipe that's also synced to the backend, this now
-    /// *waits* for the backend's own equivalent check — a recipe still
-    /// decided into a *group's* shared plan — before committing the local
-    /// delete, rather than firing that request in the background and
-    /// deleting locally regardless of what it says (the old "immediate,
-    /// online-only" behavior, which is exactly how a recipe still in a
-    /// group's plan ended up silently deleted out from under it, leaving
-    /// that plan entry as a broken "Planned"/"by Someone" row — direct
-    /// user report). A genuine connectivity failure (`AccountsAPIError`
-    /// case other than `.server`, e.g. offline) still falls back to the
-    /// previous offline-tolerant behavior — delete locally now, let the
-    /// next opportunistic sync reconcile — since there's no way to know
-    /// either way while offline, and blocking every delete just because
-    /// the network happens to be down would be its own regression.
+    /// `DuplicateRecipesView`'s bulk cleanup) — see `RecipeDeletion`'s own
+    /// doc comment for the actual delete/block rules, shared with
+    /// `RecipeEditorView`'s "Delete Recipe" button.
     private func deleteRecipe(_ recipe: Recipe) {
-        guard !CascadeCleanup.isRecipeInAnyPlannedMeal(recipeID: recipe.id, in: modelContext) else {
-            deleteBlockedMessage = "\"\(recipe.title)\" is in your meal plan. Remove it from the plan before deleting it."
-            return
-        }
-        guard let backendRecipeID = recipe.backendRecipeID else {
-            CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-            modelContext.delete(recipe)
-            return
-        }
         Task {
-            do {
-                try await AccountsAPIClient.deleteRecipe(id: backendRecipeID)
-                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-                modelContext.delete(recipe)
-            } catch AccountsAPIError.server(let message) {
-                deleteBlockedMessage = message
-            } catch {
-                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-                modelContext.delete(recipe)
+            switch await RecipeDeletion.attempt(recipe, in: modelContext) {
+            case .deleted: break
+            case .blocked(let message): deleteBlockedMessage = message
             }
         }
     }

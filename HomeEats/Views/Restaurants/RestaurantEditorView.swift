@@ -26,6 +26,12 @@ struct RestaurantEditorView: View {
     /// own doc comment for why this only ever applies to a brand-new
     /// restaurant (`existing == nil`), never an edit.
     @State private var showDuplicateConfirm = false
+    /// Backs the "Delete Restaurant" confirmation dialog below — direct
+    /// fix for a real gap: an existing restaurant could only ever be
+    /// deleted by finding it again in the list and swiping, never from
+    /// its own edit screen. Only shown when `existing != nil`.
+    @State private var showDeleteConfirm = false
+    @State private var deleteBlockedMessage: String?
 
     private static let priceOptions = ["$", "$$", "$$$", "$$$$"]
 
@@ -96,6 +102,13 @@ struct RestaurantEditorView: View {
                     TextEditor(text: $notes)
                         .frame(minHeight: 80)
                 }
+                if existing != nil {
+                    Section {
+                        Button("Delete Restaurant", role: .destructive) {
+                            showDeleteConfirm = true
+                        }
+                    }
+                }
             }
             .navigationTitle(existing == nil ? "New Restaurant" : "Edit Restaurant")
             .navigationBarTitleDisplayMode(.inline)
@@ -117,6 +130,28 @@ struct RestaurantEditorView: View {
                 Button("Add Anyway") { save() }
             } message: { match in
                 Text("You already have a restaurant named \"\(match.name)\". Add another one with the same name?")
+            }
+            .confirmationDialog(
+                "Delete \"\(existing?.name ?? "")\"?",
+                isPresented: $showDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Restaurant", role: .destructive) { deleteExisting() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This can't be undone.")
+            }
+            .alert(
+                "Can't Delete This Restaurant",
+                isPresented: Binding(
+                    get: { deleteBlockedMessage != nil },
+                    set: { isPresented in if !isPresented { deleteBlockedMessage = nil } }
+                ),
+                presenting: deleteBlockedMessage
+            ) { _ in
+                Button("OK") {}
+            } message: { message in
+                Text(message)
             }
         }
     }
@@ -144,6 +179,17 @@ struct RestaurantEditorView: View {
         }
         onSave(restaurant)
         dismiss()
+    }
+
+    /// See `RestaurantDeletion`'s own doc comment for the actual
+    /// delete/block rules, shared with `RestaurantListView`'s
+    /// swipe-to-delete.
+    private func deleteExisting() {
+        guard let existing else { return }
+        switch RestaurantDeletion.attempt(existing, in: modelContext) {
+        case .deleted: dismiss()
+        case .blocked(let message): deleteBlockedMessage = message
+        }
     }
 }
 
