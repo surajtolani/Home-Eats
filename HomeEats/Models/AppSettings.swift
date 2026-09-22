@@ -3,7 +3,7 @@ import SwiftData
 
 /// Singleton-style settings row (there's always exactly one, looked up by
 /// `AppSettings.singletonID`). Holds the configurable weekly planning
-/// reminder and the phase-2 cloud sync placeholder toggle.
+/// reminder.
 @Model
 final class AppSettings {
     @Attribute(.unique) var id: UUID
@@ -13,10 +13,6 @@ final class AppSettings {
     var reminderWeekday: Int
     var reminderHour: Int
     var reminderMinute: Int
-    /// Placeholder for the optional account/cloud-sync phase described in the
-    /// spec. Local storage is always the source of truth; this only flags
-    /// intent until sync is implemented.
-    var cloudSyncEnabled: Bool
 
     init(
         id: UUID = AppSettings.singletonID,
@@ -24,8 +20,7 @@ final class AppSettings {
         reminderEnabled: Bool = true,
         reminderWeekday: Int = 1, // Sunday
         reminderHour: Int = 18,
-        reminderMinute: Int = 0,
-        cloudSyncEnabled: Bool = false
+        reminderMinute: Int = 0
     ) {
         self.id = id
         self.householdName = householdName
@@ -33,7 +28,6 @@ final class AppSettings {
         self.reminderWeekday = reminderWeekday
         self.reminderHour = reminderHour
         self.reminderMinute = reminderMinute
-        self.cloudSyncEnabled = cloudSyncEnabled
     }
 
     static let singletonID = UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!

@@ -607,6 +607,12 @@ private struct GroupDayCell: View {
         VStack(spacing: 2) {
             Text(dayNumber)
                 .font(.brandSubheadline.weight(isToday ? .bold : .regular))
+                // At larger Dynamic Type sizes, a two-digit day number
+                // ("28") can outgrow this fixed 26pt circle and clip —
+                // `minimumScaleFactor` lets it shrink to fit rather than
+                // cut off, same fix as `f26`'s twin finding elsewhere.
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
                 .frame(width: 26, height: 26)
                 .background {
                     if isToday {

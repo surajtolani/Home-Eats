@@ -107,6 +107,15 @@ private struct AddProductOptionSheet: View {
                                 .scaledToFit()
                                 .frame(maxHeight: 160)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                                // Once a photo's picked, this button's only
+                                // visible content becomes the raw photo
+                                // itself — with no label at all, VoiceOver
+                                // just reads it as an unlabeled image
+                                // rather than as a button that opens the
+                                // photo picker again. A real, confirmed
+                                // gap: the "Add a Photo" label below only
+                                // ever existed before a photo was chosen.
+                                .accessibilityLabel("Change photo")
                         } else {
                             Label("Add a Photo", systemImage: "camera")
                         }

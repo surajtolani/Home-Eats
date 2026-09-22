@@ -220,16 +220,6 @@ struct SettingsView: View {
             } footer: {
                 Text("Add one reminder for each time your family typically shops or orders groceries — some households do this more than once a week.")
             }
-
-            Section {
-                Toggle("iCloud Sync (coming soon)", isOn: Binding(
-                    get: { settings.cloudSyncEnabled },
-                    set: { settings.cloudSyncEnabled = $0 }
-                ))
-                .disabled(true)
-            } footer: {
-                Text("Home Eats stores everything on this device and works fully offline. Optional account sync across every family member's phone is planned for a later update.")
-            }
         }
         .navigationTitle("Settings")
         .task {

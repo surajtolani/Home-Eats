@@ -356,6 +356,12 @@ private struct DayCell: View {
         VStack(spacing: 4) {
             Text(dayNumber)
                 .font(.brandSubheadline.weight(isToday ? .bold : .regular))
+                // Same fix, same reasoning, as `GroupDayCell`'s identical
+                // change in GroupSharedMealPlanView.swift — a two-digit day
+                // number can clip inside this fixed circle at larger
+                // Dynamic Type sizes without it.
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
                 .frame(width: 30, height: 30)
                 .background {
                     if isToday {
