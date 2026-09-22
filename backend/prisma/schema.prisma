@@ -62,6 +62,20 @@ model User {
   state       String?
   country     String?
   createdAt   DateTime @default(now())
+  // A bearer JWT (see routes/auth.js's `signToken`) is stateless and valid
+  // for a full 30 days with no way to cancel one early — a real gap for an
+  // account holding phone numbers, names, and group membership: a leaked
+  // token (a lost unlocked phone, a log exposure, a MITM'd debug build)
+  // stayed live until it naturally expired, with no "sign out everywhere."
+  // Every newly-issued token now embeds the signer's `tokenVersion` at that
+  // moment; `middleware/requireAuth.js` rejects any token whose embedded
+  // version doesn't match this column's *current* value, the same way it
+  // already rejects an expired one. Bumping this column (not yet wired to
+  // any endpoint — that's a future "sign out other devices" feature this
+  // just makes possible) invalidates every token issued before the bump in
+  // one write, without needing a separate denylist table to track them
+  // individually.
+  tokenVersion Int @default(0)
 
   // Friend requests this user sent / received. A Friendship is queryable
   // from either side by combining these two relations (see routes/friends.js).

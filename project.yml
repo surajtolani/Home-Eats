@@ -45,8 +45,15 @@ targets:
         # tells Apple the app doesn't support multitasking at all, which is
         # true by design here — not a workaround, the accurate declaration.
         UIRequiresFullScreen: true
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
+        # No NSAppTransportSecurity override — every backend call this app
+        # makes is already HTTPS (AccountsAPIClient/GooglePlacesService/
+        # ClaudeRecipeService all point at https:// URLs), so the default,
+        # HTTPS-required ATS behavior costs nothing. The previous
+        # NSAllowsArbitraryLoads: true blanket opt-out was unused (nothing
+        # in the app's own traffic needed it) and a plausible App Store
+        # review flag — reviewers specifically ask submitters to justify
+        # this exception, and "no real reason" is a common cause of a
+        # rejected/delayed submission.
         CFBundleDisplayName: Home Eats
         ITSAppUsesNonExemptEncryption: false
         NSCameraUsageDescription: "Home Eats uses your camera to photograph a recipe (a cookbook page, a recipe card, a handwritten note) so it can be added to your recipe box."

@@ -58,11 +58,16 @@ function firstIssue(error, fallback) {
   return error.issues[0]?.message || fallback;
 }
 
-function signToken(userId) {
+function signToken(userId, tokenVersion) {
   // 30 days: long enough that a phone-based app (where re-typing an SMS
   // code every session would be actively annoying) stays signed in across
   // normal use, short enough that a leaked token doesn't work forever.
-  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: "30d" });
+  // `tokenVersion` embedded here is what makes a *shorter*-than-30-days
+  // revocation possible at all — see User.tokenVersion's own doc comment
+  // in prisma/schema.prisma and middleware/requireAuth.js, which rejects
+  // any token whose embedded version has fallen behind the account's
+  // current one.
+  return jwt.sign({ userId, tokenVersion }, process.env.JWT_SECRET, { expiresIn: "30d" });
 }
 
 // POST /auth/request-code
@@ -239,7 +244,7 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
       return newUser;
     });
 
-    const token = signToken(user.id);
+    const token = signToken(user.id, user.tokenVersion);
     res.json({
       token,
       // Same full "self" shape GET/PATCH /me return (routes/me.js's

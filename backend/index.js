@@ -36,12 +36,22 @@ const app = express();
 // Render puts every request through its own reverse proxy, so without this
 // `req.ip` would just be that proxy's address for every request — useless
 // for the per-IP request-code rate limiter in routes/auth.js, which needs
-// the real client IP from the `X-Forwarded-For` header Render sets. `true`
-// trusts that header from the immediate upstream hop, which is exactly
-// Render's proxy in this deployment (see backend/README.md's deploy
-// section — this always runs behind it, there's no direct-to-internet
-// deployment path to worry about spoofing this header on).
-app.set("trust proxy", true);
+// the real client IP from the `X-Forwarded-For` header Render sets.
+//
+// `1`, not `true` — a real, confirmed bug: Express's `trust proxy: true`
+// trusts *every* hop in `X-Forwarded-For`, not just the immediate one (the
+// comment this replaced claimed otherwise; that claim was simply wrong —
+// `1` is what actually means "trust exactly one hop upstream"). With
+// `true`, a caller could set its own `X-Forwarded-For: <anything>` header
+// and have `req.ip` resolve to that attacker-chosen value instead of
+// Render's own record of who actually connected — fully defeating the
+// per-IP limiter it exists for (`requestCodeIPLimiter` in routes/auth.js),
+// letting a scripted caller spray verification-code sends across many
+// phone numbers by rotating a fake header on every request. `1` trusts
+// only Render's own proxy hop (this deployment always runs behind exactly
+// one — see backend/README.md's deploy section) and nothing a client
+// supplies.
+app.set("trust proxy", 1);
 // A downsized recipe photo (see ImageResizing.swift in the iOS app - it
 // caps images at 800px on the long edge before base64-encoding) is well
 // under 1MB, but give real headroom rather than a tight limit that fails
@@ -457,10 +467,23 @@ app.post("/restaurants/search-natural", async (req, res) => {
 // this URL. `name` is one of the stable "places/ID/photos/REF" strings
 // returned in `photoNames` from /restaurants/search (or saved on a
 // Restaurant) — call this once per photo, not all at once.
+// `name` gets spliced directly into the outbound URL's *path* below, so a
+// plain `encodeURIComponent` isn't the right fix on its own — it would
+// escape the literal `/`s this shape legitimately contains, breaking every
+// real request. Validating the exact expected shape first is what actually
+// closes the gap: a real, confirmed finding was that a value containing
+// `?`/`&` here could inject extra query parameters into the request this
+// server's billed Google API key actually sends. Anything that doesn't
+// match this shape is rejected outright rather than passed through.
+const PHOTO_NAME_PATTERN = /^places\/[^/?#&]+\/photos\/[^/?#&]+$/;
+
 app.get("/restaurants/photo", async (req, res) => {
   const name = (req.query.name || "").toString().trim();
   if (!name) {
     return res.status(400).json({ error: "Missing required query param 'name'." });
+  }
+  if (!PHOTO_NAME_PATTERN.test(name)) {
+    return res.status(400).json({ error: "Invalid 'name' format." });
   }
   if (!GOOGLE_PLACES_API_KEY) {
     return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
@@ -507,7 +530,14 @@ app.get("/restaurants/details", async (req, res) => {
   }
 
   try {
-    const response = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
+    // `encodeURIComponent`, not the raw value — a real, confirmed finding
+    // was that an unescaped `?`/`&` here could inject extra query
+    // parameters into the request this server's billed Google API key
+    // actually sends. `placeId` is a single path segment (unlike
+    // `/restaurants/photo`'s `name` above, which legitimately contains
+    // `/`s), so plain encoding is the right fix here, matching the pattern
+    // GET /cities/:placeID already uses correctly.
+    const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`, {
       headers: {
         "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
         "X-Goog-FieldMask": [
