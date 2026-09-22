@@ -167,8 +167,11 @@ struct FriendsList: Codable {
 }
 
 /// One row of `GET /groups` — the lightweight "which groups am I in" list,
-/// with no member list (see `GroupDetail` for that).
-struct GroupSummary: Codable, Identifiable {
+/// with no member list (see `GroupDetail` for that). `Hashable` (synthesized
+/// — every stored property is itself `Hashable`) so `GroupSwitcherMenu`'s
+/// `.navigationDestination(item: $pushedGroup)` can use it directly; that
+/// specific overload requires `Hashable`, not just `Identifiable`.
+struct GroupSummary: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     /// Nullable: the backend's `Group.createdByUserId` clears (`SetNull`)
