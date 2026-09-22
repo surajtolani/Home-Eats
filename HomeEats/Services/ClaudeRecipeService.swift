@@ -33,7 +33,15 @@ enum ClaudeRecipeServiceError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConfigured:
-            return "AI recipe features aren't set up yet — see backend/README.md."
+            // Never mention "backend/README.md" here — a real, confirmed
+            // finding was this internal dev-setup instruction leaking
+            // straight into production UI (see the matching fix in
+            // RecipeAIImportView/RecommendMealView/RestaurantListView's
+            // own `!isConfigured` sections). This case is normally
+            // unreachable in a shipped build anyway — those three screens
+            // already gate their AI actions behind `isConfigured`, so this
+            // string is only a fallback for whatever call site doesn't.
+            return "AI recipe features aren't available right now. Please try again later."
         case .requestFailed:
             return "Couldn't reach the recipe assistant. Check your connection and try again."
         case .noRecipeFound:

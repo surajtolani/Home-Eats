@@ -55,7 +55,18 @@ struct RecipeAIImportView: View {
             Form {
                 if !ClaudeRecipeService.isConfigured {
                     Section {
-                        Text("AI recipe import isn't set up yet — see backend/README.md to enable it.")
+                        // Never a real, expected case in a shipped build —
+                        // `ClaudeRecipeService.isConfigured` only goes false
+                        // if this app's own deployed backend has no
+                        // `ANTHROPIC_API_KEY` set (a dev/deployment
+                        // misconfiguration, see backend/README.md), which
+                        // an end user has no way to act on. This used to
+                        // literally say "see backend/README.md to enable
+                        // it" — a real, confirmed finding: a raw internal
+                        // file path/dev instruction with no meaning to
+                        // anyone outside this codebase, shown straight in
+                        // production UI.
+                        Text("AI recipe import isn't available right now. Please try again later.")
                             .foregroundStyle(.secondary)
                     }
                 }

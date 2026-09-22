@@ -122,6 +122,13 @@ struct RecipesHomeView: View {
                 Image(systemName: "sparkles")
             }
             .buttonStyle(.plain)
+            // Same pre-disabled-rather-than-tap-and-fail treatment as
+            // `RestaurantListView.searchFieldRow`'s own sparkles button —
+            // this one only needs Claude, not also Google Places, but
+            // matches that button's reasoning: no point letting someone
+            // tap into a sheet that can only ever show "AI recipe features
+            // aren't set up yet" once ClaudeRecipeService isn't configured.
+            .disabled(!ClaudeRecipeService.isConfigured)
             .accessibilityLabel("Recommend a Meal")
             Spacer().frame(width: 6)
             Menu {

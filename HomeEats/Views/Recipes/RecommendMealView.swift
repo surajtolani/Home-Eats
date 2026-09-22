@@ -32,7 +32,11 @@ struct RecommendMealView: View {
             Form {
                 if !ClaudeRecipeService.isConfigured {
                     Section {
-                        Text("This feature isn't set up yet — see backend/README.md to enable it.")
+                        // Same fix, same reasoning, as
+                        // `RecipeAIImportView`'s identical section — see
+                        // that one's own doc comment. Never a real,
+                        // expected case in a shipped build.
+                        Text("This feature isn't available right now. Please try again later.")
                             .foregroundStyle(.secondary)
                     }
                 }
