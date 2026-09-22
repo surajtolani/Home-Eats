@@ -513,12 +513,34 @@ struct GroupSharedMealPlanView: View {
 
     // MARK: - Shared helpers
 
+    // Real, confirmed bug: the month grid's dots and the weekly agenda's
+    // per-day counts (both call these two functions) could disagree with
+    // what the day panel underneath actually shows — a day with a dot
+    // opening to nothing, or a day with real content showing no dot.
+    // Root cause: `GroupPlannedMeal.normalize`/`GroupMealSuggestion`'s
+    // stored `date` is anchored to a fixed UTC calendar (see that
+    // function's own doc comment — deliberately device-independent, fixing
+    // an earlier cross-device date-shift bug), but `date` here was always
+    // a raw `Calendar.current`-based grid/agenda day, compared directly via
+    // `.isSameDay(as:)` (itself `Calendar.current`-based) with no
+    // normalization step in between. For any negative-UTC-offset device —
+    // this household included — UTC midnight of a given day falls on the
+    // *previous* local calendar day, so every single populated day's dot
+    // silently landed one cell to the left of its actual content. Only
+    // ever visible on days that actually have something planned/suggested,
+    // which is exactly the "some days have dots but nothing shows, other
+    // days show content with no dot" symptom reported. `GroupDaySlotsView
+    // .meals(for:)`/`.suggestions(for:)` already route their own date
+    // through `GroupPlannedMeal.normalize` before comparing — this just
+    // brings these two in line with that same, already-correct pattern.
     private func meals(on date: Date) -> [GroupPlannedMeal] {
-        visiblePlannedMeals.filter { $0.date.isSameDay(as: date) }
+        let normalizedDate = GroupPlannedMeal.normalize(date)
+        return visiblePlannedMeals.filter { $0.date.isSameDay(as: normalizedDate) }
     }
 
     private func suggestionCount(on date: Date) -> Int {
-        visibleSuggestions.filter { $0.date.isSameDay(as: date) }.count
+        let normalizedDate = GroupPlannedMeal.normalize(date)
+        return visibleSuggestions.filter { $0.date.isSameDay(as: normalizedDate) }.count
     }
 
     private func changeMonth(by value: Int) {
