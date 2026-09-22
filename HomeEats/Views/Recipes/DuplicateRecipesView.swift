@@ -113,31 +113,18 @@ struct DuplicateRecipesView: View {
         }
     }
 
-    /// Identical to `RecipesHomeView.deleteRecipe(_:)` — see that method's
-    /// own doc comment for why this awaits the backend's own "still in a
-    /// group's plan" check before committing the local delete, same
-    /// reasoning as `DuplicateRestaurantsView.delete(_:)` for not
-    /// factoring this out into one shared function.
+    /// See `RecipeDeletion`'s own doc comment for the actual delete/block
+    /// rules, shared with `RecipesHomeView`'s swipe-to-delete and
+    /// `RecipeEditorView`'s "Delete Recipe" button — this used to be its
+    /// own separate copy of that logic (predating `RecipeDeletion`), which
+    /// meant a real bug fixed there (a `.shared` recipe's saved copy always
+    /// 403ing on delete — see `RecipeDeletion.attempt`'s own doc comment)
+    /// still reproduced here until now.
     private func delete(_ recipe: Recipe) {
-        guard !CascadeCleanup.isRecipeInAnyPlannedMeal(recipeID: recipe.id, in: modelContext) else {
-            deleteBlockedMessage = "\"\(recipe.title)\" is in your meal plan. Remove it from the plan before deleting it."
-            return
-        }
-        guard let backendRecipeID = recipe.backendRecipeID else {
-            CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-            modelContext.delete(recipe)
-            return
-        }
         Task {
-            do {
-                try await AccountsAPIClient.deleteRecipe(id: backendRecipeID)
-                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-                modelContext.delete(recipe)
-            } catch AccountsAPIError.server(let message) {
-                deleteBlockedMessage = message
-            } catch {
-                CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
-                modelContext.delete(recipe)
+            switch await RecipeDeletion.attempt(recipe, in: modelContext) {
+            case .deleted: break
+            case .blocked(let message): deleteBlockedMessage = message
             }
         }
     }

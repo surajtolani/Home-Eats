@@ -29,12 +29,27 @@ enum RecipeDeletion {
     /// reconcile — since there's no way to know either way while offline,
     /// and blocking every delete just because the network happens to be
     /// down would be its own regression.
+    ///
+    /// **`.shared` recipes never call the backend delete at all** — direct
+    /// fix for a real, confirmed bug: a `.shared` recipe (a saved copy of a
+    /// friend/group's share, or of a community Library recipe — see
+    /// `RecipeSource.shared`'s own doc comment) still carries a
+    /// `backendRecipeID`, but that id names the ORIGINAL owner's recipe row,
+    /// not this account's own. Calling `DELETE /recipe-library/:id` on it
+    /// always 403s ("Only the recipe's owner can delete it") — correctly,
+    /// since this account never owned that row — but the caller only ever
+    /// wanted to remove their own local saved copy, which every `.shared`
+    /// recipe already is in full the moment it exists locally at all (no
+    /// separate "saved" flag the way `.library` has — see
+    /// `RecipeSource.shared`'s doc comment on that distinction). This local
+    /// delete removes exactly that saved copy, with no backend call to fail
+    /// on someone else's behalf.
     @MainActor
     static func attempt(_ recipe: Recipe, in modelContext: ModelContext) async -> Outcome {
         guard !CascadeCleanup.isRecipeInAnyPlannedMeal(recipeID: recipe.id, in: modelContext) else {
             return .blocked("\"\(recipe.title)\" is in your meal plan. Remove it from the plan before deleting it.")
         }
-        guard let backendRecipeID = recipe.backendRecipeID else {
+        guard let backendRecipeID = recipe.backendRecipeID, recipe.source != .shared else {
             CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
             modelContext.delete(recipe)
             return .deleted
