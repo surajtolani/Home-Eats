@@ -123,7 +123,12 @@ struct RecipesHomeView: View {
     private var searchFieldRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search recipes", text: $searchText)
+            // Direct user request: it wasn't clear the search bar only
+            // searches whichever section is selected above it (My Recipes/
+            // Favorites/Library/Shared) — the placeholder now names that
+            // section explicitly instead of a generic "Search recipes" for
+            // all four.
+            TextField("Search \(section.rawValue)", text: $searchText)
                 .focused($isSearchFieldFocused)
                 .submitLabel(.search)
                 .onSubmit { isSearchFieldFocused = false }
@@ -517,11 +522,27 @@ struct RecipesHomeView: View {
                 systemImage: "square.and.arrow.up",
                 description: Text("Recipes friends or groups share with you will show up here.")
             )
+        } else if filteredSharedRecipes.isEmpty {
+            // The placeholder above now says "Search Shared" while this tab
+            // is active — it used to say that but silently ignore
+            // `searchText` entirely, so typing here did nothing. Same "no
+            // matches" wording as `displayedRecipes`' own empty case for
+            // `.mine`/`.favorites`/`.library`.
+            ContentUnavailableView(
+                "No Matches",
+                systemImage: "line.3.horizontal.decrease.circle",
+                description: Text("No shared recipes match your search.")
+            )
         } else {
-            ForEach(sharedRecipes) { entry in
+            ForEach(filteredSharedRecipes) { entry in
                 sharedRecipeCard(entry)
             }
         }
+    }
+
+    private var filteredSharedRecipes: [SharedRecipeEntry] {
+        guard !searchText.isEmpty else { return sharedRecipes }
+        return sharedRecipes.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
 
     /// A `MediaTileRow` matching `recipeCard`/`masterLibraryCard`'s own
