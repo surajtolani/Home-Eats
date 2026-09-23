@@ -1059,7 +1059,17 @@ struct RecipesHomeView: View {
     @ViewBuilder
     private var webSearchSectionContent: some View {
         if isSearchLongEnoughForWeb {
-            Section {
+            // `SwiftUI.Section`, explicitly qualified — this file's own
+            // nested `RecipesHomeView.Section` enum (the My Recipes/
+            // Favorites/Library/Shared tab picker, declared above) shadows
+            // the unqualified name, and this is the only place in this
+            // file that ever needed SwiftUI's `Section` view rather than
+            // that enum. Confirmed via a real CI build failure
+            // (ios-build.yml) on both this and the previous push — an
+            // ambiguity the balance-check script used throughout this
+            // session can't catch, since it only counts braces/parens, not
+            // types.
+            SwiftUI.Section {
                 if !accountSession.isSignedIn {
                     // Explicit, not just an absent section — see
                     // `isSearchLongEnoughForWeb`'s own doc comment for why.
