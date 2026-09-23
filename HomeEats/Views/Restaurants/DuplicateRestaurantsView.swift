@@ -27,6 +27,9 @@ struct DuplicateRestaurantsView: View {
     /// meal plan isn't safe to blanket-delete via "Keep Oldest, Delete
     /// Rest" either.
     @State private var deleteBlockedMessage: String?
+    /// Same fix, same reasoning, as `DuplicateRecipesView`'s own
+    /// `groupPendingBulkDelete` — see that type's doc comment.
+    @State private var groupPendingBulkDelete: [Restaurant]?
 
     private var duplicateGroups: [[Restaurant]] {
         let grouped = Dictionary(grouping: restaurants) { $0.name.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -77,7 +80,7 @@ struct DuplicateRestaurantsView: View {
                             Text("\(group.first?.name ?? "") — \(group.count) copies")
                         } footer: {
                             Button(role: .destructive) {
-                                for restaurant in group.dropFirst() { delete(restaurant) }
+                                groupPendingBulkDelete = group
                             } label: {
                                 Text("Keep Oldest, Delete Rest")
                             }
@@ -100,6 +103,20 @@ struct DuplicateRestaurantsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(deleteBlockedMessage ?? "")
+            }
+            .confirmationDialog(
+                "Delete \(max((groupPendingBulkDelete?.count ?? 1) - 1, 0)) Duplicate Restaurants?",
+                isPresented: Binding(get: { groupPendingBulkDelete != nil }, set: { if !$0 { groupPendingBulkDelete = nil } }),
+                titleVisibility: .visible,
+                presenting: groupPendingBulkDelete
+            ) { group in
+                Button("Delete", role: .destructive) {
+                    for restaurant in group.dropFirst() { delete(restaurant) }
+                    groupPendingBulkDelete = nil
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("Keeps the oldest copy and deletes the rest. This can't be undone.")
             }
         }
     }

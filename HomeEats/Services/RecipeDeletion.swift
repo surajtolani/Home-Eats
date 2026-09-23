@@ -60,7 +60,24 @@ enum RecipeDeletion {
             modelContext.delete(recipe)
             return .deleted
         } catch AccountsAPIError.server(let message) {
-            return .blocked(message)
+            // "Recipe not found." (backend/routes/recipeLibrary.js's DELETE
+            // route, a 404) means the backend row is already gone — most
+            // often because a SECOND local duplicate ended up pointing at
+            // the SAME backendRecipeID as one already deleted (see
+            // `RemoteRecipe.makeLocalRecipe()`'s own doc comment: two
+            // overlapping sync passes can leave two local rows sharing one
+            // backend id). Direct user report: deleting one duplicate,
+            // then the next, hit this on the second one. There's nothing
+            // left server-side to fail this delete against, so it isn't a
+            // real block — finish removing the local copy instead of
+            // showing a confusing "not found" alert for a recipe the user
+            // is looking straight at.
+            guard message == "Recipe not found." else {
+                return .blocked(message)
+            }
+            CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
+            modelContext.delete(recipe)
+            return .deleted
         } catch {
             CascadeCleanup.removeReferences(toRecipeID: recipe.id, in: modelContext)
             modelContext.delete(recipe)

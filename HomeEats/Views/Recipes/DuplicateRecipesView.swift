@@ -25,6 +25,14 @@ struct DuplicateRecipesView: View {
     /// meal plan isn't safe to blanket-delete via "Keep Oldest, Delete
     /// Rest" either.
     @State private var deleteBlockedMessage: String?
+    /// The group "Keep Oldest, Delete Rest" was tapped for, pending
+    /// confirmation — direct user report that this one-tap bulk action had
+    /// no "are you sure" before it fired, unlike `RecipeEditorView`'s own
+    /// "Delete Recipe" button. Per-row swipe-to-delete within a group still
+    /// has no separate dialog, matching `RecipesHomeView`'s own
+    /// swipe-to-delete (the swipe-then-tap-Delete gesture is itself the
+    /// confirmation step there); this button skipped even that.
+    @State private var groupPendingBulkDelete: [Recipe]?
 
     private var myRecipes: [Recipe] {
         allRecipes.filter { $0.source != .library || $0.isSavedToCollection }
@@ -86,7 +94,7 @@ struct DuplicateRecipesView: View {
                             Text("\(group.first?.title ?? "") — \(group.count) copies")
                         } footer: {
                             Button(role: .destructive) {
-                                for recipe in group.dropFirst() { delete(recipe) }
+                                groupPendingBulkDelete = group
                             } label: {
                                 Text("Keep Oldest, Delete Rest")
                             }
@@ -109,6 +117,20 @@ struct DuplicateRecipesView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(deleteBlockedMessage ?? "")
+            }
+            .confirmationDialog(
+                "Delete \(max((groupPendingBulkDelete?.count ?? 1) - 1, 0)) Duplicate Recipes?",
+                isPresented: Binding(get: { groupPendingBulkDelete != nil }, set: { if !$0 { groupPendingBulkDelete = nil } }),
+                titleVisibility: .visible,
+                presenting: groupPendingBulkDelete
+            ) { group in
+                Button("Delete", role: .destructive) {
+                    for recipe in group.dropFirst() { delete(recipe) }
+                    groupPendingBulkDelete = nil
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("Keeps the oldest copy and deletes the rest. This can't be undone.")
             }
         }
     }
