@@ -305,7 +305,16 @@ struct RecipesHomeView: View {
                 if section == .shared {
                     sharedSectionContent
                 } else {
-                    if displayedRecipes.isEmpty {
+                    // For `.library`, "empty" has to account for the master
+                    // library appended below the bundled recipes (see
+                    // `masterLibrarySectionContent`) too — otherwise a
+                    // search with zero bundled matches but real master-
+                    // library matches showed "No Matches" directly above
+                    // the real results it was claiming didn't exist. Direct
+                    // user report: searching Library showed "No Matches"
+                    // with the full (unfiltered, at the time) library
+                    // rendered right below it.
+                    if displayedRecipes.isEmpty && (section != .library || filteredMasterLibraryRecipes.isEmpty) {
                         // Direct fix for a real gap: filtering (or
                         // searching) a section down to zero matches used
                         // to show the exact same "add your first recipe"
@@ -719,11 +728,23 @@ struct RecipesHomeView: View {
                 Button("Retry") { Task { await loadMasterLibrary() } }
                     .font(.brandCaption)
             } else {
-                ForEach(masterLibraryRecipes) { entry in
+                // `filteredMasterLibraryRecipes`, not the raw array — this
+                // used to render every master-library entry regardless of
+                // `searchText` (same bug class `filteredSharedRecipes` fixes
+                // for the Shared tab), which is exactly what made a Library
+                // search that found zero *bundled* matches show "No
+                // Matches" immediately above the full, unfiltered master
+                // library anyway.
+                ForEach(filteredMasterLibraryRecipes) { entry in
                     masterLibraryCard(entry)
                 }
             }
         }
+    }
+
+    private var filteredMasterLibraryRecipes: [LibraryRecipeEntry] {
+        guard !searchText.isEmpty else { return masterLibraryRecipes }
+        return masterLibraryRecipes.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
 
     /// A `MediaTileRow` matching `recipeCard`'s own formatting exactly —
@@ -985,16 +1006,19 @@ struct RecipesHomeView: View {
 
     // MARK: Web search
 
-    /// `webSearchState`/`isSearchingWeb` are only ever meaningful once a
-    /// real search is in flight or has finished — a too-short query (typing
-    /// just started, or was cleared) shouldn't show a stale "From the Web"
-    /// section at all. Requires sign-in for the same reason the backend
-    /// route itself does (`requireAuth`): there's no token to attach
-    /// otherwise, and a supplementary web-results section failing with a
-    /// "sign in" error while the local list above works fine would read as
-    /// broken rather than just unavailable.
-    private var isWebSearchActive: Bool {
-        accountSession.isSignedIn && searchText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3
+    /// Purely about whether there's enough typed to search on — this alone
+    /// decides whether `webSearchSectionContent`'s "From the Web" `Section`
+    /// shows at all. Deliberately NOT also gated on sign-in here (an
+    /// earlier version was): that made the entire section vanish with zero
+    /// explanation for a signed-out tester, indistinguishable from the
+    /// feature just not existing/not working — direct report of exactly
+    /// that confusion ("I don't see the From the Web — are you sure it
+    /// works?"). Now the section always shows once there's a real query,
+    /// and a signed-out state shows its own explicit prompt inside it (see
+    /// `webSearchSectionContent`), same as `sharedSectionContent`'s own
+    /// sign-in prompt for the Shared tab.
+    private var isSearchLongEnoughForWeb: Bool {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3
     }
 
     /// Debounced, not fired on every keystroke — direct cost/quota
@@ -1007,7 +1031,7 @@ struct RecipesHomeView: View {
     /// `webSearchState`) out of order.
     private func scheduleWebSearch(for query: String) {
         webSearchTask?.cancel()
-        guard isWebSearchActive else {
+        guard isSearchLongEnoughForWeb, accountSession.isSignedIn else {
             webSearchState = .idle
             return
         }
@@ -1034,27 +1058,35 @@ struct RecipesHomeView: View {
     /// results below them, same tile format either way.
     @ViewBuilder
     private var webSearchSectionContent: some View {
-        if isWebSearchActive {
+        if isSearchLongEnoughForWeb {
             Section {
-                switch webSearchState {
-                case .idle:
-                    EmptyView()
-                case .loading:
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                case .failed(let message):
-                    Text(message).font(.brandCaption).foregroundStyle(.secondary)
-                case .loaded(let results):
-                    if results.isEmpty {
-                        Text("No matches found on the web.")
-                            .font(.brandCaption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(results) { result in
-                            webResultCard(result)
+                if !accountSession.isSignedIn {
+                    // Explicit, not just an absent section — see
+                    // `isSearchLongEnoughForWeb`'s own doc comment for why.
+                    Text("Sign in to search the web for recipes.")
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    switch webSearchState {
+                    case .idle:
+                        EmptyView()
+                    case .loading:
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                    case .failed(let message):
+                        Text(message).font(.brandCaption).foregroundStyle(.secondary)
+                    case .loaded(let results):
+                        if results.isEmpty {
+                            Text("No matches found on the web.")
+                                .font(.brandCaption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(results) { result in
+                                webResultCard(result)
+                            }
                         }
                     }
                 }
