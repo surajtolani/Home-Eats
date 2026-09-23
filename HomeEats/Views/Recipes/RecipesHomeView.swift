@@ -65,6 +65,30 @@ struct RecipesHomeView: View {
     @State private var isLoadingMasterLibrary = false
     @State private var masterLibraryLoadError: String?
     @State private var savedLibraryEntryIDs: Set<String> = []
+
+    // MARK: Web search (backend's Google Custom Search proxy, /recipes/web-search)
+    //
+    // Direct user request: the search bar should return local matches (My
+    // Recipes/Favorites/Library/Shared, whichever section is active) first,
+    // then real web results below for whatever it didn't find locally —
+    // "the same way as all the other tiles are created," i.e. through
+    // `MediaTileRow`, same as every other recipe row on this screen.
+    // Debounced (`scheduleWebSearch`) rather than firing on every keystroke:
+    // this hits a real, metered Google API on the backend, not a free local
+    // filter. Independent of `section` — the same typed query's web results
+    // stay visible no matter which local section is currently selected.
+    @State private var webSearchState: WebSearchState = .idle
+    @State private var webSearchTask: Task<Void, Never>?
+    /// The tapped web result's URL, pending the same import-and-preview flow
+    /// as pasting a link — see `RecipeImportView.initialURL`'s own doc
+    /// comment.
+    @State private var webImportURL: String?
+    private enum WebSearchState {
+        case idle
+        case loading
+        case loaded([RecipeWebSearchResult])
+        case failed(String)
+    }
     /// Drives the Share sheet from a card's own icon (`recipeCard`'s doc
     /// comment) — `item:`-based rather than a bare `Bool` since which
     /// recipe to share is per-tap, not fixed like `RecipeDetailView`'s own
@@ -332,12 +356,16 @@ struct RecipesHomeView: View {
                         }
                     }
                 }
+                webSearchSectionContent
             }
             .listStyle(.plain)
             // Same "no way to dismiss the keyboard" fix as
             // `RestaurantListView`'s identical `List` modifier — see that
             // one's own doc comment.
             .scrollDismissesKeyboard(.immediately)
+        }
+        .onChange(of: searchText) { _, newValue in
+            scheduleWebSearch(for: newValue)
         }
         .navigationTitle("Recipes")
         .navigationBarTitleDisplayMode(.inline)
@@ -371,6 +399,16 @@ struct RecipesHomeView: View {
         }
         .sheet(isPresented: $showImportSheet) {
             RecipeImportView()
+        }
+        // A tapped "From the Web" result — see `webSearchSectionContent`/
+        // `webResultCard`. `item:`-style via a plain optional `String`
+        // rather than `isPresented:`, same pattern as every other
+        // per-tap-target sheet on this screen (`shareTargetRecipe`,
+        // `quickAddRecipe`, ...).
+        .sheet(
+            isPresented: Binding(get: { webImportURL != nil }, set: { if !$0 { webImportURL = nil } })
+        ) {
+            RecipeImportView(initialURL: webImportURL)
         }
         .sheet(isPresented: $showTaxonomyFilterSheet) {
             RecipeTaxonomySheet(
@@ -945,6 +983,115 @@ struct RecipesHomeView: View {
         }
     }
 
+    // MARK: Web search
+
+    /// `webSearchState`/`isSearchingWeb` are only ever meaningful once a
+    /// real search is in flight or has finished — a too-short query (typing
+    /// just started, or was cleared) shouldn't show a stale "From the Web"
+    /// section at all. Requires sign-in for the same reason the backend
+    /// route itself does (`requireAuth`): there's no token to attach
+    /// otherwise, and a supplementary web-results section failing with a
+    /// "sign in" error while the local list above works fine would read as
+    /// broken rather than just unavailable.
+    private var isWebSearchActive: Bool {
+        accountSession.isSignedIn && searchText.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3
+    }
+
+    /// Debounced, not fired on every keystroke — direct cost/quota
+    /// reasoning: unlike the purely local `displayedRecipes` filter above,
+    /// this hits a real, metered Google Custom Search call on the backend
+    /// (see `RecipeWebSearchService`/backend's `/recipes/web-search`).
+    /// Cancels any still-pending search first, so only the latest typed
+    /// query ever actually fires — without that, fast typing would queue up
+    /// a burst of now-stale requests that could still land (and overwrite
+    /// `webSearchState`) out of order.
+    private func scheduleWebSearch(for query: String) {
+        webSearchTask?.cancel()
+        guard isWebSearchActive else {
+            webSearchState = .idle
+            return
+        }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        webSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            webSearchState = .loading
+            do {
+                let results = try await RecipeWebSearchService.search(query: trimmed)
+                guard !Task.isCancelled else { return }
+                webSearchState = .loaded(results)
+            } catch {
+                guard !Task.isCancelled else { return }
+                let message = (error as? LocalizedError)?.errorDescription ?? "Couldn't search the web."
+                webSearchState = .failed(message)
+            }
+        }
+    }
+
+    /// Its own `Section` at the bottom of the list, below whichever local
+    /// section (My Recipes/Favorites/Library/Shared) is currently
+    /// selected — direct user request: local matches first, real web
+    /// results below them, same tile format either way.
+    @ViewBuilder
+    private var webSearchSectionContent: some View {
+        if isWebSearchActive {
+            Section {
+                switch webSearchState {
+                case .idle:
+                    EmptyView()
+                case .loading:
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                case .failed(let message):
+                    Text(message).font(.brandCaption).foregroundStyle(.secondary)
+                case .loaded(let results):
+                    if results.isEmpty {
+                        Text("No matches found on the web.")
+                            .font(.brandCaption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(results) { result in
+                            webResultCard(result)
+                        }
+                    }
+                }
+            } header: {
+                Text("From the Web")
+            } footer: {
+                if case .loaded(let results) = webSearchState, !results.isEmpty {
+                    Text("Tap a result to preview and add it, same as pasting a link.")
+                        .font(.brandSubheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// Same `MediaTileRow` every other recipe tile on this screen uses
+    /// (`recipeCard`/`masterLibraryCard`/`sharedRecipeCard`) — direct user
+    /// request: web results should look and behave like every other tile,
+    /// not a visually distinct "search result" row. No accessory action
+    /// icon, unlike those three: a web result isn't a real recipe yet (just
+    /// a page title/thumbnail/link), so there's nothing to save or favorite
+    /// until it's actually been fetched — tapping the tile itself opens
+    /// that fetch-and-preview step (`RecipeImportView.initialURL`), same as
+    /// pasting the link manually would.
+    @ViewBuilder
+    private func webResultCard(_ result: RecipeWebSearchResult) -> some View {
+        MediaTileRow(
+            title: result.title,
+            metaItems: [[(icon: "globe", text: result.sourceDomain)]],
+            thumbnail: { WebResultThumbnail(urlString: result.thumbnailURL) }
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { webImportURL = result.url }
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
+    }
+
     /// Direct user request for a recipe tile's exact meta layout: "below
     /// [the title] should be the time, # of people it serves. below that
     /// should be the source (imported, shared by, etc.)." Time+servings
@@ -996,6 +1143,40 @@ private struct EntryPhoto: View {
                 Image(systemName: "fork.knife")
                     .foregroundStyle(Color.brandSage)
             }
+        }
+    }
+}
+
+/// A `webResultCard` tile's thumbnail — the search result's own page image
+/// (Google Custom Search's `pagemap.cse_image`, see backend's
+/// `/recipes/web-search` route), loaded through the same
+/// `RecipeImageProxy` every imported recipe's remote photo already goes
+/// through (see that type's own doc comment for why: the app never loads a
+/// third-party image URL directly). A missing/failed thumbnail falls back
+/// to a plain globe glyph rather than `EntryPhoto`'s fork-and-knife — this
+/// tile isn't a recipe yet, just a link to one.
+private struct WebResultThumbnail: View {
+    let urlString: String?
+
+    var body: some View {
+        if let urlString, let url = RecipeImageProxy.url(for: urlString) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    placeholder
+                }
+            }
+        } else {
+            placeholder
+        }
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            Color.brandSage.opacity(0.15)
+            Image(systemName: "globe")
+                .foregroundStyle(Color.brandSage)
         }
     }
 }

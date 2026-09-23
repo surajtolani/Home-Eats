@@ -63,6 +63,16 @@ app.use(express.json({ limit: "15mb" }));
 
 const PORT = process.env.PORT || 4000;
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
+// Google's Custom Search JSON API — a distinct product/key from Places
+// above (Places' own key, even unrestricted, doesn't cover this API; it
+// needs to be enabled separately in Google Cloud Console), plus a
+// Programmable Search Engine ID ("cx") configured to search the whole web.
+// Powers GET /recipes/web-search — see that route's own doc comment for
+// setup steps. `WEB_SEARCH_CX` mirrors `GOOGLE_PLACES_API_KEY`'s own naming
+// rather than Google's own "cx" abbreviation, for the same reason every
+// other env var in this file spells its purpose out.
+const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
+const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
 // `new Anthropic()` reads ANTHROPIC_API_KEY from the environment itself;
 // constructing it doesn't fail just because the key is unset, so the
 // per-route `anthropicClient()` helper below is what actually guards that.
@@ -91,6 +101,11 @@ const citiesSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 3
 const citiesDetailsLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
 const recipesExtractLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
 const recipesRecommendLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+// Tighter than the two above — Google's Custom Search JSON API's own free
+// tier is only 100 queries/day total across this entire deployment (every
+// user combined), well below what a per-user 120/hour limit like
+// `restaurantsSearchLimiter`'s would actually prevent.
+const recipesWebSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
 // The two routes below that stay unauthenticated on purpose (AsyncImage
 // can't attach an Authorization header — see each route's own comment) are
 // rate-limited by IP instead of by user.
@@ -183,6 +198,7 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     googleKeyConfigured: Boolean(GOOGLE_PLACES_API_KEY),
+    webSearchConfigured: Boolean(GOOGLE_CUSTOM_SEARCH_API_KEY && GOOGLE_CUSTOM_SEARCH_CX),
     databaseConfigured: Boolean(process.env.DATABASE_URL),
     twilioConfigured: Boolean(
       process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_VERIFY_SERVICE_SID
@@ -913,6 +929,76 @@ app.post("/recipes/recommend", requireAuth, rateLimited(recipesRecommendLimiter,
   } catch (error) {
     console.error("Recipe recommendation failed", error);
     res.status(502).json({ error: "Recipe recommendation failed." });
+  }
+});
+
+// GET /recipes/web-search?q=<free text>
+// Real web results, not an AI-generated suggestion (`/recipes/recommend`
+// above is that, a different feature) — direct user request: the app's
+// recipe search should return real matches from the open web (a search for
+// "crepes" with none of those words in anyone's own library) the same way
+// it already returns local ones. Proxies Google's Custom Search JSON API
+// (https://developers.google.com/custom-search/v1/overview) — same "the
+// app never holds a paid API key itself" reasoning as every other
+// Places/Claude route in this file.
+//
+// Setup (not needed for the rest of this backend to run): create a
+// Programmable Search Engine at https://programmablesearchengine.google.com/
+// with "Search the entire web" turned on, copy its Search engine ID into
+// GOOGLE_CUSTOM_SEARCH_CX, then enable the "Custom Search API" for a Google
+// Cloud project and generate an API key for it (a Places-restricted key
+// won't work here — this is a distinct API) into
+// GOOGLE_CUSTOM_SEARCH_API_KEY. Both unset -> this route 500s with a clear
+// "Server is missing ..." message, same as every other optionally-configured
+// integration here; the rest of the app works fine without it.
+//
+// `+" recipe"` appended to the query, not a `siteSearch` allow-list of
+// specific cooking sites: biases results toward actual recipes without
+// hard-coding (and constantly maintaining) a list of "real" recipe
+// domains, which would also shut out perfectly good ones not on it.
+app.get("/recipes/web-search", requireAuth, rateLimited(recipesWebSearchLimiter, byUserId), async (req, res) => {
+  const query = (req.query.q || "").toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: "Missing required query param 'q'." });
+  }
+  if (!GOOGLE_CUSTOM_SEARCH_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_CUSTOM_SEARCH_API_KEY." });
+  }
+  if (!GOOGLE_CUSTOM_SEARCH_CX) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_CUSTOM_SEARCH_CX." });
+  }
+
+  const searchURL = new URL("https://www.googleapis.com/customsearch/v1");
+  searchURL.searchParams.set("key", GOOGLE_CUSTOM_SEARCH_API_KEY);
+  searchURL.searchParams.set("cx", GOOGLE_CUSTOM_SEARCH_CX);
+  searchURL.searchParams.set("q", `${query} recipe`);
+  searchURL.searchParams.set("num", "8");
+
+  try {
+    const response = await fetch(searchURL);
+    if (!response.ok) {
+      console.error("Custom Search request failed", response.status, await response.text());
+      return res.status(502).json({ error: "Recipe web search failed." });
+    }
+    const data = await response.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    const results = items
+      .filter((item) => typeof item.link === "string" && typeof item.title === "string")
+      .map((item) => {
+        const thumbnailURL =
+          item.pagemap?.cse_image?.[0]?.src || item.pagemap?.cse_thumbnail?.[0]?.src || null;
+        let sourceDomain;
+        try {
+          sourceDomain = new URL(item.link).hostname.replace(/^www\./, "");
+        } catch (error) {
+          sourceDomain = "";
+        }
+        return { title: item.title, url: item.link, thumbnailURL, sourceDomain };
+      });
+    res.json({ results });
+  } catch (error) {
+    console.error("Recipe web search failed", error);
+    res.status(502).json({ error: "Recipe web search failed." });
   }
 });
 

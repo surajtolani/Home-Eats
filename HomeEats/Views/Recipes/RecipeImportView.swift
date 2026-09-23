@@ -17,6 +17,13 @@ struct RecipeImportView: View {
     /// Backs the "Add Anyway?" confirmation dialog — see `duplicateMatch`'s
     /// own doc comment.
     @State private var showDuplicateConfirm = false
+    /// Set when this view is opened from `RecipesHomeView`'s "From the Web"
+    /// search results (`RecipeWebSearchService`/`webResultCard`) instead of
+    /// the plain "Import from URL" menu item — the URL is already known, so
+    /// this pre-fills the field and fetches the preview immediately (see
+    /// `body`'s own `.task`) instead of making the user paste the same link
+    /// right back in.
+    var initialURL: String? = nil
 
     /// Direct user request: "Recipes... should not be able to be added
     /// twice." Matches by `sourceURL` first — the same page imported
@@ -90,6 +97,11 @@ struct RecipeImportView: View {
             } message: { match in
                 Text("You already have a recipe called \"\(match.title)\". Add another one with the same name?")
             }
+        }
+        .task {
+            guard let initialURL, importedRecipe == nil else { return }
+            urlText = initialURL
+            await fetchPreview()
         }
     }
 

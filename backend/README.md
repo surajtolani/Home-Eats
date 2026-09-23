@@ -117,6 +117,8 @@ cd backend
 cp .env.example .env
 # edit .env: paste in GOOGLE_PLACES_API_KEY, ANTHROPIC_API_KEY, DATABASE_URL,
 # TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID, JWT_SECRET
+# (GOOGLE_CUSTOM_SEARCH_API_KEY/GOOGLE_CUSTOM_SEARCH_CX are optional — see
+# GET /recipes/web-search below)
 npm install
 npx prisma generate         # regenerates the Prisma Client from the current schema
 npx prisma migrate deploy   # creates the accounts/friends/groups tables
@@ -128,10 +130,10 @@ refuse to start at all without a reachable `DATABASE_URL` — even if you
 only care about the restaurant/recipe routes above.
 
 Check it's working. `/health` is the only route below that needs no token at
-all; every Places/Claude proxy route (`/restaurants/search*`,
+all; every Places/Claude/Search proxy route (`/restaurants/search*`,
 `/restaurants/details`, `/cities/*`, `/recipes/extract`,
-`/recipes/recommend`) now requires one too — get one first via
-`/auth/request-code` + `/auth/verify-code`:
+`/recipes/recommend`, `/recipes/web-search`) now requires one too — get one
+first via `/auth/request-code` + `/auth/verify-code`:
 
 ```bash
 curl "http://localhost:4000/health"
@@ -161,6 +163,12 @@ curl -X POST "http://localhost:4000/recipes/extract" \
 curl -X POST "http://localhost:4000/recipes/recommend" \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
   -d '{"ingredients": ["chicken thighs", "rice", "broccoli"]}'
+curl "http://localhost:4000/recipes/web-search?q=crepes" \
+  -H "Authorization: Bearer <token>"
+# ^ needs GOOGLE_CUSTOM_SEARCH_API_KEY + GOOGLE_CUSTOM_SEARCH_CX set (see
+# that route's own doc comment in index.js for how to get them) — 500s with
+# a clear "Server is missing ..." message otherwise, same as every other
+# optionally-configured integration here.
 
 # /restaurants/photo and /recipes/image-proxy stay unauthenticated (an
 # AsyncImage load can't attach a header) but are rate-limited by IP instead.
@@ -201,6 +209,23 @@ curl "http://localhost:4000/recipe-library/mine" -H "Authorization: Bearer <toke
    Postgres add-on (or your external provider) for `DATABASE_URL`. Do not
    put any of these anywhere in the repo — environment variables are the
    only place they should live.
+   Optionally also add `GOOGLE_CUSTOM_SEARCH_API_KEY` and
+   `GOOGLE_CUSTOM_SEARCH_CX` to enable `GET /recipes/web-search` (real web
+   results in the iOS app's Recipes search, below local matches) — the app
+   works fine without them, that one feature just won't return results.
+   Set up:
+   1. Go to <https://programmablesearchengine.google.com/>, create a new
+      search engine, and turn on "Search the entire web." Copy its
+      **Search engine ID** into `GOOGLE_CUSTOM_SEARCH_CX`.
+   2. In Google Cloud Console (the same project `GOOGLE_PLACES_API_KEY`
+      lives in, or a new one), enable the **Custom Search API** and
+      generate an API key for it — a Places-restricted key won't work
+      here, this is a separate API with its own key. Copy that key into
+      `GOOGLE_CUSTOM_SEARCH_API_KEY`.
+   3. Free tier is 100 queries/day across this whole deployment, then
+      billed per 1,000 queries — see that page's own pricing section.
+      `recipesWebSearchLimiter` in index.js caps this per signed-in user
+      to blunt runaway usage, not to reflect real expected traffic.
 6. Deploy. Render gives you a URL like `https://home-eats-backend.onrender.com`.
 
 ## 4. Point the iOS app at it
