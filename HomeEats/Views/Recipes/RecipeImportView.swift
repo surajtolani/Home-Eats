@@ -24,6 +24,20 @@ struct RecipeImportView: View {
     /// `body`'s own `.task`) instead of making the user paste the same link
     /// right back in.
     var initialURL: String? = nil
+    /// Direct user request: every recipe needs at least one meal type and
+    /// one cuisine before it can be saved — same requirement, same
+    /// `RecipeTaxonomySheet`, as `RecipeEditorView`'s own (see that type's
+    /// own doc comment on `taxonomySheetPendingSave` for the exact
+    /// tap-Save-while-incomplete-opens-the-required-sheet flow this
+    /// mirrors). `RecipeImportService`/`SchemaOrgRecipeParser` don't read
+    /// any course/cuisine data off the source page (most sites don't
+    /// publish it in a structured way worth trusting), so this always
+    /// starts empty and relies on `RecipeTaxonomySheet`'s own title/
+    /// ingredient-based cuisine guess instead.
+    @State private var selectedMealCourses: Set<String> = []
+    @State private var selectedCuisines: Set<String> = []
+    @State private var showTaxonomySheet = false
+    @State private var taxonomySheetPendingSave = false
 
     /// Direct user request: "Recipes... should not be able to be added
     /// twice." Matches by `sourceURL` first — the same page imported
@@ -37,6 +51,31 @@ struct RecipeImportView: View {
             sourceURL: importedRecipe.sourceURL,
             in: allRecipes
         )
+    }
+
+    private var taxonomySummary: String {
+        let parts = [
+            selectedMealCourses.sorted().joined(separator: ", "),
+            selectedCuisines.sorted().joined(separator: ", "),
+        ].filter { !$0.isEmpty }
+        return parts.isEmpty ? "Not set" : parts.joined(separator: " · ")
+    }
+
+    private var taxonomyRow: some View {
+        Button {
+            taxonomySheetPendingSave = false
+            showTaxonomySheet = true
+        } label: {
+            HStack {
+                Text("Meal Type & Cuisine")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(taxonomySummary)
+                    .foregroundStyle(taxonomySummary == "Not set" ? .red : .secondary)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
     }
 
     var body: some View {
@@ -61,6 +100,7 @@ struct RecipeImportView: View {
                         Text("\(importedRecipe.ingredients.count) ingredients • \(importedRecipe.instructions.count) steps")
                             .font(.brandCaption)
                             .foregroundStyle(.secondary)
+                        taxonomyRow
                     }
                 }
             }
@@ -72,7 +112,18 @@ struct RecipeImportView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if importedRecipe != nil {
-                        Button("Save") { attemptSaveImported() }
+                        Button("Save") {
+                            // Same required-taxonomy gate as
+                            // `RecipeEditorView`'s own Save button — see
+                            // this view's `taxonomySheetPendingSave` doc
+                            // comment.
+                            if selectedMealCourses.isEmpty || selectedCuisines.isEmpty {
+                                taxonomySheetPendingSave = true
+                                showTaxonomySheet = true
+                            } else {
+                                attemptSaveImported()
+                            }
+                        }
                     } else {
                         Button {
                             Task { await fetchPreview() }
@@ -96,6 +147,19 @@ struct RecipeImportView: View {
                 Button("Add Anyway") { saveImported() }
             } message: { match in
                 Text("You already have a recipe called \"\(match.title)\". Add another one with the same name?")
+            }
+            .sheet(isPresented: $showTaxonomySheet) {
+                RecipeTaxonomySheet(
+                    selectedCourses: $selectedMealCourses,
+                    selectedCuisines: $selectedCuisines,
+                    title: importedRecipe?.title ?? "",
+                    ingredientNames: (importedRecipe?.ingredients ?? []).map(\.name),
+                    onRequirementMet: {
+                        guard taxonomySheetPendingSave else { return }
+                        taxonomySheetPendingSave = false
+                        attemptSaveImported()
+                    }
+                )
             }
         }
         .task {
@@ -126,6 +190,8 @@ struct RecipeImportView: View {
 
     private func saveImported() {
         guard let importedRecipe else { return }
+        importedRecipe.mealCourses = MealCourse.allCases.map(\.rawValue).filter(selectedMealCourses.contains)
+        importedRecipe.cuisines = CuisineType.allCases.map(\.rawValue).filter(selectedCuisines.contains)
         modelContext.insert(importedRecipe)
         dismiss()
     }

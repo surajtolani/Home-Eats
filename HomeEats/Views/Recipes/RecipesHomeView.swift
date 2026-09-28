@@ -424,7 +424,8 @@ struct RecipesHomeView: View {
                 selectedCourses: $filterCourses,
                 selectedCuisines: $filterCuisines,
                 title: "",
-                ingredientNames: []
+                ingredientNames: [],
+                isRequired: false
             )
         }
         .sheet(item: $quickAddRecipe) { recipe in

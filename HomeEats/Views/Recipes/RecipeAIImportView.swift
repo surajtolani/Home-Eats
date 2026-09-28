@@ -36,6 +36,16 @@ struct RecipeAIImportView: View {
     /// Backs the "Add Anyway?" confirmation dialog — see
     /// `RecipeDuplicateChecker`'s own doc comment.
     @State private var showDuplicateConfirm = false
+    /// Direct user request: every recipe needs at least one meal type and
+    /// one cuisine before it can be saved — same requirement, same
+    /// `RecipeTaxonomySheet`, as `RecipeEditorView`'s own (see that type's
+    /// own doc comment on `taxonomySheetPendingSave` for the exact
+    /// tap-Save-while-incomplete-opens-the-required-sheet flow this
+    /// mirrors).
+    @State private var selectedMealCourses: Set<String> = []
+    @State private var selectedCuisines: Set<String> = []
+    @State private var showTaxonomySheet = false
+    @State private var taxonomySheetPendingSave = false
 
     /// Direct user request: "Recipes... should not be able to be added
     /// twice." A photo/notes import has no `sourceURL`, so this always
@@ -48,6 +58,31 @@ struct RecipeAIImportView: View {
 
     private var canExtract: Bool {
         imageData != nil || !notesText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var taxonomySummary: String {
+        let parts = [
+            selectedMealCourses.sorted().joined(separator: ", "),
+            selectedCuisines.sorted().joined(separator: ", "),
+        ].filter { !$0.isEmpty }
+        return parts.isEmpty ? "Not set" : parts.joined(separator: " · ")
+    }
+
+    private var taxonomyRow: some View {
+        Button {
+            taxonomySheetPendingSave = false
+            showTaxonomySheet = true
+        } label: {
+            HStack {
+                Text("Meal Type & Cuisine")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(taxonomySummary)
+                    .foregroundStyle(taxonomySummary == "Not set" ? .red : .secondary)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
     }
 
     var body: some View {
@@ -126,6 +161,7 @@ struct RecipeAIImportView: View {
                         Stepper("Servings: \(draftServings)", value: $draftServings, in: 1...20)
                         Stepper("Prep: \(draftPrepMinutes) min", value: $draftPrepMinutes, in: 0...240, step: 5)
                         Stepper("Cook: \(draftCookMinutes) min", value: $draftCookMinutes, in: 0...480, step: 5)
+                        taxonomyRow
                     }
                     Section {
                         TextEditor(text: $draftIngredientsText)
@@ -157,7 +193,18 @@ struct RecipeAIImportView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if draft != nil {
-                        Button("Save") { attemptSaveDraft() }
+                        Button("Save") {
+                            // Same required-taxonomy gate as
+                            // `RecipeEditorView`'s own Save button — see
+                            // this view's `taxonomySheetPendingSave` doc
+                            // comment.
+                            if selectedMealCourses.isEmpty || selectedCuisines.isEmpty {
+                                taxonomySheetPendingSave = true
+                                showTaxonomySheet = true
+                            } else {
+                                attemptSaveDraft()
+                            }
+                        }
                     } else if isExtracting {
                         ProgressView()
                     } else {
@@ -198,6 +245,19 @@ struct RecipeAIImportView: View {
                 Button("Add Anyway") { saveDraft() }
             } message: { match in
                 Text("You already have a recipe called \"\(match.title)\". Add another one with the same name?")
+            }
+            .sheet(isPresented: $showTaxonomySheet) {
+                RecipeTaxonomySheet(
+                    selectedCourses: $selectedMealCourses,
+                    selectedCuisines: $selectedCuisines,
+                    title: draftTitle,
+                    ingredientNames: draftIngredientsText.components(separatedBy: .newlines),
+                    onRequirementMet: {
+                        guard taxonomySheetPendingSave else { return }
+                        taxonomySheetPendingSave = false
+                        attemptSaveDraft()
+                    }
+                )
             }
         }
     }
@@ -253,6 +313,8 @@ struct RecipeAIImportView: View {
             createdByMemberID: activeUserSession.activeMemberID
         )
         recipe.photoData = imageData
+        recipe.mealCourses = MealCourse.allCases.map(\.rawValue).filter(selectedMealCourses.contains)
+        recipe.cuisines = CuisineType.allCases.map(\.rawValue).filter(selectedCuisines.contains)
         modelContext.insert(recipe)
         dismiss()
     }

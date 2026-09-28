@@ -5,6 +5,7 @@ import Foundation
 /// `MealSlot` (breakfast/lunch/dinner/other), which is about *when* a meal
 /// is planned, not what kind of dish it is.
 enum MealCourse: String, Codable, CaseIterable, Identifiable {
+    case breakfast = "Breakfast"
     case appetizer = "Appetizer"
     case mainCourse = "Main Course"
     case soupSalad = "Soup/Salad"

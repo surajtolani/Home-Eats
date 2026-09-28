@@ -93,7 +93,9 @@ struct RecommendMealView: View {
                                     draft: draft,
                                     isAdded: addedTitles.contains(draft.title),
                                     isPickMode: onPick != nil,
-                                    onAdd: { add(draft) }
+                                    onAdd: { mealCourses, cuisines in
+                                        add(draft, mealCourses: mealCourses, cuisines: cuisines)
+                                    }
                                 )
                             } label: {
                                 SuggestionRow(draft: draft, isAdded: addedTitles.contains(draft.title))
@@ -181,13 +183,20 @@ struct RecommendMealView: View {
             .filter { !$0.isEmpty }
     }
 
-    private func add(_ draft: RecipeDraft) {
+    private func add(_ draft: RecipeDraft, mealCourses: Set<String>, cuisines: Set<String>) {
         if let onPick {
             onPick(draft)
             dismiss()
             return
         }
         let recipe = draft.makeRecipe(createdByMemberID: activeUserSession.activeMemberID)
+        // Direct user request: every recipe needs at least one meal type
+        // and one cuisine — `RecipeDraftPreviewView`'s own required
+        // `RecipeTaxonomySheet` is what actually enforces that before this
+        // ever runs (skipped entirely in pick mode, above, since that path
+        // doesn't insert a Recipe here at all).
+        recipe.mealCourses = MealCourse.allCases.map(\.rawValue).filter(mealCourses.contains)
+        recipe.cuisines = CuisineType.allCases.map(\.rawValue).filter(cuisines.contains)
         modelContext.insert(recipe)
         addedTitles.insert(draft.title)
     }
@@ -243,7 +252,31 @@ private struct RecipeDraftPreviewView: View {
     /// this tap means "use this for the meal I'm planning," not "add it to
     /// My Recipes."
     let isPickMode: Bool
-    let onAdd: () -> Void
+    /// Takes the selected meal type(s)/cuisine(s) so the caller can tag the
+    /// `Recipe` it builds from `draft` — unused in pick mode (that path
+    /// hands `draft` itself back to a different caller entirely, which
+    /// builds its own recipe later; see `RecommendMealView.add`).
+    let onAdd: (Set<String>, Set<String>) -> Void
+
+    /// Direct user request: every recipe needs at least one meal type and
+    /// one cuisine before it can be saved — same requirement, same
+    /// `RecipeTaxonomySheet`, as every other recipe-creation flow (see
+    /// `RecipeEditorView`'s own doc comment on `taxonomySheetPendingSave`
+    /// for the exact tap-Add-while-incomplete-opens-the-required-sheet
+    /// flow this mirrors). Not shown at all in pick mode — see `onAdd`'s
+    /// own doc comment for why tagging doesn't apply there.
+    @State private var selectedMealCourses: Set<String> = []
+    @State private var selectedCuisines: Set<String> = []
+    @State private var showTaxonomySheet = false
+    @State private var taxonomySheetPendingSave = false
+
+    private var taxonomySummary: String {
+        let parts = [
+            selectedMealCourses.sorted().joined(separator: ", "),
+            selectedCuisines.sorted().joined(separator: ", "),
+        ].filter { !$0.isEmpty }
+        return parts.isEmpty ? "Not set" : parts.joined(separator: " · ")
+    }
 
     var body: some View {
         Form {
@@ -263,6 +296,21 @@ private struct RecipeDraftPreviewView: View {
                 }
                 .font(.brandCaption)
                 .foregroundStyle(.secondary)
+                if !isPickMode {
+                    Button {
+                        taxonomySheetPendingSave = false
+                        showTaxonomySheet = true
+                    } label: {
+                        HStack {
+                            Text("Meal Type & Cuisine").foregroundStyle(.primary)
+                            Spacer()
+                            Text(taxonomySummary)
+                                .foregroundStyle(taxonomySummary == "Not set" ? .red : .secondary)
+                                .lineLimit(1)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
             }
 
             if !draft.ingredientLines.isEmpty {
@@ -286,7 +334,14 @@ private struct RecipeDraftPreviewView: View {
 
             Section {
                 Button {
-                    onAdd()
+                    if isPickMode {
+                        onAdd(selectedMealCourses, selectedCuisines)
+                    } else if selectedMealCourses.isEmpty || selectedCuisines.isEmpty {
+                        taxonomySheetPendingSave = true
+                        showTaxonomySheet = true
+                    } else {
+                        onAdd(selectedMealCourses, selectedCuisines)
+                    }
                 } label: {
                     HStack {
                         Spacer()
@@ -304,5 +359,18 @@ private struct RecipeDraftPreviewView: View {
         }
         .navigationTitle(draft.title)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showTaxonomySheet) {
+            RecipeTaxonomySheet(
+                selectedCourses: $selectedMealCourses,
+                selectedCuisines: $selectedCuisines,
+                title: draft.title,
+                ingredientNames: draft.ingredientLines,
+                onRequirementMet: {
+                    guard taxonomySheetPendingSave else { return }
+                    taxonomySheetPendingSave = false
+                    onAdd(selectedMealCourses, selectedCuisines)
+                }
+            )
+        }
     }
 }

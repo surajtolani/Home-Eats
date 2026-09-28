@@ -28,6 +28,13 @@ struct RecipeEditorView: View {
     @State private var selectedMealCourses: Set<String>
     @State private var selectedCuisines: Set<String>
     @State private var showTaxonomySheet = false
+    /// `true` only when this sheet was opened because `attemptSave()` found
+    /// meal type/cuisine still empty — its own `onRequirementMet` uses this
+    /// to know whether completing it should actually go on to save the
+    /// recipe, versus the user just tapping `taxonomyRow` on their own to
+    /// review/edit already-set tags mid-form, which shouldn't also
+    /// force-save (and dismiss) the whole editor as a side effect.
+    @State private var taxonomySheetPendingSave = false
     /// Backs the "Add Anyway?" confirmation dialog — see `duplicateMatch`'s
     /// own doc comment.
     @State private var showDuplicateConfirm = false
@@ -81,6 +88,7 @@ struct RecipeEditorView: View {
     /// `body`.
     private var taxonomyRow: some View {
         Button {
+            taxonomySheetPendingSave = false
             showTaxonomySheet = true
         } label: {
             HStack {
@@ -88,7 +96,7 @@ struct RecipeEditorView: View {
                     .foregroundStyle(.primary)
                 Spacer()
                 Text(taxonomySummary)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(taxonomySummary == "Not set" ? .red : .secondary)
                     .lineLimit(1)
                     .multilineTextAlignment(.trailing)
             }
@@ -157,8 +165,22 @@ struct RecipeEditorView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { attemptSave() }
-                        .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Save") {
+                        // Direct user request: every recipe needs at least
+                        // one meal type and one cuisine before it can be
+                        // saved. Rather than just leaving Save disabled
+                        // with no explanation, tapping it while either is
+                        // still empty opens the same required sheet
+                        // `taxonomyRow` does — completing it there goes on
+                        // to actually save (see `onRequirementMet` below).
+                        if selectedMealCourses.isEmpty || selectedCuisines.isEmpty {
+                            taxonomySheetPendingSave = true
+                            showTaxonomySheet = true
+                        } else {
+                            attemptSave()
+                        }
+                    }
+                    .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             .confirmationDialog(
@@ -205,7 +227,12 @@ struct RecipeEditorView: View {
                     selectedCourses: $selectedMealCourses,
                     selectedCuisines: $selectedCuisines,
                     title: title,
-                    ingredientNames: ingredientsText.components(separatedBy: .newlines)
+                    ingredientNames: ingredientsText.components(separatedBy: .newlines),
+                    onRequirementMet: {
+                        guard taxonomySheetPendingSave else { return }
+                        taxonomySheetPendingSave = false
+                        attemptSave()
+                    }
                 )
             }
         }
