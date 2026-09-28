@@ -52,14 +52,6 @@ const PhoneSchema = z.object({
 // complete fix; the real fix is not leaking phone numbers to begin with).
 const requestCodePhoneBurstLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 1 });
 const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 3 });
-// Direct user report: unprompted codes kept arriving spaced hours apart —
-// comfortably under the hourly limiter above every single time, so it never
-// once tripped. This closes that gap: whatever is calling this (most likely
-// the same "scripting repeated calls to this unauthenticated endpoint"
-// pattern the hourly/burst limiters above were already added for once
-// before, just paced slower this time) is capped at a small handful of real
-// texts per number per day, not per hour.
-const requestCodePhoneDailyLimiter = createRateLimiter({ windowMs: 24 * 60 * 60 * 1000, max: 5 });
 const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
 
 // POST /verify-code had no rate limiting of its own at all — unlike
@@ -116,7 +108,6 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // actually went through.
   const burstLimited = requestCodePhoneBurstLimiter.check(phoneNumber).limited;
   const phoneLimited = requestCodePhoneLimiter.check(phoneNumber).limited;
-  const dailyLimited = requestCodePhoneDailyLimiter.check(phoneNumber).limited;
   const ipLimited = requestCodeIPLimiter.check(req.ip).limited;
   // Forensic logging, added after a confirmed report of unprompted codes
   // that this server has no other way to investigate (Render's own log
@@ -129,9 +120,9 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // device" apart from anything else. Intentionally logs every request,
   // limited or not, so a blocked burst still shows up here.
   console.log(
-    `[request-code] phone=${phoneNumber} ip=${req.ip} burstLimited=${burstLimited} phoneLimited=${phoneLimited} dailyLimited=${dailyLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
+    `[request-code] phone=${phoneNumber} ip=${req.ip} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
   );
-  if (burstLimited || phoneLimited || dailyLimited || ipLimited) {
+  if (burstLimited || phoneLimited || ipLimited) {
     return res.status(429).json({ error: "Too many verification code requests. Please wait a bit and try again." });
   }
 
