@@ -263,6 +263,43 @@ struct RecipesHomeView: View {
         myRecipes.filter { $0.mealCourses.isEmpty || $0.cuisines.isEmpty }
     }
 
+    /// Pulled out of `body`'s `List` as its own explicitly-typed property —
+    /// same "pushed the type checker's complexity budget past its limit"
+    /// reasoning `taxonomyRow`'s own doc comment gives (a real, confirmed
+    /// CI failure: "the compiler is unable to type-check this expression in
+    /// reasonable time" pointed straight at `body` once this was inline).
+    /// `bannerLabelText` is its own plain-`String` property for the same
+    /// reason — a nested-ternary string interpolation inline in a
+    /// `Label(...)` call is exactly the kind of sub-expression that trips
+    /// this up.
+    @ViewBuilder
+    private var taxonomyCompletionBanner: some View {
+        if (section == .mine || section == .favorites) && !recipesNeedingTaxonomy.isEmpty {
+            Section {
+                Button {
+                    showTaxonomyCompletion = true
+                } label: {
+                    HStack {
+                        Label(taxonomyBannerLabelText, systemImage: "tag")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                            .font(.brandCaption)
+                    }
+                }
+            }
+            .listRowBackground(Color.brandSage.opacity(0.15))
+        }
+    }
+
+    private var taxonomyBannerLabelText: String {
+        let count = recipesNeedingTaxonomy.count
+        let recipeWord = count == 1 ? "recipe" : "recipes"
+        let needWord = count == 1 ? "needs" : "need"
+        return "\(count) \(recipeWord) \(needWord) a meal type & cuisine"
+    }
+
     private var isFilteringRecipes: Bool {
         !filterCourses.isEmpty || !filterCuisines.isEmpty
     }
@@ -314,34 +351,7 @@ struct RecipesHomeView: View {
             }
 
             List {
-                // Direct user request: existing recipes saved before meal
-                // type/cuisine became mandatory need to be filled in too,
-                // not just new ones going forward. Shown on both "My
-                // Recipes" and "Favorites" (both draw from `myRecipes`) —
-                // not dismissible, and reappears every time this screen
-                // renders as long as anything is still missing, so there's
-                // no way to permanently wave it away short of actually
-                // completing it via `RecipeTaxonomyCompletionView`.
-                if (section == .mine || section == .favorites) && !recipesNeedingTaxonomy.isEmpty {
-                    Section {
-                        Button {
-                            showTaxonomyCompletion = true
-                        } label: {
-                            HStack {
-                                Label(
-                                    "\(recipesNeedingTaxonomy.count) recipe\(recipesNeedingTaxonomy.count == 1 ? "" : "s") need\(recipesNeedingTaxonomy.count == 1 ? "s" : "") a meal type & cuisine",
-                                    systemImage: "tag"
-                                )
-                                .foregroundStyle(.primary)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .foregroundStyle(.secondary)
-                                    .font(.brandCaption)
-                            }
-                        }
-                    }
-                    .listRowBackground(Color.brandSage.opacity(0.15))
-                }
+                taxonomyCompletionBanner
                 if section == .shared {
                     sharedSectionContent
                 } else {
