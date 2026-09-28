@@ -48,7 +48,9 @@ struct MoreView: View {
                 Label("Meal History", systemImage: "clock.arrow.circlepath")
             }
         }
-        .navigationTitle("More")
+        // Matches the tab bar's own "Settings" label (RootView) — direct
+        // user request.
+        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {

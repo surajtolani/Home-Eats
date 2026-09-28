@@ -165,9 +165,30 @@ struct RootView: View {
                     NavigationStack {
                         MoreView()
                     }
-                    .tabItem { Label("More", systemImage: "ellipsis.circle") }
+                    // Direct user request: rename the tab from "More" to
+                    // "Settings" — `Tab.more`/`MoreView` themselves are
+                    // left unrenamed (an internal identifier, not
+                    // user-facing text) to keep this a pure label change.
+                    .tabItem { Label("Settings", systemImage: "ellipsis.circle") }
                     .tag(Tab.more)
                 }
+                // Direct user report: icons on the Settings tab (and others,
+                // switching back and forth) briefly flashed the system
+                // default blue instead of the brand green before settling.
+                // `.tint(.brandOlive)` is already applied once at the very
+                // top of the app (`HomeEatsApp.swift`, wrapping `RootView`
+                // entirely) — this re-asserts the same color directly on
+                // `TabView` itself as a defensive reinforcement. `TabView`
+                // bridges to a UIKit `UITabBarController` under the hood,
+                // each tab hosted via its own `UIHostingController`; that
+                // bridging is the one place an outer SwiftUI `.tint()`
+                // environment value can plausibly take an extra render
+                // pass to fully reach a newly-visible tab's hosted content,
+                // especially right as a tab switch's transition animation
+                // runs — asserting it again right here, closer to where
+                // that bridging actually happens, costs nothing and closes
+                // the gap if that's what's happening.
+                .tint(.brandOlive)
             }
         }
         .onAppear {

@@ -211,7 +211,12 @@ struct SettingsView: View {
                 Text("Add one reminder for each time your family typically shops or orders groceries — some households do this more than once a week.")
             }
         }
-        .navigationTitle("Settings")
+        // Direct user request: reads "My Account" instead of "Settings" —
+        // both entry points ("More"/now "Settings" tab -> "My Account" row,
+        // and the account icon on Plan/Grocery's own top bar) land here,
+        // and both already call it "My Account" at the point of entry, so
+        // the screen's own title should say the same thing once open.
+        .navigationTitle("My Account")
         .task {
             ensureSettingsExist()
             reminderTime = Calendar.current.date(
