@@ -275,7 +275,12 @@ struct RecipesHomeView: View {
     @ViewBuilder
     private var taxonomyCompletionBanner: some View {
         if (section == .mine || section == .favorites) && !recipesNeedingTaxonomy.isEmpty {
-            Section {
+            // `SwiftUI.Section`, explicitly qualified — see
+            // `webSearchSectionContent`'s own doc comment for why the bare
+            // name resolves to this file's own nested `Section` enum
+            // instead (a real CI failure hit this exact class of bug
+            // there too).
+            SwiftUI.Section {
                 Button {
                     showTaxonomyCompletion = true
                 } label: {
