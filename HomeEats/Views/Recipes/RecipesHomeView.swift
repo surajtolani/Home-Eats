@@ -16,6 +16,8 @@ struct RecipesHomeView: View {
     @State private var showRecommendSheet = false
     @State private var quickAddRecipe: Recipe?
     @State private var showDuplicates = false
+    /// See `recipesNeedingTaxonomy`'s own doc comment.
+    @State private var showTaxonomyCompletion = false
     /// Backs the filter/sort row below the search bar — direct fix for a
     /// real gap: the Recipe Library mixed built-in/community recipes with
     /// no way to narrow them down by meal type or cuisine, and no sort
@@ -251,6 +253,16 @@ struct RecipesHomeView: View {
         allRecipes.filter { $0.source == .library && !$0.isSavedToCollection }
     }
 
+    /// Recipes saved before meal type/cuisine became mandatory (or a
+    /// `.library`/`.shared` one whose original source just never had
+    /// either set) — direct user request: not just new recipes going
+    /// forward, existing ones need to be filled in too. Backs
+    /// `taxonomyCompletionBanner`; `RecipeTaxonomyCompletionView` is what
+    /// actually walks through fixing each one.
+    private var recipesNeedingTaxonomy: [Recipe] {
+        myRecipes.filter { $0.mealCourses.isEmpty || $0.cuisines.isEmpty }
+    }
+
     private var isFilteringRecipes: Bool {
         !filterCourses.isEmpty || !filterCuisines.isEmpty
     }
@@ -302,6 +314,34 @@ struct RecipesHomeView: View {
             }
 
             List {
+                // Direct user request: existing recipes saved before meal
+                // type/cuisine became mandatory need to be filled in too,
+                // not just new ones going forward. Shown on both "My
+                // Recipes" and "Favorites" (both draw from `myRecipes`) —
+                // not dismissible, and reappears every time this screen
+                // renders as long as anything is still missing, so there's
+                // no way to permanently wave it away short of actually
+                // completing it via `RecipeTaxonomyCompletionView`.
+                if (section == .mine || section == .favorites) && !recipesNeedingTaxonomy.isEmpty {
+                    Section {
+                        Button {
+                            showTaxonomyCompletion = true
+                        } label: {
+                            HStack {
+                                Label(
+                                    "\(recipesNeedingTaxonomy.count) recipe\(recipesNeedingTaxonomy.count == 1 ? "" : "s") need\(recipesNeedingTaxonomy.count == 1 ? "s" : "") a meal type & cuisine",
+                                    systemImage: "tag"
+                                )
+                                .foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                                    .font(.brandCaption)
+                            }
+                        }
+                    }
+                    .listRowBackground(Color.brandSage.opacity(0.15))
+                }
                 if section == .shared {
                     sharedSectionContent
                 } else {
@@ -405,6 +445,9 @@ struct RecipesHomeView: View {
         }
         .sheet(isPresented: $showDuplicates) {
             DuplicateRecipesView()
+        }
+        .sheet(isPresented: $showTaxonomyCompletion) {
+            RecipeTaxonomyCompletionView(recipes: recipesNeedingTaxonomy)
         }
         .sheet(isPresented: $showImportSheet) {
             RecipeImportView()

@@ -99,11 +99,22 @@ private struct NotificationBellButton: View {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "bell")
                 if notificationsSession.count > 0 {
+                    // Direct user report: the count looked cut off. `Circle()`
+                    // stretches into a non-uniform ellipse for any content
+                    // that isn't perfectly square — fine for a single digit,
+                    // but "9+" (two characters, wider than tall) got its
+                    // corners clipped by the ellipse's curve instead of
+                    // fully contained by it. `Capsule()` stays pill-shaped
+                    // instead of distorting, and `frame(minWidth:)` (rather
+                    // than a fixed size) keeps a single digit looking
+                    // circular while still growing to fit "9+" cleanly.
                     Text(badgeText)
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
-                        .padding(4)
-                        .background(Circle().fill(Color.red))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .frame(minWidth: 16)
+                        .background(Capsule().fill(Color.red))
                         .offset(x: 10, y: -10)
                 }
             }
