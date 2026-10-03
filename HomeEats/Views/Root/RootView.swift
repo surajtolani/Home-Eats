@@ -169,7 +169,9 @@ struct RootView: View {
                     // "Settings" — `Tab.more`/`MoreView` themselves are
                     // left unrenamed (an internal identifier, not
                     // user-facing text) to keep this a pure label change.
-                    .tabItem { Label("Settings", systemImage: "ellipsis.circle") }
+                    // Icon followed suit (gear, not the old "More" ellipsis)
+                    // for the same reason.
+                    .tabItem { Label("Settings", systemImage: "gearshape") }
                     .tag(Tab.more)
                 }
                 // Direct user report: icons on the Settings tab (and others,
