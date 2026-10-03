@@ -40,6 +40,7 @@ const { prisma } = require("../lib/prisma");
 const { phoneNumberField } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { sendPush } = require("../lib/apns");
+const { sendInviteSMS, inviteSMSBody } = require("../lib/twilio");
 
 const router = express.Router();
 
@@ -519,22 +520,30 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
 
   invitedResponse(res);
 
-  // Push after the transaction has committed, and only when `phoneNumber`
-  // already belongs to a user — the same "there's an actual device to push
-  // to" reasoning as routes/friends.js's own POST /request (see that
-  // route's identical comment on why this happens after, not inside, the
-  // transaction, and is fire-and-forget). A not-yet-a-user phone number's
-  // Invite still just sits PENDING until they sign up, exactly as before.
+  // Notify after the transaction has committed — same "there's a real,
+  // committed Invite behind this" reasoning as routes/friends.js's own
+  // POST /request (see that route's identical comment on why this happens
+  // after, not inside, the transaction, and is fire-and-forget either way).
+  const me = await prisma.user.findUnique({ where: { id: req.userId } });
   if (existingUser) {
-    const [me, deviceTokens] = await Promise.all([
-      prisma.user.findUnique({ where: { id: req.userId } }),
-      prisma.deviceToken.findMany({ where: { userId: existingUser.id }, select: { token: true } }),
-    ]);
+    // Already a user — push, same as before Phase 5's SMS addition below.
+    const deviceTokens = await prisma.deviceToken.findMany({
+      where: { userId: existingUser.id },
+      select: { token: true },
+    });
     await sendPush({
       deviceTokens: deviceTokens.map((row) => row.token),
       title: "Group Invite",
       body: `${me?.displayName || me?.phoneNumber || "Someone"} invited you to join "${group.name}" on Home Eats.`,
       payload: { type: "groupInvite", groupId: req.params.groupId },
+    });
+  } else {
+    // No account yet — nothing to push to, so text them instead. Direct
+    // fix for a real gap: this phone number's Invite used to just sit
+    // PENDING with no notice of any kind until they happened to sign up.
+    await sendInviteSMS({
+      to: phoneNumber,
+      body: inviteSMSBody(`${me?.displayName || me?.phoneNumber || "Someone"} invited you to join "${group.name}" on Home Eats.`),
     });
   }
 }));

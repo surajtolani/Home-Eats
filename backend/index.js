@@ -203,6 +203,30 @@ app.get("/health", (_req, res) => {
     twilioConfigured: Boolean(
       process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_VERIFY_SERVICE_SID
     ),
+    // Direct user question: "is APNs already set up on Render?" — this
+    // sandbox has no way to inspect Render's dashboard directly (and no
+    // network path to this deployment either), so the same "check /health
+    // yourself" pattern already used for Google Custom Search applies
+    // here too. `lib/apns.js`'s own `sendPush` silently no-ops without the
+    // first three; `APNS_PRODUCTION` alone missing doesn't trip that same
+    // no-op (it just defaults to Apple's sandbox APNs environment instead
+    // of production — see that file's own doc comment), but a push aimed
+    // at the wrong APNs environment fails just as silently for a real
+    // TestFlight/App Store build, so it's included here too rather than
+    // reporting "configured" for a setup that still wouldn't actually
+    // reach a real device.
+    apnsConfigured: Boolean(
+      process.env.APNS_KEY_ID && process.env.APNS_TEAM_ID && process.env.APNS_AUTH_KEY && process.env.APNS_PRODUCTION
+    ),
+    // Same pattern again for `lib/twilio.js`'s `sendInviteSMS` — texts a
+    // phone number that doesn't have a Home Eats account yet when it's
+    // invited to a group or as a friend. `TWILIO_ACCOUNT_SID`/
+    // `TWILIO_AUTH_TOKEN` are shared with `twilioConfigured` above (the
+    // Verify sign-in flow), but `TWILIO_SMS_FROM_NUMBER` is a separate,
+    // SMS-specific sender those two alone don't provide.
+    smsInviteConfigured: Boolean(
+      process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_FROM_NUMBER
+    ),
   });
 });
 

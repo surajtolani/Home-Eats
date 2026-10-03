@@ -871,6 +871,22 @@ returns null when unconfigured" shape as `twilioClient()`/
 every other route keep working normally either way, there's just nothing
 on the other end to actually deliver a push until these are set.
 
+Inviting a phone number with **no Home Eats account yet** (to a group via
+`routes/groups.js`'s `POST /groups/:groupId/invite`, or as a friend via
+`routes/friends.js`'s `POST /friends/request`) has nothing to push to — no
+account, no device token. These routes text that person instead via
+`lib/twilio.js`'s `sendInviteSMS`, using two more optional env vars from
+`.env.example`: `TWILIO_SMS_FROM_NUMBER` (a Twilio phone number or
+Messaging Service SID capable of sending plain SMS — a different Twilio
+product from the Verify service above, which can only send its own
+verification codes, not an arbitrary message) and `APP_DOWNLOAD_URL` (a
+link to the app — e.g. a TestFlight public link — included in the text so
+the recipient knows where to get it; the text still sends without a link
+if this is unset). Same silent-no-op shape as `sendPush` above: without
+`TWILIO_SMS_FROM_NUMBER`, the Invite row is still created and resolves
+normally once that person signs up, there's just no text sent in the
+meantime.
+
 ## 10. Personal restaurant library
 
 A signed-in user's own saved restaurants — added so this survives a

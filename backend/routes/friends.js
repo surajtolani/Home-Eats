@@ -12,6 +12,7 @@ const { prisma } = require("../lib/prisma");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { sendPush } = require("../lib/apns");
+const { sendInviteSMS, inviteSMSBody } = require("../lib/twilio");
 
 const router = express.Router();
 
@@ -199,7 +200,11 @@ router.post("/request", asyncHandler(async (req, res) => {
       await tx.invite.create({
         data: { invitingUserId: req.userId, invitedPhoneNumber: phoneNumber },
       });
-      return requestedResult();
+      // No account to push to — see `smsInvitePhoneNumber`'s own handling
+      // after the transaction below, the same "nothing to push to, text
+      // them instead" gap-fix as routes/groups.js's own POST
+      // /:groupId/invite.
+      return { ...requestedResult(), smsInvitePhoneNumber: phoneNumber };
     }
 
     const existing = await tx.friendship.findFirst({
@@ -271,6 +276,15 @@ router.post("/request", asyncHandler(async (req, res) => {
       title: "New Friend Request",
       body: `${me.displayName || me.phoneNumber} wants to be friends on Home Eats.`,
       payload: { type: "friendRequest" },
+    });
+  }
+  // Mirrors the push above for the "no account yet" branch — same
+  // fire-and-forget, post-commit reasoning, just texted instead of pushed
+  // since there's no device to push to.
+  if (result.smsInvitePhoneNumber) {
+    await sendInviteSMS({
+      to: result.smsInvitePhoneNumber,
+      body: inviteSMSBody(`${me.displayName || me.phoneNumber} wants to be friends on Home Eats.`),
     });
   }
 }));
