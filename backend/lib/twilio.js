@@ -48,13 +48,18 @@ async function sendInviteSMS({ to, body }) {
 }
 
 // Shared by both callers of `sendInviteSMS` (routes/groups.js and
-// routes/friends.js) so the "mention the download link, if we have one"
-// rule lives in one place rather than being copy-pasted at each call site.
-// `APP_DOWNLOAD_URL` is optional (e.g. not set yet while only a private
-// TestFlight link exists) — the message still reads fine without it.
+// routes/friends.js) so the "mention the download link, if we have one" and
+// "always carry an opt-out line" rules live in one place rather than being
+// copy-pasted at each call site. `APP_DOWNLOAD_URL` is optional (e.g. not
+// set yet while only a private TestFlight link exists) — the message still
+// reads fine without it. The trailing "Reply STOP to opt out" is not
+// optional — it's what this app's A2P 10DLC Campaign registration declares
+// every invite SMS includes (see backend/README.md's SMS-invite section),
+// so it has to actually be there on every send, not just when convenient.
 function inviteSMSBody(message) {
   const downloadUrl = process.env.APP_DOWNLOAD_URL;
-  return downloadUrl ? `${message} Get Home Eats: ${downloadUrl}` : message;
+  const withLink = downloadUrl ? `${message} Get Home Eats: ${downloadUrl}` : message;
+  return `${withLink} Reply STOP to opt out.`;
 }
 
 module.exports = { twilioClient, sendInviteSMS, inviteSMSBody };
