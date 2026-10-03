@@ -230,6 +230,134 @@ app.get("/health", (_req, res) => {
   });
 });
 
+// --- Privacy Policy / Terms & Conditions -------------------------------
+// Static pages, not API routes — exist for two audiences that both need a
+// stable, publicly reachable URL with no login: Twilio's A2P 10DLC Campaign
+// registration (which requires a Privacy Policy URL containing a specific
+// "we don't sell SMS opt-in data" statement, and a Terms URL with a
+// dedicated SMS Terms section and a "message and data rates may apply"
+// disclosure — see lib/twilio.js's sendInviteSMS, the thing these two pages
+// are actually describing) and the App Store Connect submission, which
+// separately requires its own Privacy Policy URL. One page serves both
+// rather than maintaining two near-duplicates.
+const PRIVACY_POLICY_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Home Eats</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 680px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; color: #1c1c1e; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h2 { font-size: 20px; margin-top: 36px; }
+  .updated { color: #6e6e73; font-size: 14px; margin-bottom: 32px; }
+  ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>Privacy Policy</h1>
+<p class="updated">Last updated: October 3, 2026</p>
+
+<p>Home Eats ("we," "us," "our") provides a meal-planning app for individuals, friends, and
+groups (the "Service"). This policy explains what information we collect and how we use it.</p>
+
+<h2>Information We Collect</h2>
+<ul>
+  <li><strong>Phone number</strong> — used to create and verify your account via SMS code.</li>
+  <li><strong>Profile information</strong> — display name and city, if you choose to add them.</li>
+  <li><strong>Content you create</strong> — recipes, restaurants, meal plans, grocery lists, and
+  group/friend connections.</li>
+  <li><strong>Device push token</strong> — used to deliver notifications to your device.</li>
+</ul>
+
+<h2>How We Use Your Information</h2>
+<p>We use this information to operate the Service: syncing your data across devices, running
+shared group features (meal planning, grocery lists, friend/group invites), and sending you
+notifications you'd reasonably expect from using the app.</p>
+
+<h2>SMS Messaging and Opt-In Data</h2>
+<p>When you invite a phone number to a group or as a friend, and that phone number doesn't yet have a Home Eats account, we send that number a single SMS identifying you as the inviter and a link to download the app. <strong>We do not sell or share your SMS opt-in data or personal information with third parties for marketing purposes.</strong></p>
+
+<h2>Third-Party Services</h2>
+<p>We use a small number of third-party providers to operate the Service, who process data only
+as needed to provide their specific function: Twilio (SMS delivery), Apple (push notifications),
+Google (location/places search), and Anthropic (AI-assisted recipe features). We do not sell your
+personal information to anyone.</p>
+
+<h2>Data Retention and Deletion</h2>
+<p>You can delete your account and associated data at any time from within the app, or by
+contacting us below.</p>
+
+<h2>Contact Us</h2>
+<p>Questions about this policy? Reach us at
+<a href="mailto:surajtolani@yahoo.com">surajtolani@yahoo.com</a>.</p>
+</body>
+</html>`;
+
+const TERMS_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terms &amp; Conditions — Home Eats</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 680px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; color: #1c1c1e; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h2 { font-size: 20px; margin-top: 36px; }
+  .updated { color: #6e6e73; font-size: 14px; margin-bottom: 32px; }
+  ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>Terms &amp; Conditions</h1>
+<p class="updated">Last updated: October 3, 2026</p>
+
+<p>These Terms &amp; Conditions ("Terms") govern your use of Home Eats (the "Service"). By
+creating an account or using the Service, you agree to these Terms.</p>
+
+<h2>The Service</h2>
+<p>Home Eats is a meal-planning app that lets you plan meals, build grocery lists, save recipes
+and restaurants, and share planning with friends and groups you create or join.</p>
+
+<h2>Accounts</h2>
+<p>Creating an account requires verifying a real phone number by SMS code. You're responsible for
+keeping your account secure and for what happens under it.</p>
+
+<h2>SMS Terms</h2>
+<p>By providing your phone number and using Home Eats' invite feature, you consent to receive SMS
+messages related to account verification and, if someone invites you to a group or as a friend, a
+one-time invite text identifying the inviter. Message frequency varies by your own use of the
+app. <strong>Message and data rates may apply.</strong> Reply STOP to a Home Eats text at any time
+to opt out of further messages, or HELP for help. We are not liable for messages delayed or
+undelivered by your carrier.</p>
+
+<h2>User Content</h2>
+<p>You retain ownership of the recipes, notes, and other content you add to Home Eats. You're
+responsible for having the right to share anything you add, including inviting phone numbers you
+have permission to contact.</p>
+
+<h2>Limitation of Liability</h2>
+<p>The Service is provided "as is." To the fullest extent permitted by law, Home Eats is not
+liable for indirect or incidental damages arising from your use of the Service.</p>
+
+<h2>Changes to These Terms</h2>
+<p>We may update these Terms from time to time; continued use of the Service after a change means
+you accept the update.</p>
+
+<h2>Contact Us</h2>
+<p>Questions about these Terms? Reach us at
+<a href="mailto:surajtolani@yahoo.com">surajtolani@yahoo.com</a>.</p>
+</body>
+</html>`;
+
+app.get("/privacy", (_req, res) => {
+  res.type("html").send(PRIVACY_POLICY_HTML);
+});
+
+app.get("/terms", (_req, res) => {
+  res.type("html").send(TERMS_HTML);
+});
+
 // --- Accounts, friends, and groups -----------------------------------
 // Everything below is the accounts/social layer (Phase 1 of the accounts
 // feature — see backend/README.md): phone number + SMS sign-in, a personal
