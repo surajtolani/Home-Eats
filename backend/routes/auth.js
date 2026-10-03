@@ -119,8 +119,12 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // the request, which is exactly what's needed to tell "the owner's own
   // device" apart from anything else. Intentionally logs every request,
   // limited or not, so a blocked burst still shows up here.
+  // `ua` added after a repeat report with no resolution from ip alone: the
+  // User-Agent tells the iOS app (CFNetwork/Darwin) apart from curl, a
+  // script, or another client sharing these Twilio credentials, which is
+  // exactly the question the ip by itself couldn't settle.
   console.log(
-    `[request-code] phone=${phoneNumber} ip=${req.ip} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
+    `[request-code] phone=${phoneNumber} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
   );
   if (burstLimited || phoneLimited || ipLimited) {
     return res.status(429).json({ error: "Too many verification code requests. Please wait a bit and try again." });
