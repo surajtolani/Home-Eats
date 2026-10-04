@@ -62,6 +62,15 @@ struct ContactOrPhoneNumberPickerView: View {
     /// button" bar (see `ContactsSearchService.loadIfNeeded`'s doc comment).
     @State private var pickErrorMessage: String?
 
+    /// The consent disclosure shown on this sheet, before anyone is added.
+    /// Twilio's A2P campaign review requires the opt-in flow's exact consent
+    /// wording to be visible to the person acting, and the same wording is
+    /// quoted on the backend's public /sms-consent page (backend/index.js,
+    /// `SMS_CONSENT_HTML`) as the evidence reviewers check — keep the two
+    /// identical by hand when either changes.
+    static let textInviteDisclosure =
+        "If someone you add doesn't have Home Eats yet, Home Eats will send them one invite text naming you, with a link to download the app. By adding them, you confirm you have their permission to contact them. Message and data rates may apply. They can reply STOP to opt out."
+
     /// Called once, with the final pick, immediately before this view
     /// dismisses itself — same "hand back a value and close" convention as
     /// `RecipePickerSheet`/`RestaurantPickerSheet`. Not called at all if the
@@ -123,6 +132,12 @@ struct ContactOrPhoneNumberPickerView: View {
                     Section {
                         Text(pickErrorMessage).foregroundStyle(.red)
                     }
+                }
+
+                Section {
+                    Text(Self.textInviteDisclosure)
+                        .font(.brandCaption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Add Someone")

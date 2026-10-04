@@ -276,7 +276,9 @@ shared group features (meal planning, grocery lists, friend/group invites), and 
 notifications you'd reasonably expect from using the app.</p>
 
 <h2>SMS Messaging and Opt-In Data</h2>
-<p>When you invite a phone number to a group or as a friend, and that phone number doesn't yet have a Home Eats account, we send that number a single SMS identifying you as the inviter and a link to download the app. <strong>We do not sell or share your SMS opt-in data or personal information with third parties for marketing purposes.</strong></p>
+<p>When you invite a phone number to a group or as a friend, and that phone number doesn't yet have a Home Eats account, we send that number a single SMS identifying you as the inviter and a link to download the app. Message frequency: one text per invite you send; we send no recurring or marketing texts. Message and data rates may apply. Reply STOP to any Home Eats text to opt out, or HELP for help.</p>
+<p><strong>Mobile numbers and SMS opt-in data are not shared with third parties or affiliates for marketing or promotional purposes.</strong> We do not sell or share your SMS opt-in data or personal information with third parties for marketing purposes.</p>
+<p>How consent works, with the exact wording shown in the app, is documented at <a href="/sms-consent">/sms-consent</a>.</p>
 
 <h2>Third-Party Services</h2>
 <p>We use a small number of third-party providers to operate the Service, who process data only
@@ -349,6 +351,65 @@ you accept the update.</p>
 <a href="mailto:surajtolani@yahoo.com">surajtolani@yahoo.com</a>.</p>
 </body>
 </html>`;
+
+// Public evidence of the invite-text opt-in flow for Twilio's A2P campaign
+// review (error 30896 asks for the exact consent wording plus hosted
+// screenshots when the flow sits behind a login, as an in-app screen does).
+// The disclosure below must stay identical to
+// `ContactOrPhoneNumberPickerView.textInviteDisclosure` in the iOS app. Any
+// PNG dropped in backend/public/ named below is shown automatically; nothing
+// is displayed for a screenshot that hasn't been added yet.
+const SMS_CONSENT_DISCLOSURE =
+  "If someone you add doesn't have Home Eats yet, Home Eats will send them one invite text naming you, with a link to download the app. By adding them, you confirm you have their permission to contact them. Message and data rates may apply. They can reply STOP to opt out.";
+const SMS_CONSENT_SCREENSHOTS = [
+  ["sms-consent-add-someone.png", "The Add Someone screen, showing the phone number field, the Add button, and the consent disclosure beneath them."],
+  ["sms-consent-invite-sheet.png", "The group Invite screen that leads to Add Someone."],
+];
+function smsConsentHtml() {
+  const fs = require("fs");
+  const path = require("path");
+  const figures = SMS_CONSENT_SCREENSHOTS.filter(([file]) => fs.existsSync(path.join(__dirname, "public", file)))
+    .map(([file, caption]) => `<figure><img src="/public/${file}" alt="${caption}" style="max-width:320px;width:100%;border:1px solid #ccc;border-radius:12px"><figcaption>${caption}</figcaption></figure>`)
+    .join("\n");
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMS Invite Consent — Home Eats</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 680px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; color: #1c1c1e; }
+  h1 { font-size: 28px; } h2 { font-size: 20px; margin-top: 32px; }
+  blockquote { margin: 16px 0; padding: 12px 16px; background: #f2f2f7; border-radius: 10px; }
+  figure { margin: 24px 0; } figcaption { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>SMS Invite Consent</h1>
+<p>Home Eats is an iPhone app for planning meals with family and friends. The only text messages Home Eats sends to people who are not yet users are one-time invites, sent when an existing Home Eats user adds that person's phone number inside the app.</p>
+
+<h2>Who opts in, and where</h2>
+<p>A signed-in Home Eats user (an account holder who has verified their own phone number and accepted our <a href="/terms">Terms &amp; Conditions</a>) opens the <strong>Add Someone</strong> screen from a group's Invite screen, from Create Group, or from My Friends. They pick a contact or type a phone number and tap <strong>Add</strong>. The screen shows this disclosure before they do:</p>
+<blockquote>${SMS_CONSENT_DISCLOSURE}</blockquote>
+<p>Consent is therefore given by the account holder, who confirms they have the recipient's permission, and the recipient can withdraw it at any time by replying STOP.</p>
+
+<h2>What the recipient receives</h2>
+<p>One text per invite, for example: <em>"[Name] invited you to join "[Group]" on Home Eats. Get Home Eats: [link] Reply STOP to opt out."</em> Message frequency: one text per invite; no recurring or marketing messages. Message and data rates may apply. Reply STOP to opt out or HELP for help.</p>
+
+<h2>Screenshots</h2>
+${figures || "<p>Screenshots are added with each app release.</p>"}
+
+<h2>Policies</h2>
+<p><a href="/privacy">Privacy Policy</a> &middot; <a href="/terms">Terms &amp; Conditions</a></p>
+</body>
+</html>`;
+}
+
+app.use("/public", express.static(require("path").join(__dirname, "public")));
+
+app.get("/sms-consent", (_req, res) => {
+  res.type("html").send(smsConsentHtml());
+});
 
 app.get("/privacy", (_req, res) => {
   res.type("html").send(PRIVACY_POLICY_HTML);
