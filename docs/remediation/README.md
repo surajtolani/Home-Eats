@@ -1,5 +1,9 @@
 # Home Eats remediation plans
 
+> **Not technical?** Read [START-HERE.md](START-HERE.md) instead. It explains
+> every issue in plain English and gives copy-paste Claude Code prompts for
+> each phase.
+
 Agent-executable plans for the security, App Store, and architecture issues
 found in the October 2026 review of this repo. Each plan is self-contained:
 an agent should be able to pick up one file, read it, and ship it as a single
