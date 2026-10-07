@@ -74,6 +74,10 @@ exists.
      DO UPDATE SET "count" = "RateLimitBucket"."count" + 1
      RETURNING "count";
      ```
+     This is the first raw SQL in the codebase. Write it as the tagged
+     template `prisma.$queryRaw\`... ${key} ...\`` so every value is a bound
+     parameter. **Never** use `$queryRawUnsafe` or build the SQL string with
+     concatenation or interpolation outside the tag (SQL injection).
      Set `expiresAt = windowStart + windowMs`. `limited = count > max`, and
      `retryAfterMs = expiresAt - now`.
    - Note this counts blocked attempts too. That's intended: a caller

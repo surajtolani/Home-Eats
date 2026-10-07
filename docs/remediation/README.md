@@ -27,15 +27,16 @@ Phase 3 is post-1.0 hardening and can be scheduled freely.
 | 12 | A5 | [UGC safeguards: block, hide, moderate](2-app-store-v1/A5-ugc-moderation.md) | Rejection | S0 | L |
 | 13 | A6 | [iPhone-only device family](2-app-store-v1/A6-device-family.md) | Rejection risk | — | XS |
 | 14 | A7 | [Backend availability for review](2-app-store-v1/A7-backend-availability.md) | Rejection risk | — | S |
-| 15 | A8 | [Build and config hygiene](2-app-store-v1/A8-build-config-hygiene.md) | Rejection risk | — | S |
-| 16 | A9 | [SwiftData versioned schema baseline](2-app-store-v1/A9-swiftdata-versioned-schema.md) | Data loss | — | M |
-| 17 | R1 | [Images to object storage + pagination](3-post-v1/R1-images-and-pagination.md) | Scale | S4 | L |
-| 18 | R2 | [Staging and production environments](3-post-v1/R2-environments.md) | Ops | — | M |
-| 19 | R3 | [Backend tests in CI, iOS tests in CI](3-post-v1/R3-ci-tests.md) | Quality | S0 | M |
-| 20 | R4 | [Split index.js, dedupe helpers](3-post-v1/R4-backend-structure.md) | Maintainability | R3 | M |
-| 21 | R5 | [AI model and spend controls](3-post-v1/R5-ai-cost-controls.md) | Cost | S1 | S |
-| 22 | R6 | [Guest mode (use without an account)](3-post-v1/R6-guest-mode.md) | Product | A4 | L |
-| 23 | R7 | [Observability and audit log](3-post-v1/R7-observability.md) | Ops | S6 | M |
+| 15 | A10 | [Backend robustness and database operations](2-app-store-v1/A10-backend-robustness.md) | Outage/data loss | S0 | M |
+| 16 | A8 | [Build and config hygiene](2-app-store-v1/A8-build-config-hygiene.md) | Rejection risk | — | S |
+| 17 | A9 | [SwiftData versioned schema baseline](2-app-store-v1/A9-swiftdata-versioned-schema.md) | Data loss | — | M |
+| 18 | R1 | [Images to object storage + pagination](3-post-v1/R1-images-and-pagination.md) | Scale | S4 | L |
+| 19 | R2 | [Staging and production environments](3-post-v1/R2-environments.md) | Ops | — | M |
+| 20 | R3 | [Backend tests in CI, iOS tests in CI](3-post-v1/R3-ci-tests.md) | Quality | S0 | M |
+| 21 | R4 | [Split index.js, dedupe helpers](3-post-v1/R4-backend-structure.md) | Maintainability | R3 | M |
+| 22 | R5 | [AI model and spend controls](3-post-v1/R5-ai-cost-controls.md) | Cost | S1 | S |
+| 23 | R6 | [Guest mode (use without an account)](3-post-v1/R6-guest-mode.md) | Product | A4 | L |
+| 24 | R7 | [Observability and audit log](3-post-v1/R7-observability.md) | Ops | S6 | M |
 
 Sizes: XS < 1h, S ≈ half day, M ≈ 1–2 days, L ≈ 3+ days of agent work.
 
