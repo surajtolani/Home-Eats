@@ -4,7 +4,7 @@
 // same on iOS and (eventually) Android, and it's what friend-matching
 // against a phone contacts list will key off of later.
 //
-// Neither route here requires a Bearer token (see index.js — this router is
+// Neither route here requires a Bearer token (see app.js — this router is
 // mounted before requireAuth would ever apply to it); everything under
 // /me, /friends, /groups does.
 "use strict";

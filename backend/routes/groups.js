@@ -2,7 +2,7 @@
 // "our Peru trip"): built from a user's friends list, and a user can belong
 // to many groups at once. Nothing here (or in prisma/schema.prisma's
 // GroupMembership model) assumes a user has only one group. Every route
-// requires auth (mounted behind requireAuth in index.js).
+// requires auth (mounted behind requireAuth in app.js).
 //
 // Roles (Phase 3, extended Phase 5): every GroupMembership carries a
 // `role` — MANAGER or PARTICIPANT (see the GroupRole/GroupMembership doc

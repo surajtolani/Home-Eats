@@ -2,7 +2,7 @@
 // routes/groups.js: adding someone to a group requires them to already be
 // an accepted friend). Modeled after Splitwise: a friend request is a
 // directional Friendship row that becomes mutual once accepted; every route
-// here requires auth (mounted behind requireAuth in index.js).
+// here requires auth (mounted behind requireAuth in app.js).
 "use strict";
 
 const express = require("express");
@@ -447,6 +447,6 @@ module.exports = router;
 // Attached directly to the already-exported router object (rather than
 // switching this file's export to `{ router, loadFriendshipsFor }`, which
 // would ripple into every existing `require("./routes/friends")` call site,
-// starting with index.js's `app.use("/friends", requireAuth, friendsRouter)`)
+// starting with app.js's `app.use("/friends", requireAuth, friendsRouter)`)
 // — see routes/notifications.js for the one other place this is called.
 module.exports.loadFriendshipsFor = loadFriendshipsFor;

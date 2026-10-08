@@ -18,7 +18,7 @@
 // "become my friend" Invite (`groupId` null) is deliberately out of scope
 // here and unaffected by any of this file.
 //
-// Mounted at /invites in index.js, behind requireAuth like every other
+// Mounted at /invites in app.js, behind requireAuth like every other
 // authenticated route in this app.
 "use strict";
 

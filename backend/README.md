@@ -166,7 +166,7 @@ curl -X POST "http://localhost:4000/recipes/recommend" \
 curl "http://localhost:4000/recipes/web-search?q=crepes" \
   -H "Authorization: Bearer <token>"
 # ^ needs GOOGLE_CUSTOM_SEARCH_API_KEY + GOOGLE_CUSTOM_SEARCH_CX set (see
-# that route's own doc comment in index.js for how to get them) — 500s with
+# that route's own doc comment in app.js for how to get them) — 500s with
 # a clear "Server is missing ..." message otherwise, same as every other
 # optionally-configured integration here.
 
@@ -179,6 +179,41 @@ curl -X POST "http://localhost:4000/recipe-library" \
   -d '{"title": "Weeknight Chili", "ingredients": [{"name": "ground beef", "quantity": 1, "unit": "lb"}], "instructions": ["Brown the beef.", "Add spices and simmer."]}'
 curl "http://localhost:4000/recipe-library/mine" -H "Authorization: Bearer <token>"
 ```
+
+### Running tests
+
+Tests use Node's built-in test runner (`node:test`); there's nothing extra
+to install. The Express app lives in `app.js` and `index.js` only connects
+to Postgres and starts listening, so tests can load the app without a real
+server.
+
+**Unit tests only** (no database needed). Integration tests show as
+skipped:
+
+```bash
+cd backend
+npm test
+```
+
+**Unit and integration tests.** Integration tests make real HTTP requests
+to the app against a throwaway Postgres that you name with
+`TEST_DATABASE_URL`. They **empty every table** in that database before
+running, so never point it at a database whose data you care about.
+
+```bash
+# Start a disposable Postgres on port 5433
+docker run --rm -d --name home-eats-test-db -e POSTGRES_PASSWORD=pw -p 5433:5432 postgres:16
+
+cd backend
+DATABASE_URL=postgresql://postgres:pw@localhost:5433/postgres npx prisma migrate deploy
+TEST_DATABASE_URL=postgresql://postgres:pw@localhost:5433/postgres npm test
+
+# Stop it when you're done (--rm deletes it)
+docker stop home-eats-test-db
+```
+
+Run `npx prisma migrate deploy` against the test database again after
+pulling a change that adds a migration.
 
 ## 3. Deploy it (Render, same as the pattern used elsewhere)
 
@@ -224,7 +259,7 @@ curl "http://localhost:4000/recipe-library/mine" -H "Authorization: Bearer <toke
       `GOOGLE_CUSTOM_SEARCH_API_KEY`.
    3. Free tier is 100 queries/day across this whole deployment, then
       billed per 1,000 queries — see that page's own pricing section.
-      `recipesWebSearchLimiter` in index.js caps this per signed-in user
+      `recipesWebSearchLimiter` in app.js caps this per signed-in user
       to blunt runaway usage, not to reflect real expected traffic.
 6. Deploy. Render gives you a URL like `https://home-eats-backend.onrender.com`.
 
@@ -899,7 +934,7 @@ comment on the `Restaurant` model, and the iOS `HomeEatsApp.swift`'s on
 NOT bare `/restaurants`, which is already the Google-Places-proxy search
 API (`/restaurants/search`, `/restaurants/search-natural`,
 `/restaurants/photo`, `/restaurants/details`) registered directly on `app`
-in `index.js` — every one of those but `/photo` also requires auth, same as
+in `app.js` — every one of those but `/photo` also requires auth, same as
 this router, `/photo` stays open (rate-limited by IP instead) since an
 AsyncImage load can't attach an Authorization header. No sharing/visibility
 concept at all, unlike recipe-library — every restaurant here is simply
@@ -951,7 +986,7 @@ nothing to sync it to across devices, so a restored entry simply has no
 
 - New routes here (`/recipe-library`) are mounted separately from the
   pre-existing `/recipes/extract` and `/recipes/recommend` routes in
-  `index.js` (Claude-powered recipe extraction/recommendation — both also
+  `app.js` (Claude-powered recipe extraction/recommendation — both also
   behind requireAuth, just registered directly on `app` rather than through
   this router) — different prefix entirely, so there's no risk of the two
   ever colliding or being confused with each other, even though nothing
@@ -1007,7 +1042,7 @@ nothing to sync it to across devices, so a restored entry simply has no
   limiter's state is per-process (fine for this app's single Render
   instance — see the deploy section above — but it resets on every
   deploy/restart and wouldn't be shared across instances if this ever
-  scales past one); `index.js` sets `app.set("trust proxy", true)` so the
+  scales past one); `app.js` sets `app.set("trust proxy", true)` so the
   per-IP half of this actually sees the real client IP through Render's
   reverse proxy rather than the proxy's own address.
 - `Group.createdByUserId` is nullable (`onDelete: SetNull` on its relation
