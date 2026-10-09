@@ -1041,3 +1041,17 @@ enum MealRating {
   NEUTRAL
   LIKED
 }
+
+// Fixed-window rate-limit counters (see lib/rateLimit.js). Kept in Postgres
+// rather than process memory so limits survive deploys and restarts and are
+// shared if this ever runs as more than one instance. Rows are swept about
+// an hour after `expiresAt`, so this table stays small.
+model RateLimitBucket {
+  key         String // "<limiter name>:<caller key>"
+  windowStart DateTime
+  count       Int      @default(0)
+  expiresAt   DateTime
+
+  @@id([key, windowStart])
+  @@index([expiresAt])
+}

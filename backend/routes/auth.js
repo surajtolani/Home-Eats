@@ -45,14 +45,29 @@ const PhoneSchema = z.object({
 //   if each individual request is more than 60s apart.
 // Per IP (20/hour) stays as its own separate limit, looser since a shared
 // household/office IP can plausibly have several people signing in
-// independently, but still caps one IP cycling through many numbers. See
-// `lib/rateLimit.js`'s own doc comment on why a small in-memory limiter is
-// enough here (single Render instance, not a hard security boundary — and
-// its state resets on every deploy, so this alone is a mitigation, not a
-// complete fix; the real fix is not leaking phone numbers to begin with).
-const requestCodePhoneBurstLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 1 });
-const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 3 });
-const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
+// independently, but still caps one IP cycling through many numbers. The
+// counters live in Postgres (see lib/rateLimit.js), so they survive deploys
+// and restarts. Every limiter in this file is `failClosed`: if the database
+// can't be reached, sign-in is refused with a 503 rather than letting
+// unthrottled requests reach Twilio.
+const requestCodePhoneBurstLimiter = createRateLimiter({
+  name: "request-code:phone-burst",
+  windowMs: 60 * 1000,
+  max: 1,
+  failClosed: true,
+});
+const requestCodePhoneLimiter = createRateLimiter({
+  name: "request-code:phone",
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  failClosed: true,
+});
+const requestCodeIPLimiter = createRateLimiter({
+  name: "request-code:ip",
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  failClosed: true,
+});
 
 // POST /verify-code had no rate limiting of its own at all — unlike
 // /request-code right above it, which stacks three limiters specifically
@@ -66,8 +81,23 @@ const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 
 // 10/hour per phone number is generous for a real user who mistypes a code
 // a few times; 30/hour per IP is the same "shared household/office IP"
 // looseness `requestCodeIPLimiter` above uses.
-const verifyCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10 });
-const verifyCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+const verifyCodePhoneLimiter = createRateLimiter({
+  name: "verify-code:phone",
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  failClosed: true,
+});
+const verifyCodeIPLimiter = createRateLimiter({
+  name: "verify-code:ip",
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  failClosed: true,
+});
+
+// Sent when a fail-closed limiter couldn't reach the database (its result
+// is `limited` and `error`), so the request was refused without knowing
+// whether it was over the limit.
+const RATE_LIMIT_UNAVAILABLE_ERROR = "Sign-in is temporarily unavailable. Please try again in a minute.";
 
 function firstIssue(error, fallback) {
   return error.issues[0]?.message || fallback;
@@ -106,9 +136,14 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // caller retrying every few seconds right up against the burst limit
   // should still find the hourly limit accurately reflects how many
   // actually went through.
-  const burstLimited = requestCodePhoneBurstLimiter.check(phoneNumber).limited;
-  const phoneLimited = requestCodePhoneLimiter.check(phoneNumber).limited;
-  const ipLimited = requestCodeIPLimiter.check(req.ip).limited;
+  const [burst, phone, ip] = await Promise.all([
+    requestCodePhoneBurstLimiter.check(phoneNumber),
+    requestCodePhoneLimiter.check(phoneNumber),
+    requestCodeIPLimiter.check(req.ip),
+  ]);
+  const burstLimited = burst.limited;
+  const phoneLimited = phone.limited;
+  const ipLimited = ip.limited;
   // Forensic logging, added after a confirmed report of unprompted codes
   // that this server has no other way to investigate (Render's own log
   // retention is the only record of this route being hit at all — there's
@@ -126,6 +161,9 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   console.log(
     `[request-code] phone=${phoneNumber} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
   );
+  if ([burst, phone, ip].some((r) => r.limited && r.error)) {
+    return res.status(503).json({ error: RATE_LIMIT_UNAVAILABLE_ERROR });
+  }
   if (burstLimited || phoneLimited || ipLimited) {
     return res.status(429).json({ error: "Too many verification code requests. Please wait a bit and try again." });
   }
@@ -176,9 +214,14 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
 
   // Checked (and counted) after body validation, before the billed Twilio
   // call — same ordering reasoning as /request-code's own limiters above.
-  const phoneLimited = verifyCodePhoneLimiter.check(phoneNumber).limited;
-  const ipLimited = verifyCodeIPLimiter.check(req.ip).limited;
-  if (phoneLimited || ipLimited) {
+  const [phone, ip] = await Promise.all([
+    verifyCodePhoneLimiter.check(phoneNumber),
+    verifyCodeIPLimiter.check(req.ip),
+  ]);
+  if ([phone, ip].some((r) => r.limited && r.error)) {
+    return res.status(503).json({ error: RATE_LIMIT_UNAVAILABLE_ERROR });
+  }
+  if (phone.limited || ip.limited) {
     return res.status(429).json({ error: "Too many attempts. Please wait a bit and try again." });
   }
 
