@@ -1,7 +1,7 @@
 // A group's shared meal plan (Phase 3) — one plan per group, everyone in
 // the group sees the same rows (contrast with recipe sharing, which is "my
 // recipe, shared with specific people/groups"; this is "belongs to the
-// group outright"). Mounted at /groups/:groupId/meal-plan in index.js,
+// group outright"). Mounted at /groups/:groupId/meal-plan in app.js,
 // behind requireAuth like every other group route. Every route here also
 // re-checks membership itself (never trusts the mount path alone) — same
 // rigor as routes/groups.js and routes/recipeLibrary.js's own ownership

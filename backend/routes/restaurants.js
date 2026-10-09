@@ -2,11 +2,11 @@
 // `Restaurant` SwiftData model. Mounted at `/restaurants/library`
 // (deliberately NOT `/restaurants`, which is already the unauthenticated
 // Google-Places-proxy search API registered directly on `app` in
-// index.js — this is a distinct, auth-required CRUD API for a signed-in
+// app.js — this is a distinct, auth-required CRUD API for a signed-in
 // user's own saved restaurants, same "own distinct prefix, never confused
 // with an existing route" reasoning as `/recipe-library` gives for staying
 // out of `/recipes/*`). Every route here requires auth (mounted behind
-// requireAuth in index.js), same as recipe-library/friends/groups.
+// requireAuth in app.js), same as recipe-library/friends/groups.
 //
 // No sharing/visibility concept at all, unlike recipe-library — every
 // restaurant here is simply "the caller's own." Added so a user's

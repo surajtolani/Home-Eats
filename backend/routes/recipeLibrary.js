@@ -1,6 +1,6 @@
 // Recipe sharing (Phase 2a) — recipes moving from purely on-device storage
 // to something that can be shared between people, on top of the friends/
-// groups layer built in Phase 1. Mounted at `/recipe-library` in index.js
+// groups layer built in Phase 1. Mounted at `/recipe-library` in app.js
 // (deliberately NOT under `/recipes/*`, even though nothing here collides
 // method+path with the existing `/recipes/extract`/`/recipes/recommend` —
 // those are unrelated, Claude-powered routes registered directly on `app`
@@ -8,7 +8,7 @@
 // router), and keeping this feature's CRUD+sharing API under its own
 // distinct prefix avoids any risk of the two ever being confused with each
 // other, in code or in the README). Every route here requires auth
-// (mounted behind requireAuth in index.js), same as friends/groups.
+// (mounted behind requireAuth in app.js), same as friends/groups.
 "use strict";
 
 const express = require("express");
@@ -134,7 +134,7 @@ const MAX_INSTRUCTIONS = 200;
 // well under 500KB) while still bounding how much a single misbehaving or
 // malicious request can bloat this table: a 5MB decoded photo is ~6.7MB of
 // base64 JSON, comfortably inside the global 15mb `express.json` body limit
-// (see index.js) with room for the rest of the request body around it.
+// (see app.js) with room for the rest of the request body around it.
 const MAX_PHOTO_BYTES_DECODED = 5 * 1024 * 1024; // 5MB
 
 // `Buffer.byteLength(str, "base64")` computes the decoded size directly

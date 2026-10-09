@@ -1,0 +1,1318 @@
+// Home Eats backend — started as a small proxy in front of the Google
+// Places API and the Anthropic API, and now also the accounts/friends/
+// groups backend (see the "Accounts, friends, and groups" block below and
+// routes/, lib/, prisma/ in this folder).
+//
+// Why the proxy part exists at all: the Places API needs a billed Google
+// Cloud API key. Shipping that key inside the iOS app (even "restricted" to
+// the app's bundle ID) means it's extracted the moment someone decompiles
+// the binary. This server holds the one real key as a server-side env var;
+// the app only ever talks to *this* server, which adds the key and
+// forwards the request to Google. See README.md in this folder for
+// deployment steps and the accounts feature's own setup (Postgres, Twilio
+// Verify, JWT secret).
+"use strict";
+
+const dns = require("dns").promises;
+const net = require("net");
+const express = require("express");
+const Anthropic = require("@anthropic-ai/sdk");
+const { zodOutputFormat } = require("@anthropic-ai/sdk/helpers/zod");
+const { z } = require("zod");
+const { requireAuth } = require("./middleware/requireAuth");
+const { createRateLimiter } = require("./lib/rateLimit");
+const authRouter = require("./routes/auth");
+const meRouter = require("./routes/me");
+const friendsRouter = require("./routes/friends");
+const groupsRouter = require("./routes/groups");
+const invitesRouter = require("./routes/invites");
+const notificationsRouter = require("./routes/notifications");
+const recipeLibraryRouter = require("./routes/recipeLibrary");
+const restaurantsRouter = require("./routes/restaurants");
+const mealHistoryRouter = require("./routes/mealHistory");
+const groupMealPlanRouter = require("./routes/groupMealPlan");
+const groupGroceryRouter = require("./routes/groupGrocery");
+const groupGroceryAislesRouter = require("./routes/groupGroceryAisles");
+
+const app = express();
+// Render puts every request through its own reverse proxy, so without this
+// `req.ip` would just be that proxy's address for every request — useless
+// for the per-IP request-code rate limiter in routes/auth.js, which needs
+// the real client IP from the `X-Forwarded-For` header Render sets.
+//
+// `1`, not `true` — a real, confirmed bug: Express's `trust proxy: true`
+// trusts *every* hop in `X-Forwarded-For`, not just the immediate one (the
+// comment this replaced claimed otherwise; that claim was simply wrong —
+// `1` is what actually means "trust exactly one hop upstream"). With
+// `true`, a caller could set its own `X-Forwarded-For: <anything>` header
+// and have `req.ip` resolve to that attacker-chosen value instead of
+// Render's own record of who actually connected — fully defeating the
+// per-IP limiter it exists for (`requestCodeIPLimiter` in routes/auth.js),
+// letting a scripted caller spray verification-code sends across many
+// phone numbers by rotating a fake header on every request. `1` trusts
+// only Render's own proxy hop (this deployment always runs behind exactly
+// one — see backend/README.md's deploy section) and nothing a client
+// supplies.
+app.set("trust proxy", 1);
+// A downsized recipe photo (see ImageResizing.swift in the iOS app - it
+// caps images at 800px on the long edge before base64-encoding) is well
+// under 1MB, but give real headroom rather than a tight limit that fails
+// on an occasional larger photo.
+app.use(express.json({ limit: "15mb" }));
+
+const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
+// Google's Custom Search JSON API — a distinct product/key from Places
+// above (Places' own key, even unrestricted, doesn't cover this API; it
+// needs to be enabled separately in Google Cloud Console), plus a
+// Programmable Search Engine ID ("cx") configured to search the whole web.
+// Powers GET /recipes/web-search — see that route's own doc comment for
+// setup steps. `WEB_SEARCH_CX` mirrors `GOOGLE_PLACES_API_KEY`'s own naming
+// rather than Google's own "cx" abbreviation, for the same reason every
+// other env var in this file spells its purpose out.
+const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
+const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
+// `new Anthropic()` reads ANTHROPIC_API_KEY from the environment itself;
+// constructing it doesn't fail just because the key is unset, so the
+// per-route `anthropicClient()` helper below is what actually guards that.
+const anthropic = new Anthropic();
+
+function anthropicClient(res) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    res.status(500).json({ error: "Server is missing ANTHROPIC_API_KEY." });
+    return null;
+  }
+  return anthropic;
+}
+
+// Per-user (keyed by requireAuth's req.userId) rate limits for the Places/
+// Claude proxy routes below — every one of these forwards to a billed
+// Google or Anthropic call, and until now had no auth AND no rate limit at
+// all, so any scripted caller who found the URL could run up this
+// deployment's Google/Anthropic bill indefinitely with zero attribution.
+// These limits are generous relative to real usage (a debounced city-search
+// field can easily fire a couple hundred times in an active session) — they
+// exist only to blunt abuse, not to constrain normal use.
+const restaurantsSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
+const restaurantsSearchNaturalLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+const restaurantsDetailsLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
+const citiesSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 300 });
+const citiesDetailsLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
+const recipesExtractLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
+const recipesRecommendLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+// Tighter than the two above — Google's Custom Search JSON API's own free
+// tier is only 100 queries/day total across this entire deployment (every
+// user combined), well below what a per-user 120/hour limit like
+// `restaurantsSearchLimiter`'s would actually prevent.
+const recipesWebSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
+// The two routes below that stay unauthenticated on purpose (AsyncImage
+// can't attach an Authorization header — see each route's own comment) are
+// rate-limited by IP instead of by user.
+const restaurantsPhotoIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 600 });
+const recipeImageProxyIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 600 });
+
+// A small middleware factory wrapping lib/rateLimit.js's `check` in
+// Express's usual (req, res, next) shape — `keyFn` picks what to key the
+// limit on (req.userId once requireAuth has run, or req.ip for the two
+// routes that stay unauthenticated).
+function rateLimited(limiter, keyFn) {
+  return (req, res, next) => {
+    const result = limiter.check(keyFn(req));
+    if (result.limited) {
+      return res.status(429).json({ error: "Too many requests. Please try again shortly." });
+    }
+    next();
+  };
+}
+
+const byUserId = (req) => req.userId;
+const byIP = (req) => req.ip;
+
+// Rejects a resolved IP that points at loopback, a private (RFC1918) range,
+// or link-local — including 169.254.169.254, the address every major cloud
+// provider serves instance credentials from. Used by GET /recipes/image-proxy
+// below to stop that route being used to make *this server* fetch an
+// internal/otherwise-unintended target on an attacker's behalf. This checks
+// the IP a hostname resolves to, not the hostname text itself, specifically
+// so a hostname that looks external but resolves to one of these
+// (attacker-controlled DNS) is still caught. Known, accepted limitation:
+// this is a lookup-time check, not a fetch-time one, so a DNS answer that
+// changes between this check and the actual fetch (DNS rebinding) isn't
+// fully closed — acceptable here since the route only ever returns opaque,
+// size-capped, image/*-typed bytes back to the caller who supplied the URL,
+// never anything else about the response (no headers, no error detail).
+function isPrivateOrLoopbackIP(ip) {
+  if (net.isIPv4(ip)) {
+    const parts = ip.split(".").map(Number);
+    if (parts[0] === 127) return true; // loopback
+    if (parts[0] === 10) return true; // 10.0.0.0/8
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
+    if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+    if (parts[0] === 169 && parts[1] === 254) return true; // link-local, incl. cloud metadata
+    if (parts[0] === 0) return true;
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1") return true; // loopback
+    if (lower.startsWith("fe80:")) return true; // link-local
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique local
+    if (lower.startsWith("::ffff:")) {
+      const mapped = lower.split(":").pop();
+      if (net.isIPv4(mapped)) return isPrivateOrLoopbackIP(mapped);
+    }
+    return false;
+  }
+  return true; // not a recognizable IP at all — reject rather than guess.
+}
+
+// Shared shape for one recipe, whether it came from a photo, typed notes, or
+// a recommendation — the iOS app's RecipeImportService/SchemaOrgRecipeParser
+// already knows how to turn "raw ingredient lines" into structured
+// quantity/unit/name (IngredientLineParser), so Claude is only asked for
+// plain lines here rather than also guessing that breakdown itself.
+const RecipeDraftSchema = z.object({
+  title: z.string(),
+  summary: z.string().nullable(),
+  ingredientLines: z.array(z.string()),
+  instructions: z.array(z.string()),
+  servings: z.number().int().nullable(),
+  prepMinutes: z.number().int().nullable(),
+  cookMinutes: z.number().int().nullable(),
+});
+
+// Google's own price-level enum -> the "$".."$$$$" convention the iOS app
+// already uses for a restaurant's manually-set price range (see
+// Restaurant.priceRange in the app), so results from either source render
+// the same way.
+const PRICE_LEVEL_MAP = {
+  PRICE_LEVEL_FREE: "",
+  PRICE_LEVEL_INEXPENSIVE: "$",
+  PRICE_LEVEL_MODERATE: "$$",
+  PRICE_LEVEL_EXPENSIVE: "$$$",
+  PRICE_LEVEL_VERY_EXPENSIVE: "$$$$",
+};
+
+app.get("/health", (_req, res) => {
+  res.json({
+    ok: true,
+    googleKeyConfigured: Boolean(GOOGLE_PLACES_API_KEY),
+    webSearchConfigured: Boolean(GOOGLE_CUSTOM_SEARCH_API_KEY && GOOGLE_CUSTOM_SEARCH_CX),
+    databaseConfigured: Boolean(process.env.DATABASE_URL),
+    twilioConfigured: Boolean(
+      process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_VERIFY_SERVICE_SID
+    ),
+    // Direct user question: "is APNs already set up on Render?" — this
+    // sandbox has no way to inspect Render's dashboard directly (and no
+    // network path to this deployment either), so the same "check /health
+    // yourself" pattern already used for Google Custom Search applies
+    // here too. `lib/apns.js`'s own `sendPush` silently no-ops without the
+    // first three; `APNS_PRODUCTION` alone missing doesn't trip that same
+    // no-op (it just defaults to Apple's sandbox APNs environment instead
+    // of production — see that file's own doc comment), but a push aimed
+    // at the wrong APNs environment fails just as silently for a real
+    // TestFlight/App Store build, so it's included here too rather than
+    // reporting "configured" for a setup that still wouldn't actually
+    // reach a real device.
+    apnsConfigured: Boolean(
+      process.env.APNS_KEY_ID && process.env.APNS_TEAM_ID && process.env.APNS_AUTH_KEY && process.env.APNS_PRODUCTION
+    ),
+    // Same pattern again for `lib/twilio.js`'s `sendInviteSMS` — texts a
+    // phone number that doesn't have a Home Eats account yet when it's
+    // invited to a group or as a friend. `TWILIO_ACCOUNT_SID`/
+    // `TWILIO_AUTH_TOKEN` are shared with `twilioConfigured` above (the
+    // Verify sign-in flow), but `TWILIO_SMS_FROM_NUMBER` is a separate,
+    // SMS-specific sender those two alone don't provide.
+    smsInviteConfigured: Boolean(
+      process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_FROM_NUMBER
+    ),
+  });
+});
+
+// --- Privacy Policy / Terms & Conditions -------------------------------
+// Static pages, not API routes — exist for two audiences that both need a
+// stable, publicly reachable URL with no login: Twilio's A2P 10DLC Campaign
+// registration (which requires a Privacy Policy URL containing a specific
+// "we don't sell SMS opt-in data" statement, and a Terms URL with a
+// dedicated SMS Terms section and a "message and data rates may apply"
+// disclosure — see lib/twilio.js's sendInviteSMS, the thing these two pages
+// are actually describing) and the App Store Connect submission, which
+// separately requires its own Privacy Policy URL. One page serves both
+// rather than maintaining two near-duplicates.
+const PRIVACY_POLICY_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Home Eats</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 680px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; color: #1c1c1e; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h2 { font-size: 20px; margin-top: 36px; }
+  .updated { color: #6e6e73; font-size: 14px; margin-bottom: 32px; }
+  ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>Privacy Policy</h1>
+<p class="updated">Last updated: October 3, 2026</p>
+
+<p>Home Eats ("we," "us," "our") provides a meal-planning app for individuals, friends, and
+groups (the "Service"). This policy explains what information we collect and how we use it.</p>
+
+<h2>Information We Collect</h2>
+<ul>
+  <li><strong>Phone number</strong> — used to create and verify your account via SMS code.</li>
+  <li><strong>Profile information</strong> — display name and city, if you choose to add them.</li>
+  <li><strong>Content you create</strong> — recipes, restaurants, meal plans, grocery lists, and
+  group/friend connections.</li>
+  <li><strong>Device push token</strong> — used to deliver notifications to your device.</li>
+</ul>
+
+<h2>How We Use Your Information</h2>
+<p>We use this information to operate the Service: syncing your data across devices, running
+shared group features (meal planning, grocery lists, friend/group invites), and sending you
+notifications you'd reasonably expect from using the app.</p>
+
+<h2>SMS Messaging and Opt-In Data</h2>
+<p>When you invite a phone number to a group or as a friend, and that phone number doesn't yet have a Home Eats account, we send that number a single SMS identifying you as the inviter and a link to download the app. Message frequency: one text per invite you send; we send no recurring or marketing texts. Message and data rates may apply. Reply STOP to any Home Eats text to opt out, or HELP for help.</p>
+<p><strong>Mobile numbers and SMS opt-in data are not shared with third parties or affiliates for marketing or promotional purposes.</strong> We do not sell or share your SMS opt-in data or personal information with third parties for marketing purposes.</p>
+<p>How consent works, with the exact wording shown in the app, is documented at <a href="/sms-consent">/sms-consent</a>.</p>
+
+<h2>Third-Party Services</h2>
+<p>We use a small number of third-party providers to operate the Service, who process data only
+as needed to provide their specific function: Twilio (SMS delivery), Apple (push notifications),
+Google (location/places search), and Anthropic (AI-assisted recipe features). We do not sell your
+personal information to anyone.</p>
+
+<h2>Data Retention and Deletion</h2>
+<p>You can delete your account and associated data at any time from within the app, or by
+contacting us below.</p>
+
+<h2>Contact Us</h2>
+<p>Questions about this policy? Reach us at
+<a href="mailto:surajtolani@yahoo.com">surajtolani@yahoo.com</a>.</p>
+</body>
+</html>`;
+
+const TERMS_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terms &amp; Conditions — Home Eats</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 680px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; color: #1c1c1e; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h2 { font-size: 20px; margin-top: 36px; }
+  .updated { color: #6e6e73; font-size: 14px; margin-bottom: 32px; }
+  ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>Terms &amp; Conditions</h1>
+<p class="updated">Last updated: October 3, 2026</p>
+
+<p>These Terms &amp; Conditions ("Terms") govern your use of Home Eats (the "Service"). By
+creating an account or using the Service, you agree to these Terms.</p>
+
+<h2>The Service</h2>
+<p>Home Eats is a meal-planning app that lets you plan meals, build grocery lists, save recipes
+and restaurants, and share planning with friends and groups you create or join.</p>
+
+<h2>Accounts</h2>
+<p>Creating an account requires verifying a real phone number by SMS code. You're responsible for
+keeping your account secure and for what happens under it.</p>
+
+<h2>SMS Terms</h2>
+<p>By providing your phone number and using Home Eats' invite feature, you consent to receive SMS
+messages related to account verification and, if someone invites you to a group or as a friend, a
+one-time invite text identifying the inviter. Message frequency varies by your own use of the
+app. <strong>Message and data rates may apply.</strong> Reply STOP to a Home Eats text at any time
+to opt out of further messages, or HELP for help. We are not liable for messages delayed or
+undelivered by your carrier.</p>
+
+<h2>User Content</h2>
+<p>You retain ownership of the recipes, notes, and other content you add to Home Eats. You're
+responsible for having the right to share anything you add, including inviting phone numbers you
+have permission to contact.</p>
+
+<h2>Limitation of Liability</h2>
+<p>The Service is provided "as is." To the fullest extent permitted by law, Home Eats is not
+liable for indirect or incidental damages arising from your use of the Service.</p>
+
+<h2>Changes to These Terms</h2>
+<p>We may update these Terms from time to time; continued use of the Service after a change means
+you accept the update.</p>
+
+<h2>Contact Us</h2>
+<p>Questions about these Terms? Reach us at
+<a href="mailto:surajtolani@yahoo.com">surajtolani@yahoo.com</a>.</p>
+</body>
+</html>`;
+
+// Public evidence of the invite-text opt-in flow for Twilio's A2P campaign
+// review (error 30896 asks for the exact consent wording plus hosted
+// screenshots when the flow sits behind a login, as an in-app screen does).
+// The disclosure below must stay identical to
+// `ContactOrPhoneNumberPickerView.textInviteDisclosure` in the iOS app. Any
+// PNG dropped in backend/public/ named below is shown automatically; nothing
+// is displayed for a screenshot that hasn't been added yet.
+const SMS_CONSENT_DISCLOSURE =
+  "If someone you add doesn't have Home Eats yet, Home Eats will send them one invite text naming you, with a link to download the app. By adding them, you confirm you have their permission to contact them. Message and data rates may apply. They can reply STOP to opt out.";
+const SMS_CONSENT_SCREENSHOTS = [
+  ["sms-consent-add-someone.png", "The Add Someone screen, showing the phone number field, the Add button, and the consent disclosure beneath them."],
+  ["sms-consent-invite-sheet.png", "The group Invite screen that leads to Add Someone."],
+];
+function smsConsentHtml() {
+  const fs = require("fs");
+  const path = require("path");
+  const figures = SMS_CONSENT_SCREENSHOTS.filter(([file]) => fs.existsSync(path.join(__dirname, "public", file)))
+    .map(([file, caption]) => `<figure><img src="/public/${file}" alt="${caption}" style="max-width:320px;width:100%;border:1px solid #ccc;border-radius:12px"><figcaption>${caption}</figcaption></figure>`)
+    .join("\n");
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMS Invite Consent — Home Eats</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 680px; margin: 0 auto; padding: 32px 20px 80px; line-height: 1.6; color: #1c1c1e; }
+  h1 { font-size: 28px; } h2 { font-size: 20px; margin-top: 32px; }
+  blockquote { margin: 16px 0; padding: 12px 16px; background: #f2f2f7; border-radius: 10px; }
+  figure { margin: 24px 0; } figcaption { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>SMS Invite Consent</h1>
+<p>Home Eats is an iPhone app for planning meals with family and friends. The only text messages Home Eats sends to people who are not yet users are one-time invites, sent when an existing Home Eats user adds that person's phone number inside the app.</p>
+
+<h2>Who opts in, and where</h2>
+<p>A signed-in Home Eats user (an account holder who has verified their own phone number and accepted our <a href="/terms">Terms &amp; Conditions</a>) opens the <strong>Add Someone</strong> screen from a group's Invite screen, from Create Group, or from My Friends. They pick a contact or type a phone number and tap <strong>Add</strong>. The screen shows this disclosure before they do:</p>
+<blockquote>${SMS_CONSENT_DISCLOSURE}</blockquote>
+<p>Consent is therefore given by the account holder, who confirms they have the recipient's permission, and the recipient can withdraw it at any time by replying STOP.</p>
+
+<h2>What the recipient receives</h2>
+<p>One text per invite, for example: <em>"[Name] invited you to join "[Group]" on Home Eats. Get Home Eats: [link] Reply STOP to opt out."</em> Message frequency: one text per invite; no recurring or marketing messages. Message and data rates may apply. Reply STOP to opt out or HELP for help.</p>
+
+<h2>Screenshots</h2>
+${figures || "<p>Screenshots are added with each app release.</p>"}
+
+<h2>Policies</h2>
+<p><a href="/privacy">Privacy Policy</a> &middot; <a href="/terms">Terms &amp; Conditions</a></p>
+</body>
+</html>`;
+}
+
+app.use("/public", express.static(require("path").join(__dirname, "public")));
+
+app.get("/sms-consent", (_req, res) => {
+  res.type("html").send(smsConsentHtml());
+});
+
+app.get("/privacy", (_req, res) => {
+  res.type("html").send(PRIVACY_POLICY_HTML);
+});
+
+app.get("/terms", (_req, res) => {
+  res.type("html").send(TERMS_HTML);
+});
+
+// --- Accounts, friends, and groups -----------------------------------
+// Everything below is the accounts/social layer (Phase 1 of the accounts
+// feature — see backend/README.md): phone number + SMS sign-in, a personal
+// friends list, and groups built from that friends list, modeled after
+// Splitwise. This is genuinely new state for the app (until now the app has
+// been 100% on-device with no accounts) — see prisma/schema.prisma for the
+// data model. /auth/* is unauthenticated (it's how you get a token in the
+// first place); everything else here requires a valid Bearer JWT.
+app.use("/auth", authRouter);
+app.use("/me", requireAuth, meRouter);
+app.use("/friends", requireAuth, friendsRouter);
+app.use("/groups", requireAuth, groupsRouter);
+// Phase 5: responding to a pending group Invite directly (routes/invites.js
+// — see its own header comment for why this needs to exist alongside
+// POST /groups/:groupId/invite), and a combined "what's pending for me"
+// feed built on top of both this and /friends (routes/notifications.js).
+app.use("/invites", requireAuth, invitesRouter);
+app.use("/notifications", requireAuth, notificationsRouter);
+
+// --- Group meal planning / grocery list (Phase 3) ----------------------
+// A group's single shared meal plan and shared grocery list — see
+// backend/README.md's "Group meal planning" / "Group grocery list"
+// sections, prisma/schema.prisma's PlannedMeal/MealSuggestion/
+// GroupGroceryItem doc comments, and routes/groupMealPlan.js /
+// routes/groupGrocery.js. Nested under /groups/:groupId/... (mounted with
+// `{ mergeParams: true }` in each router so `req.params.groupId` is
+// available) rather than folded into routes/groups.js itself — a distinct
+// file per resource, same organization this codebase already uses for
+// recipe-library vs. groups/friends.
+app.use("/groups/:groupId/meal-plan", requireAuth, groupMealPlanRouter);
+// The Phase-4 aisles sub-router below is mounted BEFORE the more general
+// /groups/:groupId/grocery mount, on purpose: Express tries `app.use`
+// mounts in declaration order and matches by path *prefix*, so
+// /groups/:groupId/grocery/aisles needs to reach its own router first
+// rather than falling into groupGroceryRouter's own route table (which, as
+// it happens, has no routes that would actually collide with "aisles" as a
+// param — but mounting the specific prefix first avoids relying on that and
+// matches how a reader would expect these two routers to be tried). See
+// routes/groupGroceryAisles.js for the "My Layout" API. There used to be a
+// third sibling here, routes/groupGroceryStaples.js (mounted at
+// .../grocery/staples), for a group-scoped standing "staples" template
+// list — removed outright (route file, Prisma model, and its iOS
+// counterpart) per user feedback that the concept added nothing useful;
+// see the removal commit for the full scope. The pre-existing
+// `GroupGrocerySection.STAPLES` tag below (a plain enum value on an
+// ordinary grocery-list line, unrelated to that removed feature) is
+// untouched.
+app.use("/groups/:groupId/grocery/aisles", requireAuth, groupGroceryAislesRouter);
+app.use("/groups/:groupId/grocery", requireAuth, groupGroceryRouter);
+
+// --- Recipe sharing (Phase 2a) ----------------------------------------
+// Recipes moving from purely on-device storage to something that can be
+// shared between people, built on the friends/groups layer above. Mounted
+// at `/recipe-library` — a distinct prefix from the Claude-powered
+// `/recipes/extract` and `/recipes/recommend` routes further down this file
+// (both also behind requireAuth, just registered directly on `app` rather
+// than through this router), so there's no risk of the two ever colliding
+// or being confused with each other even though nothing here would
+// actually clash method+path with those. See routes/recipeLibrary.js and
+// backend/README.md's "Recipe sharing" section.
+app.use("/recipe-library", requireAuth, recipeLibraryRouter);
+
+// --- Personal restaurant library -----------------------------------------
+// A signed-in user's own saved restaurants, account-backed for durability —
+// see routes/restaurants.js's own doc comment for the full story (a real
+// incident: a missing SwiftData migration default wiped a user's entire
+// local store, restaurants included, which had no server copy to recover
+// from). Mounted at `/restaurants/library`, not bare `/restaurants` — that
+// prefix is already the Google-Places-proxy search API registered directly
+// on `app` just below (`/restaurants/search`, `/restaurants/search-natural`,
+// `/restaurants/photo`, `/restaurants/details` — every one but `/photo`
+// also behind requireAuth, same as this router), same "own distinct,
+// never-colliding prefix" choice `/recipe-library` makes relative to
+// `/recipes/*`.
+app.use("/restaurants/library", requireAuth, restaurantsRouter);
+
+// --- Personal meal history -------------------------------------------------
+// Account-backed log of what was actually eaten (rating + notes), the same
+// durability/multi-device reasoning as the recipe/restaurant libraries just
+// above — see routes/mealHistory.js and MealHistoryEntry's own doc comment
+// in prisma/schema.prisma.
+app.use("/meal-history", requireAuth, mealHistoryRouter);
+
+// Shared mapping from a Places API (New) place object to the shape both
+// /restaurants/search and /restaurants/search-natural return — kept in one
+// place so the two never drift apart.
+function mapPlaceResult(place) {
+  return {
+    id: place.id,
+    name: place.displayName?.text ?? "Unknown",
+    address: place.formattedAddress ?? null,
+    rating: typeof place.rating === "number" ? place.rating : null,
+    priceRange: place.priceLevel ? (PRICE_LEVEL_MAP[place.priceLevel] ?? null) : null,
+    cuisine: place.primaryTypeDisplayName?.text ?? null,
+    mapsURL: place.googleMapsUri ?? null,
+    // The place's actual business website, distinct from `mapsURL` — a
+    // link to Google Maps. Not every place has one on file; a `null`
+    // here means the app shows no Website button rather than falling
+    // back to the Maps link (see RestaurantListView.addFromSearch).
+    websiteURL: place.websiteUri ?? null,
+    latitude: place.location?.latitude ?? null,
+    longitude: place.location?.longitude ?? null,
+    // Stable resource names like "places/ID/photos/REF" for every photo
+    // Google has for the place (up to the 10 Text Search returns), not
+    // the images themselves — those are a separate, billed request per
+    // photo, only worth making for a place someone actually adds and
+    // views (see GET /restaurants/photo below). These reference names
+    // don't expire, unlike the signed media URLs they're later exchanged
+    // for, so they're safe to store on the saved Restaurant.
+    photoNames: (place.photos || []).map((photo) => photo.name).filter(Boolean),
+  };
+}
+
+const PLACE_SEARCH_FIELD_MASK = [
+  "places.id",
+  "places.displayName",
+  "places.formattedAddress",
+  "places.rating",
+  "places.priceLevel",
+  "places.primaryTypeDisplayName",
+  "places.googleMapsUri",
+  "places.websiteUri",
+  "places.location",
+  "places.photos",
+].join(",");
+
+// Runs a Places Text Search and returns the mapped result array — shared by
+// /restaurants/search and /restaurants/search-natural. `locationBias`, when
+// given, is a {latitude, longitude} to search near (see either route for
+// where that comes from).
+async function searchPlaces(textQuery, locationBias) {
+  const body = { textQuery };
+  if (locationBias) {
+    // A 50km bias radius is generous enough to still find a place a short
+    // drive away without it, but tight enough that "pizza" close to the
+    // target consistently outranks "pizza" three states over.
+    body.locationBias = {
+      circle: { center: locationBias, radius: 50000 },
+    };
+    body.rankPreference = "DISTANCE";
+  }
+
+  const response = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+      // Places API (New) requires an explicit field mask on every
+      // request — it's how Google bills you only for what you actually
+      // asked for, rather than every field on the place.
+      "X-Goog-FieldMask": PLACE_SEARCH_FIELD_MASK,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error("Places API error", response.status, detail);
+    throw new Error("places_search_failed");
+  }
+
+  const data = await response.json();
+  return (data.places || []).map(mapPlaceResult);
+}
+
+// Turns a place name/neighborhood/city/address into coordinates via
+// Google's Geocoding API — a separate API from Places, but billed to the
+// same Google Cloud project/key as long as Geocoding API is also enabled
+// there (see backend/README.md). Returns null on any failure (not found,
+// API not enabled, network error) rather than throwing — a natural-language
+// search with an ungeocodable location still runs, just without location
+// bias, rather than failing outright.
+async function geocode(locationText) {
+  try {
+    const url =
+      "https://maps.googleapis.com/maps/api/geocode/json" +
+      `?address=${encodeURIComponent(locationText)}&key=${GOOGLE_PLACES_API_KEY}`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const location = data.results?.[0]?.geometry?.location;
+    if (!location) return null;
+    return { latitude: location.lat, longitude: location.lng };
+  } catch (error) {
+    console.error("Geocoding request threw", error);
+    return null;
+  }
+}
+
+// GET /restaurants/search?q=<free text query>
+// Mirrors what the app needs for RestaurantListView's search-and-add flow:
+// name, address, a map link, plus the descriptors MapKit's free search
+// can't provide at all — rating, price, and cuisine. Requires auth (see
+// requireAuth's own doc comment) — every screen that can reach this call is
+// already behind RootView's sign-in gate, so this costs real callers
+// nothing; it just closes off the route to a scripted caller with no
+// account who found the URL.
+app.get("/restaurants/search", requireAuth, rateLimited(restaurantsSearchLimiter, byUserId), async (req, res) => {
+  const query = (req.query.q || "").toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: "Missing required query param 'q'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+
+  // Optional — the app's best guess at the user's current location, so a
+  // common restaurant name doesn't surface a same-named place on another
+  // continent above the one actually nearby. Without these, Google just
+  // ranks by text relevance, same as before.
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+  const hasLocation = Number.isFinite(lat) && Number.isFinite(lng);
+
+  try {
+    const results = await searchPlaces(query, hasLocation ? { latitude: lat, longitude: lng } : null);
+    res.json({ results });
+  } catch (error) {
+    console.error("Places API request threw", error);
+    res.status(502).json({ error: "Places API request failed." });
+  }
+});
+
+// POST /restaurants/search-natural
+// Body: { query: string, lat?: number, lng?: number } — the free-text,
+// natural-language version of /restaurants/search ("casual pizza place
+// near Greenwich", "somewhere kid-friendly for a quick lunch"). Google's
+// Text Search already understands plenty of this on its own (a query like
+// that mostly just works if handed straight to /restaurants/search), so
+// what Claude actually adds here is: pulling out a *specific* location
+// mentioned in the sentence (so the search can be biased there via
+// geocoding, even if it's nowhere near the user's actual current
+// location — "near Greenwich" while sitting in Boston, say) and turning a
+// vaguer, more conversational ask into concrete search terms. `lat`/`lng`
+// are the same "user's current location" fallback /restaurants/search
+// takes, used only when the sentence itself didn't name a place.
+const NaturalSearchQuerySchema = z.object({
+  // A concise query for a restaurant search API: cuisine, food type, and
+  // any vibe/descriptive words ("casual", "romantic", "kid-friendly",
+  // "quick") — but with location words stripped out, since that part is
+  // handled separately via `locationText`.
+  searchQuery: z.string(),
+  // A specific place actually named in the request — a neighborhood, city,
+  // landmark, or address ("Greenwich", "near the train station downtown").
+  // Include whatever broader context (city, region, country) the request
+  // itself gave, not just an abbreviation or neighborhood name on its own
+  // — this gets geocoded as freestanding text below, and a bare acronym
+  // or a neighborhood name that exists in multiple countries can resolve
+  // to the wrong place, or fail to resolve at all, without that context
+  // ("BGC" -> "BGC, Taguig, Metro Manila, Philippines", not just "BGC").
+  // `null` when nothing specific was named (including "near me"/"nearby"),
+  // in which case the app's own current location is used instead, same as
+  // plain search.
+  locationText: z.string().nullable(),
+});
+
+app.post(
+  "/restaurants/search-natural",
+  requireAuth,
+  rateLimited(restaurantsSearchNaturalLimiter, byUserId),
+  async (req, res) => {
+  const query = (req.body?.query || "").toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: "Missing required field 'query'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+  const client = anthropicClient(res);
+  if (!client) return;
+
+  const lat = parseFloat(req.body?.lat);
+  const lng = parseFloat(req.body?.lng);
+  const hasUserLocation = Number.isFinite(lat) && Number.isFinite(lng);
+
+  let interpreted;
+  try {
+    const response = await client.messages.parse({
+      model: "claude-opus-5",
+      max_tokens: 1000,
+      output_config: { format: zodOutputFormat(NaturalSearchQuerySchema), effort: "low" },
+      messages: [
+        {
+          role: "user",
+          content:
+            "A user typed this into a restaurant search box. Extract a good search " +
+            "query for it, and any specific location they named. locationText gets " +
+            "geocoded as freestanding text afterward, so include whatever broader " +
+            "context (city, region, country) the request gave alongside a bare " +
+            "neighborhood name or acronym, not just the acronym/neighborhood on its " +
+            "own — e.g. \"BGC\" in \"bgc area in manila philippines\" should become " +
+            `"BGC, Manila, Philippines", not just "BGC". Request: "${query}"`,
+        },
+      ],
+    });
+    if (!response.parsed_output) {
+      return res.status(422).json({ error: "Couldn't understand that search." });
+    }
+    interpreted = response.parsed_output;
+  } catch (error) {
+    console.error("Natural search parse failed", error);
+    return res.status(502).json({ error: "Couldn't understand that search." });
+  }
+
+  // A named location wins over the user's actual current location — asking
+  // for something "near Greenwich" while physically somewhere else should
+  // search near Greenwich, not near the user.
+  //
+  // `locationGeocodeFailed` matters here: without it, a request that named
+  // a real place Google's Geocoding API couldn't resolve (an unfamiliar
+  // acronym, a typo, an ambiguous name) would silently fall through to the
+  // user's actual current-location coordinates below, while the response
+  // still echoed back `interpretedLocation` as if that named place had
+  // been used — the app would show "Searching near BGC, Manila,
+  // Philippines" while actually searching near wherever the phone
+  // currently is (direct user report of exactly this: asked for
+  // restaurants in BGC, Manila, got results from Greenwich, presumably
+  // near their device's real location). The client uses this flag to
+  // show that honestly instead.
+  let locationBias = null;
+  let locationGeocodeFailed = false;
+  if (interpreted.locationText) {
+    locationBias = await geocode(interpreted.locationText);
+    if (!locationBias) locationGeocodeFailed = true;
+  }
+  // A group's own default location (a trip's destination — see
+  // Group.defaultLocationText's doc comment in schema.prisma) sits between
+  // a location actually named in the sentence and the device's current
+  // location: the caller already resolved which group (if any) this search
+  // is happening in and sends its text here directly, rather than this
+  // route taking a groupId and looking it up itself — this route only
+  // verifies the caller is signed in (requireAuth above), not that they
+  // belong to any particular group, so it still can't safely look up a
+  // group's own data itself.
+  const fallbackLocationText = (req.body?.fallbackLocationText || "").toString().trim() || null;
+  let usedFallbackLocation = false;
+  if (!locationBias && fallbackLocationText) {
+    locationBias = await geocode(fallbackLocationText);
+    if (locationBias) usedFallbackLocation = true;
+  }
+  if (!locationBias && hasUserLocation) {
+    locationBias = { latitude: lat, longitude: lng };
+  }
+
+  try {
+    const results = await searchPlaces(interpreted.searchQuery, locationBias);
+    res.json({
+      results,
+      interpretedQuery: interpreted.searchQuery,
+      interpretedLocation: interpreted.locationText,
+      locationGeocodeFailed,
+      usedFallbackLocation,
+    });
+  } catch (error) {
+    console.error("Places API request threw", error);
+    res.status(502).json({ error: "Places API request failed." });
+  }
+  }
+);
+
+// GET /restaurants/photo?name=<photo resource name>&maxWidthPx=<n>
+// Fetches an actual photo's bytes from Google using the server-side key and
+// streams them back — the app never talks to Google directly (same reason
+// as every other route here) and can just point an AsyncImage straight at
+// this URL. `name` is one of the stable "places/ID/photos/REF" strings
+// returned in `photoNames` from /restaurants/search (or saved on a
+// Restaurant) — call this once per photo, not all at once.
+// `name` gets spliced directly into the outbound URL's *path* below, so a
+// plain `encodeURIComponent` isn't the right fix on its own — it would
+// escape the literal `/`s this shape legitimately contains, breaking every
+// real request. Validating the exact expected shape first is what actually
+// closes the gap: a real, confirmed finding was that a value containing
+// `?`/`&` here could inject extra query parameters into the request this
+// server's billed Google API key actually sends. Anything that doesn't
+// match this shape is rejected outright rather than passed through.
+const PHOTO_NAME_PATTERN = /^places\/[^/?#&]+\/photos\/[^/?#&]+$/;
+
+app.get("/restaurants/photo", rateLimited(restaurantsPhotoIPLimiter, byIP), async (req, res) => {
+  const name = (req.query.name || "").toString().trim();
+  if (!name) {
+    return res.status(400).json({ error: "Missing required query param 'name'." });
+  }
+  if (!PHOTO_NAME_PATTERN.test(name)) {
+    return res.status(400).json({ error: "Invalid 'name' format." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+  const maxWidthPx = Math.min(parseInt(req.query.maxWidthPx, 10) || 800, 1600);
+
+  try {
+    const mediaURL =
+      `https://places.googleapis.com/v1/${name}/media` +
+      `?maxWidthPx=${maxWidthPx}&key=${GOOGLE_PLACES_API_KEY}`;
+    const photoResponse = await fetch(mediaURL);
+
+    if (!photoResponse.ok) {
+      console.error("Places photo media error", photoResponse.status);
+      return res.status(502).json({ error: "Couldn't fetch that photo." });
+    }
+
+    const contentType = photoResponse.headers.get("content-type") || "image/jpeg";
+    const buffer = Buffer.from(await photoResponse.arrayBuffer());
+    res.set("Content-Type", contentType);
+    // Photos for a given place don't change often — safe to cache for a day
+    // rather than re-fetching (and re-billing) on every view.
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(buffer);
+  } catch (error) {
+    console.error("Places photo media request threw", error);
+    res.status(502).json({ error: "Couldn't fetch that photo." });
+  }
+});
+
+// GET /restaurants/details?placeId=<Google place id>
+// Powers the restaurant detail page's hours/phone/reviews — pulled only
+// when someone actually opens that restaurant (not on every search result),
+// since Place Details is its own billed request. `placeId` is the `id`
+// field from a /restaurants/search result, saved on the app's Restaurant
+// row as `googlePlaceID`.
+app.get("/restaurants/details", requireAuth, rateLimited(restaurantsDetailsLimiter, byUserId), async (req, res) => {
+  const placeId = (req.query.placeId || "").toString().trim();
+  if (!placeId) {
+    return res.status(400).json({ error: "Missing required query param 'placeId'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+
+  try {
+    // `encodeURIComponent`, not the raw value — a real, confirmed finding
+    // was that an unescaped `?`/`&` here could inject extra query
+    // parameters into the request this server's billed Google API key
+    // actually sends. `placeId` is a single path segment (unlike
+    // `/restaurants/photo`'s `name` above, which legitimately contains
+    // `/`s), so plain encoding is the right fix here, matching the pattern
+    // GET /cities/:placeID already uses correctly.
+    const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}`, {
+      headers: {
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": [
+          "rating",
+          "userRatingCount",
+          "nationalPhoneNumber",
+          "regularOpeningHours.weekdayDescriptions",
+          "reviews",
+          "websiteUri",
+        ].join(","),
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("Place details error", response.status, detail);
+      return res.status(502).json({ error: "Place details request failed." });
+    }
+
+    const place = await response.json();
+    // Google returns up to 5 of the place's most relevant reviews per
+    // request (there's no pagination for more) — plenty for an inline
+    // preview; "Open in Google Maps" is still there for the full list.
+    const reviews = (place.reviews || []).map((review) => ({
+      authorName: review.authorAttribution?.displayName ?? "Google user",
+      rating: typeof review.rating === "number" ? review.rating : null,
+      text: review.text?.text ?? null,
+      relativeTime: review.relativePublishTimeDescription ?? null,
+    }));
+
+    res.json({
+      rating: typeof place.rating === "number" ? place.rating : null,
+      userRatingCount: typeof place.userRatingCount === "number" ? place.userRatingCount : null,
+      phoneNumber: place.nationalPhoneNumber ?? null,
+      openingHours: place.regularOpeningHours?.weekdayDescriptions ?? [],
+      reviews,
+      websiteURL: place.websiteUri ?? null,
+    });
+  } catch (error) {
+    console.error("Place details request threw", error);
+    res.status(502).json({ error: "Place details request failed." });
+  }
+});
+
+// Reads one address component's `longText` (not `shortText`) out of a Place
+// Details response by its Google `types` value. `longText` specifically —
+// not the abbreviated `shortText` — so a result reads the same full-word
+// way the iOS app's own `CountryCode.all` list does ("United States", not
+// "US") — State has no such fixed list to match anymore (see
+// `AutoFilledFieldRow` in the iOS app), it's just whatever this returns,
+// verbatim. See GET /cities/:placeID below, which is the only caller.
+// Returns `null` when
+// that component type isn't present at all in the response — Google
+// doesn't guarantee every one of locality/administrative_area_level_1/
+// country is present for every place (a small town might have no
+// `administrative_area_level_1`-typed component the way Google structures
+// it, for instance), and the iOS side is written to treat that as "leave
+// whatever the user already had," not as an error.
+function extractAddressComponent(components, type) {
+  const match = (components || []).find((component) => (component.types || []).includes(type));
+  return match?.longText ?? null;
+}
+
+// The Place Details field mask for GET /cities/:placeID — only
+// `addressComponents` is needed to extract city/state/country, same
+// "explicit field mask, billed only for what's asked for" convention as
+// every other Places API (New) call in this file.
+const CITY_DETAILS_FIELD_MASK = "addressComponents";
+
+// GET /cities/search?q=<partial city name>
+// Proxies Places API (New)'s Autocomplete endpoint
+// (POST https://places.googleapis.com/v1/places:autocomplete — the New API,
+// not the legacy maps.googleapis.com/maps/api/place/autocomplete, matching
+// every other Places call in this file), restricted to city-level results
+// via `includedPrimaryTypes: ["locality"]` so Autocomplete's normal grab-bag
+// of addresses/businesses/landmarks doesn't leak into a field that's
+// specifically asking for a city. Powers the profile's City field's
+// type-ahead dropdown (see CitySearchField.swift in the iOS app) — tapping
+// one of these predictions is what GET /cities/:placeID below turns into an
+// actual city/state/country triple. Requires auth, same as every other
+// billed-API proxy route in this file — including from RootView's
+// profile-completion gate: that screen only ever appears after `POST
+// /auth/verify-code` has already succeeded and saved a token (see
+// AccountSession.completeSignIn), so a valid Bearer token is always
+// available by the time this can be reached.
+app.get("/cities/search", requireAuth, rateLimited(citiesSearchLimiter, byUserId), async (req, res) => {
+  const query = (req.query.q || "").toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: "Missing required query param 'q'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+
+  try {
+    const response = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+      },
+      body: JSON.stringify({
+        input: query,
+        includedPrimaryTypes: ["locality"],
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("Places Autocomplete error", response.status, detail);
+      return res.status(502).json({ error: "City search failed." });
+    }
+
+    const data = await response.json();
+    // Each suggestion's real content lives under `placePrediction` — the
+    // New Autocomplete API's `suggestions` array can in principle also hold
+    // `queryPrediction` entries (a plain search-query suggestion, not a
+    // specific place), but those never appear here since nothing above sets
+    // `includeQueryPredictions`, so `placePrediction` is filtered for
+    // defensively rather than assumed.
+    const predictions = (data.suggestions || [])
+      .map((suggestion) => suggestion.placePrediction)
+      .filter(Boolean)
+      .map((prediction) => ({
+        placeID: prediction.placeId,
+        // `structuredFormat` splits the full prediction text
+        // ("Greenwich, CT, USA") into the city name and everything after
+        // it — exactly the "Greenwich" / "CT, USA" two-line row the
+        // dropdown wants. Falls back to the plain `text.text` on the rare
+        // response that has no `structuredFormat` at all, so a row still
+        // renders (just without the secondary-line split) rather than
+        // showing nothing.
+        mainText: prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? "",
+        secondaryText: prediction.structuredFormat?.secondaryText?.text ?? null,
+      }));
+    res.json({ predictions });
+  } catch (error) {
+    console.error("Places Autocomplete request threw", error);
+    res.status(502).json({ error: "City search failed." });
+  }
+});
+
+// GET /cities/:placeID
+// Proxies Places API (New)'s Place Details endpoint
+// (GET https://places.googleapis.com/v1/places/{placeID}), asking only for
+// `addressComponents` via the field mask. This is the call that actually
+// makes "pre-populates everything" work: a prediction's own display text
+// from /cities/search above ("Greenwich, CT, USA") isn't reliably
+// parseable back into precise city/state/country across locales and
+// formats (a comma-split guess breaks the moment a place's formatting
+// differs even slightly), so the app calls this separately, once, right
+// after someone taps a suggestion — trading one extra billed request for
+// getting the three fields from Google's own structured data instead of
+// guessing at it. `city`/`state`/`country` can each independently be
+// `null` if Google's response doesn't include that component for this
+// particular place (see extractAddressComponent above); the iOS side
+// leaves the corresponding field/picker untouched rather than clearing it
+// when that happens. Requires auth, same reasoning as /cities/search.
+app.get("/cities/:placeID", requireAuth, rateLimited(citiesDetailsLimiter, byUserId), async (req, res) => {
+  const placeID = (req.params.placeID || "").toString().trim();
+  if (!placeID) {
+    return res.status(400).json({ error: "Missing required path param 'placeID'." });
+  }
+  if (!GOOGLE_PLACES_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
+  }
+
+  try {
+    const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeID)}`, {
+      headers: {
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": CITY_DETAILS_FIELD_MASK,
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("City details error", response.status, detail);
+      return res.status(502).json({ error: "City details request failed." });
+    }
+
+    const place = await response.json();
+    res.json({
+      city: extractAddressComponent(place.addressComponents, "locality"),
+      state: extractAddressComponent(place.addressComponents, "administrative_area_level_1"),
+      country: extractAddressComponent(place.addressComponents, "country"),
+    });
+  } catch (error) {
+    console.error("City details request threw", error);
+    res.status(502).json({ error: "City details request failed." });
+  }
+});
+
+// POST /recipes/extract
+// Body: { imageBase64?, mediaType?, notesText? } — at least one of
+// imageBase64 or notesText required. Powers "add a recipe from a photo or
+// notes" instead of typing it all in by hand: a photo of a recipe card / a
+// screenshot / a handwritten note, plain typed notes, or both together.
+app.post("/recipes/extract", requireAuth, rateLimited(recipesExtractLimiter, byUserId), async (req, res) => {
+  const client = anthropicClient(res);
+  if (!client) return;
+
+  const { imageBase64, mediaType, notesText } = req.body || {};
+  if (!imageBase64 && !notesText) {
+    return res.status(400).json({ error: "Provide imageBase64 and/or notesText." });
+  }
+
+  const content = [];
+  if (imageBase64) {
+    content.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: mediaType || "image/jpeg",
+        data: imageBase64,
+      },
+    });
+  }
+  content.push({
+    type: "text",
+    text: notesText
+      ? `Extract a recipe from this image and/or these notes. Notes:\n${notesText}`
+      : "Extract the recipe shown in this image.",
+  });
+
+  try {
+    const response = await client.messages.parse({
+      model: "claude-opus-5",
+      max_tokens: 8000,
+      output_config: { format: zodOutputFormat(RecipeDraftSchema), effort: "low" },
+      messages: [{ role: "user", content }],
+    });
+
+    if (!response.parsed_output) {
+      return res.status(422).json({ error: "Couldn't find a recipe in that." });
+    }
+    res.json(response.parsed_output);
+  } catch (error) {
+    console.error("Recipe extraction failed", error);
+    res.status(502).json({ error: "Recipe extraction failed." });
+  }
+});
+
+// POST /recipes/recommend
+// Body: { ingredients: string[], excludeTitles?: string[] } — "what can I
+// make with X, Y, Z" (or "recommend a meal" with nothing on hand yet, an
+// empty/short list). Returns a handful of recipe ideas the app inserts the
+// same way as any other imported recipe. `excludeTitles` is the app's
+// "Show More Ideas" button (RecommendMealView) re-calling this with the
+// titles already shown, so a second batch is genuinely new suggestions
+// rather than Claude just repeating (or trivially rewording) the first one.
+app.post("/recipes/recommend", requireAuth, rateLimited(recipesRecommendLimiter, byUserId), async (req, res) => {
+  const client = anthropicClient(res);
+  if (!client) return;
+
+  const ingredients = Array.isArray(req.body?.ingredients) ? req.body.ingredients : [];
+  const excludeTitles = Array.isArray(req.body?.excludeTitles)
+    ? req.body.excludeTitles.filter((title) => typeof title === "string" && title.trim())
+    : [];
+
+  let prompt = ingredients.length
+    ? `Suggest 4 recipes a home cook could make using mainly these ingredients (they can assume basic pantry staples like salt, oil, and water in addition): ${ingredients.join(", ")}.`
+    : "Suggest 4 varied, approachable weeknight dinner recipes for a home cook, using common ingredients.";
+  if (excludeTitles.length) {
+    prompt += ` Suggest 4 different recipes than these already-seen ones — don't repeat or lightly reword any of them: ${excludeTitles.join(", ")}.`;
+  }
+
+  try {
+    const response = await client.messages.parse({
+      model: "claude-opus-5",
+      max_tokens: 16000,
+      output_config: {
+        format: zodOutputFormat(z.object({ recipes: z.array(RecipeDraftSchema) })),
+        effort: "medium",
+      },
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    if (!response.parsed_output) {
+      return res.status(422).json({ error: "Couldn't come up with recipes for that." });
+    }
+    res.json(response.parsed_output);
+  } catch (error) {
+    console.error("Recipe recommendation failed", error);
+    res.status(502).json({ error: "Recipe recommendation failed." });
+  }
+});
+
+// GET /recipes/web-search?q=<free text>
+// Real web results, not an AI-generated suggestion (`/recipes/recommend`
+// above is that, a different feature) — direct user request: the app's
+// recipe search should return real matches from the open web (a search for
+// "crepes" with none of those words in anyone's own library) the same way
+// it already returns local ones. Proxies Google's Custom Search JSON API
+// (https://developers.google.com/custom-search/v1/overview) — same "the
+// app never holds a paid API key itself" reasoning as every other
+// Places/Claude route in this file.
+//
+// Setup (not needed for the rest of this backend to run): create a
+// Programmable Search Engine at https://programmablesearchengine.google.com/
+// with "Search the entire web" turned on, copy its Search engine ID into
+// GOOGLE_CUSTOM_SEARCH_CX, then enable the "Custom Search API" for a Google
+// Cloud project and generate an API key for it (a Places-restricted key
+// won't work here — this is a distinct API) into
+// GOOGLE_CUSTOM_SEARCH_API_KEY. Both unset -> this route 500s with a clear
+// "Server is missing ..." message, same as every other optionally-configured
+// integration here; the rest of the app works fine without it.
+//
+// `+" recipe"` appended to the query, not a `siteSearch` allow-list of
+// specific cooking sites: biases results toward actual recipes without
+// hard-coding (and constantly maintaining) a list of "real" recipe
+// domains, which would also shut out perfectly good ones not on it.
+app.get("/recipes/web-search", requireAuth, rateLimited(recipesWebSearchLimiter, byUserId), async (req, res) => {
+  const query = (req.query.q || "").toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: "Missing required query param 'q'." });
+  }
+  if (!GOOGLE_CUSTOM_SEARCH_API_KEY) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_CUSTOM_SEARCH_API_KEY." });
+  }
+  if (!GOOGLE_CUSTOM_SEARCH_CX) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_CUSTOM_SEARCH_CX." });
+  }
+
+  const searchURL = new URL("https://www.googleapis.com/customsearch/v1");
+  searchURL.searchParams.set("key", GOOGLE_CUSTOM_SEARCH_API_KEY);
+  searchURL.searchParams.set("cx", GOOGLE_CUSTOM_SEARCH_CX);
+  searchURL.searchParams.set("q", `${query} recipe`);
+  searchURL.searchParams.set("num", "8");
+
+  try {
+    const response = await fetch(searchURL);
+    if (!response.ok) {
+      console.error("Custom Search request failed", response.status, await response.text());
+      return res.status(502).json({ error: "Recipe web search failed." });
+    }
+    const data = await response.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    const results = items
+      .filter((item) => typeof item.link === "string" && typeof item.title === "string")
+      .map((item) => {
+        const thumbnailURL =
+          item.pagemap?.cse_image?.[0]?.src || item.pagemap?.cse_thumbnail?.[0]?.src || null;
+        let sourceDomain;
+        try {
+          sourceDomain = new URL(item.link).hostname.replace(/^www\./, "");
+        } catch (error) {
+          sourceDomain = "";
+        }
+        return { title: item.title, url: item.link, thumbnailURL, sourceDomain };
+      });
+    res.json({ results });
+  } catch (error) {
+    console.error("Recipe web search failed", error);
+    res.status(502).json({ error: "Recipe web search failed." });
+  }
+});
+
+// GET /recipes/image-proxy?url=<a recipe's own imported photo URL>
+// A recipe imported from a URL (RecipeImportService/SchemaOrgRecipeParser
+// on the iOS side) carries that source page's own photo URL verbatim as
+// `Recipe.imageName` — previously loaded straight from that arbitrary host
+// via AsyncImage (RecipeThumbnail.swift / GroupRecipePreviewView.swift).
+// That meant every time a recipe with a photo was viewed, the app made a
+// direct request to whatever host that recipe's source page happened to
+// use for its image: a real, confirmed finding, since that request handed
+// the viewer's IP address (and effectively which recipe/photo they were
+// looking at) to a third party neither the app nor this backend has any
+// relationship with — a de-facto tracking beacon baked into an ordinary
+// recipe view. Proxying through here means the app only ever talks to
+// this server for images, same as `/restaurants/photo` above.
+//
+// Deliberately unauthenticated, same reasoning as `/restaurants/photo`:
+// AsyncImage has no way to attach an Authorization header to an image
+// load, so an endpoint it points at can't require one — rate-limited by
+// IP instead. `isPrivateOrLoopbackIP` (defined near the top of this file)
+// guards against this route being used to make *this server* fetch an
+// internal/otherwise-unintended target on an attacker's behalf, since
+// `url` here — unlike every other proxied request in this file — can name
+// literally any host, not just Google's.
+const RECIPE_IMAGE_PROXY_MAX_BYTES = 8 * 1024 * 1024; // Well above any real recipe photo.
+
+app.get("/recipes/image-proxy", rateLimited(recipeImageProxyIPLimiter, byIP), async (req, res) => {
+  const rawURL = (req.query.url || "").toString().trim();
+  if (!rawURL) {
+    return res.status(400).json({ error: "Missing required query param 'url'." });
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(rawURL);
+  } catch (error) {
+    return res.status(400).json({ error: "Invalid 'url'." });
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return res.status(400).json({ error: "Invalid 'url'." });
+  }
+
+  try {
+    const addresses = await dns.lookup(parsed.hostname, { all: true });
+    if (addresses.length === 0 || addresses.some((address) => isPrivateOrLoopbackIP(address.address))) {
+      return res.status(400).json({ error: "That image can't be loaded." });
+    }
+  } catch (error) {
+    return res.status(400).json({ error: "That image can't be loaded." });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let imageResponse;
+    try {
+      imageResponse = await fetch(parsed.toString(), { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!imageResponse.ok) {
+      return res.status(502).json({ error: "Couldn't fetch that image." });
+    }
+    const contentType = imageResponse.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().startsWith("image/")) {
+      return res.status(400).json({ error: "That URL isn't an image." });
+    }
+    const contentLengthHeader = imageResponse.headers.get("content-length");
+    if (contentLengthHeader && Number(contentLengthHeader) > RECIPE_IMAGE_PROXY_MAX_BYTES) {
+      return res.status(413).json({ error: "That image is too large." });
+    }
+
+    const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    if (buffer.length > RECIPE_IMAGE_PROXY_MAX_BYTES) {
+      return res.status(413).json({ error: "That image is too large." });
+    }
+
+    res.set("Content-Type", contentType);
+    // A recipe's own imported photo essentially never changes once
+    // imported — same day-long cache as /restaurants/photo above.
+    res.set("Cache-Control", "public, max-age=86400");
+    res.send(buffer);
+  } catch (error) {
+    console.error("Recipe image proxy request threw", error);
+    res.status(502).json({ error: "Couldn't fetch that image." });
+  }
+});
+
+// Generic error-handling middleware — Express recognizes it by its 4-arg
+// signature and routes anything passed to `next(error)` here, which is
+// exactly what lib/asyncHandler.js's wrapper does with any error thrown or
+// rejected inside an accounts/friends/groups route. Without this, an
+// unhandled error in one of those routes would otherwise be an unhandled
+// promise rejection — which crashes the whole Node process by default on
+// modern Node, not just that one request. Must be registered after every
+// other app.use/app.get/etc. call above.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error("Unhandled error in request handler:", err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Internal server error." });
+});
+
+module.exports = { app };

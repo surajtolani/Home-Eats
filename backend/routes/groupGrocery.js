@@ -1,7 +1,7 @@
 // A group's shared grocery list (Phase 3) — one list per group, same
 // "belongs to the group outright" relationship as the meal plan in
 // routes/groupMealPlan.js. Mounted at /groups/:groupId/grocery in
-// index.js, behind requireAuth; every route here re-checks membership
+// app.js, behind requireAuth; every route here re-checks membership
 // itself (never trusts the mount path alone), same rigor as the rest of
 // this codebase's group routes.
 //
