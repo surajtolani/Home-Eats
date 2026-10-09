@@ -21,6 +21,7 @@ const { zodOutputFormat } = require("@anthropic-ai/sdk/helpers/zod");
 const { z } = require("zod");
 const { requireAuth } = require("./middleware/requireAuth");
 const { createRateLimiter } = require("./lib/rateLimit");
+const { asyncHandler } = require("./lib/asyncHandler");
 const authRouter = require("./routes/auth");
 const meRouter = require("./routes/me");
 const friendsRouter = require("./routes/friends");
@@ -92,36 +93,39 @@ function anthropicClient(res) {
 // These limits are generous relative to real usage (a debounced city-search
 // field can easily fire a couple hundred times in an active session) — they
 // exist only to blunt abuse, not to constrain normal use.
-const restaurantsSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
-const restaurantsSearchNaturalLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
-const restaurantsDetailsLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
-const citiesSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 300 });
-const citiesDetailsLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 120 });
-const recipesExtractLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
-const recipesRecommendLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+const restaurantsSearchLimiter = createRateLimiter({ name: "restaurants-search:user", windowMs: 60 * 60 * 1000, max: 120 });
+const restaurantsSearchNaturalLimiter = createRateLimiter({ name: "restaurants-search-natural:user", windowMs: 60 * 60 * 1000, max: 30 });
+const restaurantsDetailsLimiter = createRateLimiter({ name: "restaurants-details:user", windowMs: 60 * 60 * 1000, max: 120 });
+const citiesSearchLimiter = createRateLimiter({ name: "cities-search:user", windowMs: 60 * 60 * 1000, max: 300 });
+const citiesDetailsLimiter = createRateLimiter({ name: "cities-details:user", windowMs: 60 * 60 * 1000, max: 120 });
+const recipesExtractLimiter = createRateLimiter({ name: "recipes-extract:user", windowMs: 60 * 60 * 1000, max: 20 });
+const recipesRecommendLimiter = createRateLimiter({ name: "recipes-recommend:user", windowMs: 60 * 60 * 1000, max: 30 });
 // Tighter than the two above — Google's Custom Search JSON API's own free
 // tier is only 100 queries/day total across this entire deployment (every
 // user combined), well below what a per-user 120/hour limit like
 // `restaurantsSearchLimiter`'s would actually prevent.
-const recipesWebSearchLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
+const recipesWebSearchLimiter = createRateLimiter({ name: "recipes-web-search:user", windowMs: 60 * 60 * 1000, max: 20 });
 // The two routes below that stay unauthenticated on purpose (AsyncImage
 // can't attach an Authorization header — see each route's own comment) are
 // rate-limited by IP instead of by user.
-const restaurantsPhotoIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 600 });
-const recipeImageProxyIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 600 });
+const restaurantsPhotoIPLimiter = createRateLimiter({ name: "restaurants-photo:ip", windowMs: 60 * 60 * 1000, max: 600 });
+const recipeImageProxyIPLimiter = createRateLimiter({ name: "recipe-image-proxy:ip", windowMs: 60 * 60 * 1000, max: 600 });
 
 // A small middleware factory wrapping lib/rateLimit.js's `check` in
 // Express's usual (req, res, next) shape — `keyFn` picks what to key the
 // limit on (req.userId once requireAuth has run, or req.ip for the two
-// routes that stay unauthenticated).
+// routes that stay unauthenticated). None of these limiters is
+// `failClosed`, so a database error during the check lets the request
+// through (lib/rateLimit.js logs it) rather than taking these routes down.
 function rateLimited(limiter, keyFn) {
-  return (req, res, next) => {
-    const result = limiter.check(keyFn(req));
+  return asyncHandler(async (req, res, next) => {
+    const result = await limiter.check(keyFn(req));
     if (result.limited) {
+      res.set("Retry-After", String(Math.ceil(result.retryAfterMs / 1000)));
       return res.status(429).json({ error: "Too many requests. Please try again shortly." });
     }
     next();
-  };
+  });
 }
 
 const byUserId = (req) => req.userId;
