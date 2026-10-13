@@ -26,7 +26,13 @@ test("invite SMS safeguards", async (t) => {
   const sent = [];
   twilio.__setClientForTests({ messages: { create: async (message) => sent.push(message) } });
   const savedEnv = {};
-  for (const name of ["TWILIO_SMS_FROM_NUMBER", "APP_DOWNLOAD_URL", "INVITE_SMS_DAILY_GLOBAL_MAX", "INVITE_SMS_ALLOWED_COUNTRY_CODES"]) {
+  const SETTINGS = [
+    "INVITE_SMS_SENDER_DAILY_MAX",
+    "INVITE_SMS_SENDER_MONTHLY_MAX",
+    "INVITE_SMS_DAILY_GLOBAL_MAX",
+    "INVITE_SMS_ALLOWED_COUNTRY_CODES",
+  ];
+  for (const name of ["TWILIO_SMS_FROM_NUMBER", "APP_DOWNLOAD_URL", ...SETTINGS]) {
     savedEnv[name] = process.env[name];
     delete process.env[name];
   }
@@ -68,8 +74,7 @@ test("invite SMS safeguards", async (t) => {
     await resetDatabase();
     sent.length = 0;
     inviteLog.length = 0;
-    delete process.env.INVITE_SMS_DAILY_GLOBAL_MAX;
-    delete process.env.INVITE_SMS_ALLOWED_COUNTRY_CODES;
+    for (const name of SETTINGS) delete process.env[name];
   }
 
   async function newUser(displayName = "Sam") {
@@ -118,8 +123,52 @@ test("invite SMS safeguards", async (t) => {
     assert.equal(sent[0].body, "Sam invited you to plan meals together on Home Eats. Reply STOP to opt out.");
   });
 
-  await t.test("the 6th invite text in 24 hours from one sender is skipped; response and Invite unchanged", async () => {
+  async function seedSenderMonthHistory(userId, count) {
+    // Earlier texts spread over the last 2 to 29 days (outside the 24-hour cap).
+    const now = Date.now();
+    await prisma.rateLimitBucket.createMany({
+      data: Array.from({ length: count }, (_, i) => ({
+        key: `invite-sms:sender-month:${userId}`,
+        windowStart: new Date(now - 2 * DAY_MS - Math.floor((i * 27 * DAY_MS) / count)),
+        count: 1,
+        expiresAt: new Date(now + DAY_MS),
+      })),
+    });
+  }
+
+  await t.test("by default one sender gets 75 invite texts per 24 hours; the 76th is skipped", async () => {
     await freshState();
+    const { user, auth } = await newUser();
+    for (let i = 0; i < 76; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await post("/friends/request", auth, { phoneNumber: newUSNumber() });
+      assert.equal(res.status, 201);
+    }
+    await waitForAttempts(76);
+    assert.equal(sent.length, 75);
+    assert.equal(inviteLog.filter((entry) => / reason=sender-day-limit /.test(entry.line)).length, 1);
+    assert.equal(await prisma.invite.count({ where: { invitingUserId: user.id } }), 76);
+  });
+
+  await t.test("by default one sender gets 300 invite texts per 30 days", async () => {
+    await freshState();
+    const under = await newUser();
+    await seedSenderMonthHistory(under.user.id, 299);
+    await post("/friends/request", under.auth, { phoneNumber: newUSNumber() });
+    await waitForAttempts(1);
+    assert.equal(sent.length, 1);
+
+    const over = await newUser();
+    await seedSenderMonthHistory(over.user.id, 300);
+    await post("/friends/request", over.auth, { phoneNumber: newUSNumber() });
+    await waitForAttempts(2);
+    assert.equal(sent.length, 1);
+    assert.match(inviteLog[1].line, /^\[invite-sms\] skipped reason=sender-month-limit /);
+  });
+
+  await t.test("INVITE_SMS_SENDER_DAILY_MAX changes the daily cap; response and Invite unchanged when skipped", async () => {
+    await freshState();
+    process.env.INVITE_SMS_SENDER_DAILY_MAX = "5";
     const { user, auth } = await newUser();
     const responses = [];
     for (let i = 0; i < 6; i += 1) {
@@ -151,8 +200,20 @@ test("invite SMS safeguards", async (t) => {
     assert.equal(await prisma.invite.count({ where: { invitedPhoneNumber: to } }), 2);
   });
 
-  await t.test("numbers outside the country allow-list are skipped", async () => {
+  await t.test("by default invite texts can go to any country", async () => {
     await freshState();
+    const { auth } = await newUser();
+    for (const to of ["+442071838750", "+919876543210", "+61412345678"]) {
+      // eslint-disable-next-line no-await-in-loop
+      await post("/friends/request", auth, { phoneNumber: to });
+    }
+    await waitForAttempts(3);
+    assert.deepEqual(sent.map((m) => m.to), ["+442071838750", "+919876543210", "+61412345678"]);
+  });
+
+  await t.test("numbers outside a configured country allow-list are skipped", async () => {
+    await freshState();
+    process.env.INVITE_SMS_ALLOWED_COUNTRY_CODES = "1";
     const { user, auth } = await newUser();
     const res = await post("/friends/request", auth, { phoneNumber: "+442071838750" });
     assert.deepEqual(res, { status: 201, body: { status: "requested" } });
@@ -167,16 +228,44 @@ test("invite SMS safeguards", async (t) => {
     assert.equal(sent.length, 1);
   });
 
-  await t.test("a blank country allow-list means the default, not 'nowhere'", async () => {
+  await t.test("a blank country allow-list means the default (every country), not 'nowhere'", async () => {
     await freshState();
     process.env.INVITE_SMS_ALLOWED_COUNTRY_CODES = "  ";
     const { auth } = await newUser();
-    await post("/friends/request", auth, { phoneNumber: newUSNumber() });
+    await post("/friends/request", auth, { phoneNumber: "+442071838752" });
     await waitForAttempts(1);
     assert.equal(sent.length, 1);
   });
 
-  await t.test("the global daily cap stops sends across all senders and logs an error", async () => {
+  await t.test("by default the whole app sends 500 invite texts per UTC day", async () => {
+    // One row standing for earlier texts today. Its time is halfway between
+    // UTC midnight and now, so it's always inside today's window.
+    async function seedGlobalToday(count) {
+      const now = Date.now();
+      const startOfUTCDay = now - (now % DAY_MS);
+      await prisma.rateLimitBucket.create({
+        data: {
+          key: "invite-sms:global:all",
+          windowStart: new Date(startOfUTCDay + Math.floor((now - startOfUTCDay) / 2)),
+          count,
+          expiresAt: new Date(startOfUTCDay + DAY_MS),
+        },
+      });
+    }
+    await freshState();
+    await seedGlobalToday(499);
+    const { auth } = await newUser();
+    await post("/friends/request", auth, { phoneNumber: newUSNumber() });
+    await waitForAttempts(1);
+    assert.equal(sent.length, 1);
+    // That was the 500th; the next one is skipped.
+    await post("/friends/request", auth, { phoneNumber: newUSNumber() });
+    await waitForAttempts(2);
+    assert.equal(sent.length, 1);
+    assert.match(inviteLog[1].line, /^\[invite-sms\] skipped reason=global-daily-limit /);
+  });
+
+  await t.test("INVITE_SMS_DAILY_GLOBAL_MAX stops sends across all senders and logs an error", async () => {
     await freshState();
     process.env.INVITE_SMS_DAILY_GLOBAL_MAX = "2";
     for (let i = 0; i < 3; i += 1) {
@@ -192,22 +281,11 @@ test("invite SMS safeguards", async (t) => {
     assert.match(inviteLog[2].line, /^\[invite-sms\] skipped reason=global-daily-limit /);
   });
 
-  await t.test("the 30-day sender cap counts texts older than 24 hours", async () => {
+  await t.test("INVITE_SMS_SENDER_MONTHLY_MAX changes the 30-day cap, which counts texts older than 24 hours", async () => {
     await freshState();
+    process.env.INVITE_SMS_SENDER_MONTHLY_MAX = "20";
     const { user, auth } = await newUser();
-    // 20 earlier texts spread over the last 2 to 29 days.
-    const now = Date.now();
-    for (let i = 0; i < 20; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
-      await prisma.rateLimitBucket.create({
-        data: {
-          key: `invite-sms:sender-month:${user.id}`,
-          windowStart: new Date(now - (2 + i * 1.3) * DAY_MS),
-          count: 1,
-          expiresAt: new Date(now + DAY_MS),
-        },
-      });
-    }
+    await seedSenderMonthHistory(user.id, 20);
     await post("/friends/request", auth, { phoneNumber: newUSNumber() });
     await waitForAttempts(1);
     assert.equal(sent.length, 0);
@@ -241,6 +319,7 @@ test("invite SMS safeguards", async (t) => {
 
   await t.test("a skipped text uses up no one's allowance", async () => {
     await freshState();
+    process.env.INVITE_SMS_SENDER_DAILY_MAX = "5";
     const busy = await newUser("Busy");
     for (let i = 0; i < 5; i += 1) {
       // eslint-disable-next-line no-await-in-loop

@@ -942,15 +942,22 @@ this app's number:
   none of them):
   - each phone number gets at most 1 invite text per 7 days, across all
     senders;
-  - each sender can trigger at most 5 invite texts per 24 hours and 20
-    per 30 days;
+  - each sender can trigger at most `INVITE_SMS_SENDER_DAILY_MAX`
+    (default 75) invite texts per 24 hours and
+    `INVITE_SMS_SENDER_MONTHLY_MAX` (default 300) per 30 days. These are
+    deliberately generous so people can invite their whole family while
+    the app grows;
   - the whole deployment sends at most `INVITE_SMS_DAILY_GLOBAL_MAX`
-    (default 200) per UTC day. Hitting this logs an error.
-- **Countries.** Texts only go to numbers whose country code is in
-  `INVITE_SMS_ALLOWED_COUNTRY_CODES` (comma-separated, default `1`). `1`
-  is the whole North American Numbering Plan (the US, Canada and several
-  Caribbean countries), so also restrict destinations in Twilio's
-  Messaging Geo permissions.
+    (default 500) per UTC day. Hitting this logs an error. This is the
+    real ceiling on invite-text spend, so set it to your budget.
+- **Countries.** `INVITE_SMS_ALLOWED_COUNTRY_CODES` is `*` (every country)
+  by default, because users invite family abroad. Which countries can
+  actually receive texts is controlled in Twilio's **Messaging Geo
+  permissions**: enable only the countries you serve, because texts to
+  some international destinations cost much more and are a common target
+  for SMS fraud. To restrict in the app as well, set comma-separated
+  calling codes, e.g. `1,44,91` (`1` is the whole North American
+  Numbering Plan: the US, Canada and several Caribbean countries).
 - If a cap blocks the text, or the cap check can't reach the database,
   the text is skipped but the Invite row is still created and the API
   response is exactly the same, so a caller can't tell whether a text was

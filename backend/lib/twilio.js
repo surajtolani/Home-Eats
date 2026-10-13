@@ -105,30 +105,42 @@ function groupInviteSMS(senderName) {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_INVITE_SMS_DAILY_GLOBAL_MAX = 200;
-const DEFAULT_INVITE_SMS_ALLOWED_COUNTRY_CODES = "1";
+// Defaults for the invite-SMS settings, each overridable by the environment
+// variable of the same name. The per-sender limits are generous on purpose
+// so people can invite their whole family and friends while the app grows.
+const INVITE_SMS_LIMIT_DEFAULTS = {
+  INVITE_SMS_SENDER_DAILY_MAX: 75,
+  INVITE_SMS_SENDER_MONTHLY_MAX: 300,
+  INVITE_SMS_DAILY_GLOBAL_MAX: 500,
+};
+// "*" means every country. Which countries actually receive texts is then
+// controlled in Twilio's Messaging Geo permissions (see backend/README.md).
+const DEFAULT_INVITE_SMS_ALLOWED_COUNTRY_CODES = "*";
 
 // Read on every call (not once at startup) so a changed environment
 // variable takes effect on the next deploy without code changes, and so
 // tests can vary it.
-function inviteSMSDailyGlobalMax() {
-  const raw = process.env.INVITE_SMS_DAILY_GLOBAL_MAX;
-  if (raw === undefined || raw.trim() === "") return DEFAULT_INVITE_SMS_DAILY_GLOBAL_MAX;
+function inviteSMSLimit(name) {
+  const fallback = INVITE_SMS_LIMIT_DEFAULTS[name];
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 0) {
-    console.error(`[invite-sms] INVITE_SMS_DAILY_GLOBAL_MAX=${JSON.stringify(raw)} is not a whole number; using ${DEFAULT_INVITE_SMS_DAILY_GLOBAL_MAX}`);
-    return DEFAULT_INVITE_SMS_DAILY_GLOBAL_MAX;
+    console.error(`[invite-sms] ${name}=${JSON.stringify(raw)} is not a whole number; using ${fallback}`);
+    return fallback;
   }
   return parsed;
 }
 
-// Comma-separated country calling codes, matched against the start of the
-// E.164 number ("1,44" or "+1,+44"). Unset or blank means the default. Note
-// "1" covers every country in the North American Numbering Plan, not only
-// the US and Canada.
+// "*" (every country), or comma-separated country calling codes matched
+// against the start of the E.164 number ("1,44" or "+1,+44"). Unset or
+// blank means the default. Note "1" covers every country in the North
+// American Numbering Plan, not only the US and Canada. Returns null for
+// "every country".
 function inviteSMSAllowedCountryCodes() {
   const raw = process.env.INVITE_SMS_ALLOWED_COUNTRY_CODES;
   const value = raw === undefined || raw.trim() === "" ? DEFAULT_INVITE_SMS_ALLOWED_COUNTRY_CODES : raw;
+  if (value.trim() === "*") return null;
   const codes = [];
   for (const entry of value.split(",")) {
     const code = entry.trim().replace(/^\+/, "");
@@ -151,8 +163,9 @@ function maskPhoneForLog(phoneNumber) {
 // has already responded), so the response can't reveal whether a text went
 // out. Caps, all-or-nothing (nothing is used up unless the text is sent):
 // - per recipient: 1 per rolling 7 days, across all senders
-// - per sender: 5 per rolling 24 hours and 20 per rolling 30 days
-// - whole deployment: INVITE_SMS_DAILY_GLOBAL_MAX per UTC day
+// - per sender: INVITE_SMS_SENDER_DAILY_MAX per rolling 24 hours (default
+//   75) and INVITE_SMS_SENDER_MONTHLY_MAX per rolling 30 days (default 300)
+// - whole deployment: INVITE_SMS_DAILY_GLOBAL_MAX per UTC day (default 500)
 // If the cap check itself fails (database down), the text is skipped.
 async function trySendInviteSMS({ senderUserId, senderName, to, kind }) {
   const logSkip = (reason, log = console.log) =>
@@ -163,7 +176,7 @@ async function trySendInviteSMS({ senderUserId, senderName, to, kind }) {
       return logSkip("not-configured");
     }
     const allowedCodes = inviteSMSAllowedCountryCodes();
-    if (!allowedCodes.some((code) => to.startsWith(`+${code}`))) {
+    if (allowedCodes && !allowedCodes.some((code) => to.startsWith(`+${code}`))) {
       return logSkip("country-not-allowed");
     }
 
@@ -171,9 +184,24 @@ async function trySendInviteSMS({ senderUserId, senderName, to, kind }) {
     try {
       reservation = await reserveQuotas([
         { reason: "recipient-limit", key: `invite-sms:recipient:${to}`, windowMs: 7 * DAY_MS, max: 1 },
-        { reason: "sender-day-limit", key: `invite-sms:sender-day:${senderUserId}`, windowMs: DAY_MS, max: 5 },
-        { reason: "sender-month-limit", key: `invite-sms:sender-month:${senderUserId}`, windowMs: 30 * DAY_MS, max: 20 },
-        { reason: "global-daily-limit", key: "invite-sms:global:all", utcDay: true, max: inviteSMSDailyGlobalMax() },
+        {
+          reason: "sender-day-limit",
+          key: `invite-sms:sender-day:${senderUserId}`,
+          windowMs: DAY_MS,
+          max: inviteSMSLimit("INVITE_SMS_SENDER_DAILY_MAX"),
+        },
+        {
+          reason: "sender-month-limit",
+          key: `invite-sms:sender-month:${senderUserId}`,
+          windowMs: 30 * DAY_MS,
+          max: inviteSMSLimit("INVITE_SMS_SENDER_MONTHLY_MAX"),
+        },
+        {
+          reason: "global-daily-limit",
+          key: "invite-sms:global:all",
+          utcDay: true,
+          max: inviteSMSLimit("INVITE_SMS_DAILY_GLOBAL_MAX"),
+        },
       ]);
     } catch (error) {
       console.error("[invite-sms] cap check failed", error);
