@@ -8,13 +8,19 @@ const jwt = require("jsonwebtoken");
 
 const TEST_JWT_SECRET = "home-eats-test-secret";
 
-// Returns null when no test database is configured. Environment variables
-// must be set before app.js (and through it, lib/prisma.js) is first
-// required, because PrismaClient reads DATABASE_URL when it's constructed.
-async function startTestServer() {
-  if (!process.env.TEST_DATABASE_URL) return null;
+// Points this process at the test database. Returns false when none is
+// configured. Must run before lib/prisma.js is first required, because
+// PrismaClient reads DATABASE_URL when it's constructed.
+function useTestDatabase() {
+  if (!process.env.TEST_DATABASE_URL) return false;
   process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
   process.env.JWT_SECRET = TEST_JWT_SECRET;
+  return true;
+}
+
+// Returns null when no test database is configured.
+async function startTestServer() {
+  if (!useTestDatabase()) return null;
 
   const { app } = require("../../app");
   const { prisma } = require("../../lib/prisma");
@@ -64,4 +70,4 @@ async function resetDatabase() {
   await prisma.$executeRawUnsafe(`TRUNCATE ${tables} RESTART IDENTITY CASCADE`);
 }
 
-module.exports = { startTestServer, signTestToken, createTestUser, resetDatabase };
+module.exports = { useTestDatabase, startTestServer, signTestToken, createTestUser, resetDatabase };

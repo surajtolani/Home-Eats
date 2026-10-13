@@ -213,7 +213,9 @@ docker stop home-eats-test-db
 ```
 
 Run `npx prisma migrate deploy` against the test database again after
-pulling a change that adds a migration.
+pulling a change that adds a migration. `npm test` runs test files one at a
+time (`--test-concurrency=1`) because they share that one database and some
+of them empty it.
 
 ## 3. Deploy it (Render, same as the pattern used elsewhere)
 
@@ -511,8 +513,8 @@ response has the shape `{ "error": "..." }`.
 
 | Method | Path | Auth | Body | Notes |
 |---|---|---|---|---|
-| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). Rate-limited (see "Rate limiting" below); `429` if exceeded. |
-| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code; finds-or-creates the `User`, turns any pending `Invite`s for that number into ordinary `PENDING` friend requests (see "Invites and consent" above — this does **not** auto-accept a friendship or auto-join a group), and returns `{ token, user }`. |
+| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). Rate-limited (see "Rate limiting" below); `429` if exceeded, `503` if the rate-limit check itself can't reach the database. |
+| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code; finds-or-creates the `User`, turns any pending `Invite`s for that number into ordinary `PENDING` friend requests (see "Invites and consent" above — this does **not** auto-accept a friendship or auto-join a group), and returns `{ token, user }`. Rate-limited (see "Rate limiting" below); `429` if exceeded, `503` if the rate-limit check itself can't reach the database. |
 | GET | `/me` | required | — | Returns `{ user: { id, phoneNumber, displayName, firstName, lastName, city, state, country, createdAt, profileComplete } }` for the caller. `profileComplete` is a derived boolean (`true` once `firstName`/`lastName`/`city`/`state`/`country` are all non-empty) — the client-side app treats those five fields as mandatory before letting someone past onboarding (see the iOS `RootView`'s completion gate), but that's an application-level rule, not a database constraint: all five columns stay nullable so an account that predates this requirement (or one instantiated via `POST /auth/verify-code` a moment ago, before it has filled anything in) still loads without error, just with `profileComplete: false`. |
 | PATCH | `/me` | required | `{ displayName?, firstName?, lastName?, city?, state?, country? }` | Partial update — any subset of these fields, all independently optional; omitted keys are left alone. Each provided field must be non-empty (`400` otherwise — none of these are meant to be clearable back to `null` once set). `400` if the body has none of these keys at all. Returns the updated `{ user }` in the same shape as `GET /me`. Note that this endpoint's own optionality is unrelated to `profileComplete` above — a client is expected to call this once per field while onboarding (or edit one field at a time later from Settings), not send all five at once. |
 | POST | `/friends/request` | required | `{ phoneNumber }` | Sends a friend request. If that number belongs to an existing user with no prior relationship, creates a `PENDING` `Friendship`; if a request in the other direction was already pending, this accepts it instead (`200`, `{ friendship, autoAccepted: true }`). If the number isn't a user yet, creates an `Invite` (no group). The first two of those report back identically — `201`, `{ "status": "requested" }` — see "Phone-number privacy" above. `409` if already friends, already pending, or already invited. |
@@ -1028,7 +1030,7 @@ nothing to sync it to across devices, so a restored entry simply has no
   household/friend-group scale, worth knowing before wiring this up to
   something high-traffic.
 - **Rate limiting**: `POST /auth/request-code` is throttled by three
-  stacked small in-memory limiters (`lib/rateLimit.js`) — 1 request per
+  stacked limiters (`lib/rateLimit.js`) — 1 request per
   phone number per 60 seconds, 3 per phone number per hour, and 20 per IP
   per hour — on top of Twilio Verify's own Fraud Guard/rate-limiting, since
   this route fires a billed Twilio call before Twilio ever gets a say. The
@@ -1038,13 +1040,22 @@ nothing to sync it to across devices, so a restored entry simply has no
   phone number via the friends/groups API before that leak was fixed (see
   `publicUser(...)`'s own doc comment in routes/friends.js) — the old
   5/hour limit alone did nothing to stop a tight burst like that. `429`
-  with `{ "error": "..." }` when any of the three is exceeded. Each
-  limiter's state is per-process (fine for this app's single Render
-  instance — see the deploy section above — but it resets on every
-  deploy/restart and wouldn't be shared across instances if this ever
-  scales past one); `app.js` sets `app.set("trust proxy", true)` so the
-  per-IP half of this actually sees the real client IP through Render's
-  reverse proxy rather than the proxy's own address.
+  with `{ "error": "..." }` when any of the three is exceeded.
+  `POST /auth/verify-code` has its own two limiters: 10 attempts per phone
+  number per hour and 30 per IP per hour.
+
+  The counters are stored in Postgres (the `RateLimitBucket` table), not
+  in memory, so they survive deploys and restarts and would be shared if
+  this ever ran as more than one instance. Each check is a single atomic
+  SQL statement, and blocked attempts count too. Windows are fixed and
+  aligned to the clock (an hourly limit resets on the hour). Old rows are
+  deleted by a sweep every 10 minutes. If the database can't be reached
+  during a check, both sign-in routes **fail closed** and return `503`;
+  the Places/Claude proxy routes **fail open** (they log the error and let
+  the request through). Proxy routes also send a `Retry-After` header
+  (seconds) with their `429`. `app.js` sets `app.set("trust proxy", 1)` so
+  the per-IP limits see the real client IP through Render's reverse proxy
+  rather than the proxy's own address.
 - `Group.createdByUserId` is nullable (`onDelete: SetNull` on its relation
   to `User`) rather than the group cascading away when its creator's
   account is later deleted (there's no delete-account route yet, but there
