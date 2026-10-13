@@ -924,6 +924,40 @@ if this is unset). Same silent-no-op shape as `sendPush` above: without
 normally once that person signs up, there's just no text sent in the
 meantime.
 
+**Invite text safeguards** (`trySendInviteSMS` in `lib/twilio.js`). An
+invite text can't carry anything the sender writes, and its volume is
+capped, so the invite routes can't be used to send spam or phishing from
+this app's number:
+
+- **Fixed wording.** Only two messages are ever sent: "[Name] invited you
+  to Home Eats, a family meal-planning app." (friend invite) and "[Name]
+  invited you to plan meals together on Home Eats." (group invite), each
+  followed by the download link (if `APP_DOWNLOAD_URL` is set) and "Reply
+  STOP to opt out." The group name is never included. [Name] is the
+  sender's display name, sanitized: only letters, spaces, `'`, `-` and `.`
+  are kept, any `.` right before a letter is dropped (so `evil.com`
+  becomes `evilcom`), and it's cut to 30 characters. A name with no
+  letters left becomes "A friend".
+- **Caps** (rolling windows, checked all at once; a skipped text uses up
+  none of them):
+  - each phone number gets at most 1 invite text per 7 days, across all
+    senders;
+  - each sender can trigger at most 5 invite texts per 24 hours and 20
+    per 30 days;
+  - the whole deployment sends at most `INVITE_SMS_DAILY_GLOBAL_MAX`
+    (default 200) per UTC day. Hitting this logs an error.
+- **Countries.** Texts only go to numbers whose country code is in
+  `INVITE_SMS_ALLOWED_COUNTRY_CODES` (comma-separated, default `1`). `1`
+  is the whole North American Numbering Plan (the US, Canada and several
+  Caribbean countries), so also restrict destinations in Twilio's
+  Messaging Geo permissions.
+- If a cap blocks the text, or the cap check can't reach the database,
+  the text is skipped but the Invite row is still created and the API
+  response is exactly the same, so a caller can't tell whether a text was
+  sent. Every attempt is logged as `[invite-sms] sent`, `skipped
+  reason=...` or `failed reason=twilio-error`, with only the last 4 digits
+  of the recipient's number.
+
 ## 10. Personal restaurant library
 
 A signed-in user's own saved restaurants — added so this survives a
