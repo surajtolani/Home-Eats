@@ -396,7 +396,12 @@ function smsConsentHtml() {
 <p>Consent is therefore given by the account holder, who confirms they have the recipient's permission, and the recipient can withdraw it at any time by replying STOP.</p>
 
 <h2>What the recipient receives</h2>
-<p>One text per invite, for example: <em>"[Name] invited you to join "[Group]" on Home Eats. Get Home Eats: [link] Reply STOP to opt out."</em> Message frequency: one text per invite; no recurring or marketing messages. Message and data rates may apply. Reply STOP to opt out or HELP for help.</p>
+<p>At most one text per invite, using one of two fixed messages, where [Name] is the inviter's display name with any links, numbers and symbols removed:</p>
+<ul>
+  <li>Friend invite: <em>"[Name] invited you to Home Eats, a family meal-planning app. Get Home Eats: [link] Reply STOP to opt out."</em></li>
+  <li>Group invite: <em>"[Name] invited you to plan meals together on Home Eats. Get Home Eats: [link] Reply STOP to opt out."</em></li>
+</ul>
+<p>A phone number receives no more than one invite text in any 7-day period, however many people invite it. Message frequency: one text per invite; no recurring or marketing messages. Message and data rates may apply. Reply STOP to opt out or HELP for help.</p>
 
 <h2>Screenshots</h2>
 ${figures || "<p>Screenshots are added with each app release.</p>"}

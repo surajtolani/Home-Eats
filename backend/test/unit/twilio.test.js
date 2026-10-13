@@ -33,3 +33,72 @@ test("inviteSMSBody ends with the opt-out line with APP_DOWNLOAD_URL", () => {
     assert.ok(body.includes("Get Home Eats: https://example.com/app"), body);
   });
 });
+
+const { sanitizeNameForSMS, friendInviteSMS, groupInviteSMS } = require("../../lib/twilio");
+
+test("sanitizeNameForSMS removes links", () => {
+  assert.equal(sanitizeNameForSMS("Bob visit evil.com/x"), "Bob visit evilcomx");
+  assert.equal(sanitizeNameForSMS("evil-.com"), "evil-com");
+  // Full-width lookalike characters are normalized first, then stripped.
+  assert.equal(sanitizeNameForSMS("ｅｖｉｌ．ｃｏｍ"), "evilcom");
+  assert.equal(sanitizeNameForSMS("Bob https://evil.com"), "Bob httpsevilcom");
+});
+
+test("sanitizeNameForSMS removes digits, symbols and invisible characters", () => {
+  assert.equal(sanitizeNameForSMS("Call +1 415 555 1234"), "Call");
+  assert.equal(sanitizeNameForSMS("Ann‮evil"), "Annevil");
+  assert.equal(sanitizeNameForSMS("x​.com"), "xcom");
+});
+
+test("sanitizeNameForSMS keeps ordinary names", () => {
+  assert.equal(sanitizeNameForSMS("Zoë O'Brien-Lee"), "Zoë O'Brien-Lee");
+  assert.equal(sanitizeNameForSMS("  Mary   Jane  "), "Mary Jane");
+});
+
+test("sanitizeNameForSMS falls back to 'A friend' when no letters are left", () => {
+  for (const raw of ["😀😀", "", "...", "123", null, undefined]) {
+    assert.equal(sanitizeNameForSMS(raw), "A friend", `input ${JSON.stringify(raw)}`);
+  }
+});
+
+test("sanitizeNameForSMS removes a dot before a letter even with combining marks between", () => {
+  assert.equal(sanitizeNameForSMS("evil.\u0301com"), "evil\u0301com");
+});
+
+test("sanitizeNameForSMS never splits a character when cutting to 30", () => {
+  // U+20000 is a letter outside the Basic Multilingual Plane (two UTF-16 units).
+  const result = sanitizeNameForSMS("a".repeat(29) + "\u{20000}\u{20000}");
+  assert.equal(Array.from(result).length, 30);
+  assert.equal(result, "a".repeat(29) + "\u{20000}");
+  assert.ok(result.isWellFormed ? result.isWellFormed() : !/[\uD800-\uDFFF](?![\uDC00-\uDFFF])/.test(result));
+});
+
+test("sanitizeNameForSMS output is at most 30 characters", () => {
+  assert.equal(sanitizeNameForSMS("a".repeat(100)).length, 30);
+  const long = sanitizeNameForSMS("Alexandria Catherine Montgomery-Smythe");
+  assert.ok(long.length <= 30, long);
+  assert.equal(long, long.trim());
+});
+
+test("friendInviteSMS and groupInviteSMS use the fixed templates", () => {
+  withDownloadURL(undefined, () => {
+    assert.equal(
+      friendInviteSMS("Sam"),
+      "Sam invited you to Home Eats, a family meal-planning app. Reply STOP to opt out."
+    );
+    assert.equal(
+      groupInviteSMS("Sam"),
+      "Sam invited you to plan meals together on Home Eats. Reply STOP to opt out."
+    );
+    assert.equal(
+      friendInviteSMS("visit evil.com"),
+      "visit evilcom invited you to Home Eats, a family meal-planning app. Reply STOP to opt out."
+    );
+  });
+  withDownloadURL("https://example.com/app", () => {
+    assert.equal(
+      groupInviteSMS(null),
+      "A friend invited you to plan meals together on Home Eats. Get Home Eats: https://example.com/app Reply STOP to opt out."
+    );
+  });
+});

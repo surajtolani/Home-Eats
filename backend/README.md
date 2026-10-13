@@ -924,6 +924,47 @@ if this is unset). Same silent-no-op shape as `sendPush` above: without
 normally once that person signs up, there's just no text sent in the
 meantime.
 
+**Invite text safeguards** (`trySendInviteSMS` in `lib/twilio.js`). An
+invite text can't carry anything the sender writes, and its volume is
+capped, so the invite routes can't be used to send spam or phishing from
+this app's number:
+
+- **Fixed wording.** Only two messages are ever sent: "[Name] invited you
+  to Home Eats, a family meal-planning app." (friend invite) and "[Name]
+  invited you to plan meals together on Home Eats." (group invite), each
+  followed by the download link (if `APP_DOWNLOAD_URL` is set) and "Reply
+  STOP to opt out." The group name is never included. [Name] is the
+  sender's display name, sanitized: only letters, spaces, `'`, `-` and `.`
+  are kept, any `.` right before a letter is dropped (so `evil.com`
+  becomes `evilcom`), and it's cut to 30 characters. A name with no
+  letters left becomes "A friend".
+- **Caps** (rolling windows, checked all at once; a skipped text uses up
+  none of them):
+  - each phone number gets at most 1 invite text per 7 days, across all
+    senders;
+  - each sender can trigger at most `INVITE_SMS_SENDER_DAILY_MAX`
+    (default 75) invite texts per 24 hours and
+    `INVITE_SMS_SENDER_MONTHLY_MAX` (default 300) per 30 days. These are
+    deliberately generous so people can invite their whole family while
+    the app grows;
+  - the whole deployment sends at most `INVITE_SMS_DAILY_GLOBAL_MAX`
+    (default 500) per UTC day. Hitting this logs an error. This is the
+    real ceiling on invite-text spend, so set it to your budget.
+- **Countries.** `INVITE_SMS_ALLOWED_COUNTRY_CODES` is `*` (every country)
+  by default, because users invite family abroad. Which countries can
+  actually receive texts is controlled in Twilio's **Messaging Geo
+  permissions**: enable only the countries you serve, because texts to
+  some international destinations cost much more and are a common target
+  for SMS fraud. To restrict in the app as well, set comma-separated
+  calling codes, e.g. `1,44,91` (`1` is the whole North American
+  Numbering Plan: the US, Canada and several Caribbean countries).
+- If a cap blocks the text, or the cap check can't reach the database,
+  the text is skipped but the Invite row is still created and the API
+  response is exactly the same, so a caller can't tell whether a text was
+  sent. Every attempt is logged as `[invite-sms] sent`, `skipped
+  reason=...` or `failed reason=twilio-error`, with only the last 4 digits
+  of the recipient's number.
+
 ## 10. Personal restaurant library
 
 A signed-in user's own saved restaurants — added so this survives a
