@@ -133,8 +133,9 @@ const MAX_INSTRUCTIONS = 200;
 // for upload — see `RecipeSharePickerSheet`/`RecipeEditorView` — typically
 // well under 500KB) while still bounding how much a single misbehaving or
 // malicious request can bloat this table: a 5MB decoded photo is ~6.7MB of
-// base64 JSON, comfortably inside the global 15mb `express.json` body limit
-// (see app.js) with room for the rest of the request body around it.
+// base64 JSON, inside the 8 MB `express.json` body limit app.js gives
+// /recipe-library (every other route gets 100 KB), with room for the rest
+// of the request body around it.
 const MAX_PHOTO_BYTES_DECODED = 5 * 1024 * 1024; // 5MB
 
 // `Buffer.byteLength(str, "base64")` computes the decoded size directly

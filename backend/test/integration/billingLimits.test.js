@@ -66,6 +66,8 @@ test("billing safeguards", async (t) => {
     // own checks.
     const badName = await call("GET", "/restaurants/photo?name=not-a-photo-name", { headers });
     assert.deepEqual(badName, { status: 400, json: { error: "Invalid 'name' format." } });
+    const noName = await call("GET", "/restaurants/photo", { headers });
+    assert.deepEqual(noName, { status: 400, json: { error: "Missing required query param 'name'." } });
     const noURL = await call("GET", "/recipes/image-proxy", { headers });
     assert.equal(noURL.status, 400);
   });
@@ -82,6 +84,7 @@ test("billing safeguards", async (t) => {
       ["/recipes/recommend", { ingredients: Array(41).fill("egg") }, "List at most 40 ingredients."],
       ["/recipes/recommend", { ingredients: ["x".repeat(81)] }, "Each ingredient can be at most 80 characters."],
       ["/recipes/recommend", { ingredients: [42] }, "Each ingredient must be text."],
+      ["/recipes/recommend", { ingredients: "egg" }, "'ingredients' must be a list."],
       ["/recipes/recommend", { excludeTitles: Array(41).fill("Soup") }, "Send at most 40 titles to exclude."],
       ["/recipes/recommend", { excludeTitles: ["x".repeat(201)] }, "Each title can be at most 200 characters."],
       ["/restaurants/search-natural", { query: "x".repeat(301) }, "'query' can't be longer than 300 characters."],
@@ -113,6 +116,10 @@ test("billing safeguards", async (t) => {
       ["/recipes/extract", { imageBase64: "QUJD", mediaType: "image/png" }],
       ["/recipes/recommend", { ingredients: ["egg"], excludeTitles: ["Soup"] }],
       ["/recipes/recommend", {}],
+      // Blank items (a trailing comma, a stray newline) are dropped, not rejected.
+      ["/recipes/recommend", { ingredients: ["chicken", "rice", "\n", ""], excludeTitles: [" "] }],
+      // ...and don't count toward the 40-item limit.
+      ["/recipes/recommend", { ingredients: [...Array(40).fill("egg"), "", " ", "\n"] }],
     ]) {
       // eslint-disable-next-line no-await-in-loop
       const res = await call("POST", path, { headers, body });
@@ -120,6 +127,27 @@ test("billing safeguards", async (t) => {
     }
     const natural = await call("POST", "/restaurants/search-natural", { headers, body: { query: "pizza", lat: 40.7, lng: -74 } });
     assert.deepEqual(natural, { status: 500, json: { error: "Server is missing GOOGLE_PLACES_API_KEY." } });
+  });
+
+  await t.test("malformed photo requests don't use up the photo limits", async () => {
+    await resetDatabase();
+    const { user, headers } = await newAuth();
+    await seedBucket(`restaurants-photo-daily:user:${user.id}`, 999);
+    for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await call("GET", "/restaurants/photo?name=bad", { headers });
+      assert.equal(res.status, 400);
+    }
+    // One left in the daily cap: a valid request still gets through to the
+    // route (which then fails on the missing Google key).
+    const valid = await call("GET", "/restaurants/photo?name=places/a/photos/b", { headers });
+    assert.equal(valid.status, 500);
+  });
+
+  await t.test("malformed JSON is a 400, not a server error", async () => {
+    const { headers } = await newAuth();
+    const res = await call("PATCH", "/me", { headers, rawBody: "{not json" });
+    assert.deepEqual(res, { status: 400, json: { error: "Invalid request body." } });
   });
 
   await t.test("invalid requests don't use up the hourly limit", async () => {

@@ -832,20 +832,22 @@ app.post(
 // server's billed Google API key actually sends. Anything that doesn't
 // match this shape is rejected outright rather than passed through.
 const PHOTO_NAME_PATTERN = /^places\/[^/?#&]+\/photos\/[^/?#&]+$/;
+const PhotoQuerySchema = z.object({
+  name: z
+    .string("Missing required query param 'name'.")
+    .trim()
+    .min(1, "Missing required query param 'name'.")
+    .regex(PHOTO_NAME_PATTERN, "Invalid 'name' format."),
+});
 
 app.get(
   "/restaurants/photo",
   requireAuth,
+  validated("query", PhotoQuerySchema),
   rateLimited(restaurantsPhotoLimiter, byUserId),
   rateLimited(restaurantsPhotoDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
   async (req, res) => {
-  const name = (req.query.name || "").toString().trim();
-  if (!name) {
-    return res.status(400).json({ error: "Missing required query param 'name'." });
-  }
-  if (!PHOTO_NAME_PATTERN.test(name)) {
-    return res.status(400).json({ error: "Invalid 'name' format." });
-  }
+  const { name } = req.validated;
   if (!GOOGLE_PLACES_API_KEY) {
     return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
   }
@@ -1178,29 +1180,33 @@ app.post(
 // "Show More Ideas" button (RecommendMealView) re-calling this with the
 // titles already shown, so a second batch is genuinely new suggestions
 // rather than Claude just repeating (or trivially rewording) the first one.
+// Blank entries (an empty item from a trailing comma, or a stray newline)
+// are dropped rather than rejected, as before these limits existed.
+const withoutBlankStrings = (value) =>
+  Array.isArray(value) ? value.filter((item) => typeof item !== "string" || item.trim() !== "") : value;
 const RecommendRequestSchema = z.object({
   ingredients: z
-    .array(
+    .preprocess(
+      withoutBlankStrings,
       z
-        .string("Each ingredient must be text.")
-        .trim()
-        .min(1, "Ingredients can't be empty.")
-        .max(80, "Each ingredient can be at most 80 characters."),
-      "'ingredients' must be a list."
+        .array(
+          z.string("Each ingredient must be text.").trim().max(80, "Each ingredient can be at most 80 characters."),
+          "'ingredients' must be a list."
+        )
+        .max(40, "List at most 40 ingredients.")
     )
-    .max(40, "List at most 40 ingredients.")
     .optional()
     .default([]),
   excludeTitles: z
-    .array(
+    .preprocess(
+      withoutBlankStrings,
       z
-        .string("Each title must be text.")
-        .trim()
-        .min(1, "Titles can't be empty.")
-        .max(200, "Each title can be at most 200 characters."),
-      "'excludeTitles' must be a list."
+        .array(
+          z.string("Each title must be text.").trim().max(200, "Each title can be at most 200 characters."),
+          "'excludeTitles' must be a list."
+        )
+        .max(40, "Send at most 40 titles to exclude.")
     )
-    .max(40, "Send at most 40 titles to exclude.")
     .optional()
     .default([]),
 });
@@ -1402,11 +1408,17 @@ app.get("/recipes/image-proxy", requireAuth, rateLimited(recipeImageProxyLimiter
 // other app.use/app.get/etc. call above.
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  // From express.json when a body is over its route's limit (see the
-  // largeJson/100kb setup near the top of this file).
+  // From express.json: a body over its route's limit (see the
+  // largeJson/100kb setup near the top of this file), or a body it can't
+  // parse (malformed JSON, unsupported encoding). These are the caller's
+  // mistake, so they get their own 4xx status rather than a logged 500.
   if (err && err.type === "entity.too.large") {
     if (res.headersSent) return;
     return res.status(413).json({ error: "Request too large." });
+  }
+  if (err && err.expose && err.status >= 400 && err.status < 500) {
+    if (res.headersSent) return;
+    return res.status(err.status).json({ error: "Invalid request body." });
   }
   console.error("Unhandled error in request handler:", err);
   if (res.headersSent) return;

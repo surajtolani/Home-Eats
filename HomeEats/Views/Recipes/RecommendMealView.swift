@@ -181,7 +181,7 @@ struct RecommendMealView: View {
     private var currentIngredients: [String] {
         ingredientsText
             .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
 
