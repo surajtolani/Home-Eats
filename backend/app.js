@@ -13,8 +13,6 @@
 // Verify, JWT secret).
 "use strict";
 
-const dns = require("dns").promises;
-const net = require("net");
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const { zodOutputFormat } = require("@anthropic-ai/sdk/helpers/zod");
@@ -22,6 +20,7 @@ const { z } = require("zod");
 const { requireAuth } = require("./middleware/requireAuth");
 const { createRateLimiter } = require("./lib/rateLimit");
 const { asyncHandler } = require("./lib/asyncHandler");
+const { safeFetchImage, ProxyError } = require("./lib/safeFetch");
 const authRouter = require("./routes/auth");
 const meRouter = require("./routes/me");
 const friendsRouter = require("./routes/friends");
@@ -130,44 +129,6 @@ function rateLimited(limiter, keyFn) {
 
 const byUserId = (req) => req.userId;
 const byIP = (req) => req.ip;
-
-// Rejects a resolved IP that points at loopback, a private (RFC1918) range,
-// or link-local — including 169.254.169.254, the address every major cloud
-// provider serves instance credentials from. Used by GET /recipes/image-proxy
-// below to stop that route being used to make *this server* fetch an
-// internal/otherwise-unintended target on an attacker's behalf. This checks
-// the IP a hostname resolves to, not the hostname text itself, specifically
-// so a hostname that looks external but resolves to one of these
-// (attacker-controlled DNS) is still caught. Known, accepted limitation:
-// this is a lookup-time check, not a fetch-time one, so a DNS answer that
-// changes between this check and the actual fetch (DNS rebinding) isn't
-// fully closed — acceptable here since the route only ever returns opaque,
-// size-capped, image/*-typed bytes back to the caller who supplied the URL,
-// never anything else about the response (no headers, no error detail).
-function isPrivateOrLoopbackIP(ip) {
-  if (net.isIPv4(ip)) {
-    const parts = ip.split(".").map(Number);
-    if (parts[0] === 127) return true; // loopback
-    if (parts[0] === 10) return true; // 10.0.0.0/8
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
-    if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
-    if (parts[0] === 169 && parts[1] === 254) return true; // link-local, incl. cloud metadata
-    if (parts[0] === 0) return true;
-    return false;
-  }
-  if (net.isIPv6(ip)) {
-    const lower = ip.toLowerCase();
-    if (lower === "::1") return true; // loopback
-    if (lower.startsWith("fe80:")) return true; // link-local
-    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique local
-    if (lower.startsWith("::ffff:")) {
-      const mapped = lower.split(":").pop();
-      if (net.isIPv4(mapped)) return isPrivateOrLoopbackIP(mapped);
-    }
-    return false;
-  }
-  return true; // not a recognizable IP at all — reject rather than guess.
-}
 
 // Shared shape for one recipe, whether it came from a photo, typed notes, or
 // a recommendation — the iOS app's RecipeImportService/SchemaOrgRecipeParser
@@ -1239,12 +1200,21 @@ app.get("/recipes/web-search", requireAuth, rateLimited(recipesWebSearchLimiter,
 // Deliberately unauthenticated, same reasoning as `/restaurants/photo`:
 // AsyncImage has no way to attach an Authorization header to an image
 // load, so an endpoint it points at can't require one — rate-limited by
-// IP instead. `isPrivateOrLoopbackIP` (defined near the top of this file)
-// guards against this route being used to make *this server* fetch an
-// internal/otherwise-unintended target on an attacker's behalf, since
-// `url` here — unlike every other proxied request in this file — can name
-// literally any host, not just Google's.
+// IP instead. `safeFetchImage` (lib/safeFetch.js) stops this route being
+// used to make *this server* fetch an internal target on an attacker's
+// behalf, since `url` here — unlike every other proxied request in this
+// file — can name literally any host, not just Google's. It checks every
+// redirect and the address actually connected to, caps the size while
+// streaming, and only returns image bytes. Callers only ever see one of the
+// fixed error messages below, never anything from the upstream server.
 const RECIPE_IMAGE_PROXY_MAX_BYTES = 8 * 1024 * 1024; // Well above any real recipe photo.
+const IMAGE_PROXY_ERROR_RESPONSES = {
+  "invalid-url": [400, "Invalid 'url'."],
+  blocked: [400, "That image can't be loaded."],
+  "not-image": [400, "That URL isn't an image."],
+  "too-large": [413, "That image is too large."],
+  upstream: [502, "Couldn't fetch that image."],
+};
 
 app.get("/recipes/image-proxy", rateLimited(recipeImageProxyIPLimiter, byIP), async (req, res) => {
   const rawURL = (req.query.url || "").toString().trim();
@@ -1263,49 +1233,26 @@ app.get("/recipes/image-proxy", rateLimited(recipeImageProxyIPLimiter, byIP), as
   }
 
   try {
-    const addresses = await dns.lookup(parsed.hostname, { all: true });
-    if (addresses.length === 0 || addresses.some((address) => isPrivateOrLoopbackIP(address.address))) {
-      return res.status(400).json({ error: "That image can't be loaded." });
-    }
-  } catch (error) {
-    return res.status(400).json({ error: "That image can't be loaded." });
-  }
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    let imageResponse;
-    try {
-      imageResponse = await fetch(parsed.toString(), { signal: controller.signal });
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    if (!imageResponse.ok) {
-      return res.status(502).json({ error: "Couldn't fetch that image." });
-    }
-    const contentType = imageResponse.headers.get("content-type") || "";
-    if (!contentType.toLowerCase().startsWith("image/")) {
-      return res.status(400).json({ error: "That URL isn't an image." });
-    }
-    const contentLengthHeader = imageResponse.headers.get("content-length");
-    if (contentLengthHeader && Number(contentLengthHeader) > RECIPE_IMAGE_PROXY_MAX_BYTES) {
-      return res.status(413).json({ error: "That image is too large." });
-    }
-
-    const buffer = Buffer.from(await imageResponse.arrayBuffer());
-    if (buffer.length > RECIPE_IMAGE_PROXY_MAX_BYTES) {
-      return res.status(413).json({ error: "That image is too large." });
-    }
-
+    const { contentType, buffer } = await safeFetchImage(parsed.toString(), {
+      maxBytes: RECIPE_IMAGE_PROXY_MAX_BYTES,
+      timeoutMs: 10000,
+      maxRedirects: 3,
+    });
     res.set("Content-Type", contentType);
+    // The type came from someone else's server; stop browsers from
+    // second-guessing it and treating the bytes as something else.
+    res.set("X-Content-Type-Options", "nosniff");
     // A recipe's own imported photo essentially never changes once
     // imported — same day-long cache as /restaurants/photo above.
     res.set("Cache-Control", "public, max-age=86400");
     res.send(buffer);
   } catch (error) {
-    console.error("Recipe image proxy request threw", error);
-    res.status(502).json({ error: "Couldn't fetch that image." });
+    const kind = error instanceof ProxyError ? error.kind : "upstream";
+    const [status, message] = IMAGE_PROXY_ERROR_RESPONSES[kind] || IMAGE_PROXY_ERROR_RESPONSES.upstream;
+    if (kind === "upstream") {
+      console.error("Recipe image proxy request failed", error.message);
+    }
+    res.status(status).json({ error: message });
   }
 });
 

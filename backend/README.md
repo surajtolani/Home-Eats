@@ -172,6 +172,11 @@ curl "http://localhost:4000/recipes/web-search?q=crepes" \
 
 # /restaurants/photo and /recipes/image-proxy stay unauthenticated (an
 # AsyncImage load can't attach a header) but are rate-limited by IP instead.
+# /recipes/image-proxy fetches through lib/safeFetch.js: http/https on
+# ports 80/443 only, at most 3 redirects (each re-checked), no private,
+# loopback, link-local or other internal addresses (checked at connect
+# time), image/* only (not SVG), 8 MB max, 10 s overall. Anything else is
+# a fixed 400/413/502 with no detail from the upstream server.
 
 # Recipe sharing: create a recipe, then list "my recipes"
 curl -X POST "http://localhost:4000/recipe-library" \
