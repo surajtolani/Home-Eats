@@ -85,10 +85,8 @@ enum GooglePlacesService {
     /// elsewhere, not a real, expected case — but this fails with a clear
     /// error instead of silently sending an unauthenticated request that
     /// the server would just reject anyway. Not used by `photoURL(for:)`
-    /// below, which builds a URL for `AsyncImage` to load directly — an
-    /// image load has no way to attach a header, so that one endpoint
-    /// deliberately stays unauthenticated server-side (rate-limited
-    /// instead — see its own route in index.js).
+    /// below: that URL is loaded by `RemoteImage`, which attaches the same
+    /// token itself.
     private static func authorizedRequest(url: URL, method: String = "GET") throws -> URLRequest {
         guard let token = KeychainTokenStore.readToken() else {
             throw ServiceError.notSignedIn
@@ -329,9 +327,10 @@ enum GooglePlacesService {
 
     /// Builds the URL to actually load a photo's image bytes from — points
     /// at this same backend's `/restaurants/photo` proxy (never at Google
-    /// directly, so the API key stays server-side), suitable for handing
-    /// straight to `AsyncImage`. Returns `nil` if the backend isn't
-    /// configured or `photoName` is empty.
+    /// directly, so the API key stays server-side). The route requires a
+    /// signed-in user, so load it with `RemoteImage`, not `AsyncImage`.
+    /// Returns `nil` if the backend isn't configured or `photoName` is
+    /// empty.
     static func photoURL(for photoName: String, maxWidthPx: Int = 800) -> URL? {
         guard isConfigured, !photoName.isEmpty, let base = URL(string: baseURLString) else { return nil }
         var components = URLComponents(

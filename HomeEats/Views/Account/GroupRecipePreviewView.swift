@@ -158,12 +158,10 @@ struct GroupRecipePreviewView: View {
         if let photoData = recipe.photoData, let uiImage = UIImage(data: photoData) {
             Image(uiImage: uiImage).resizable().scaledToFill()
         } else if let imageName = recipe.imageName, imageName.lowercased().hasPrefix("http"), let url = RecipeImageProxy.url(for: imageName) {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    recipePlaceholder
-                }
+            RemoteImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                recipePlaceholder
             }
         } else if let imageName = recipe.imageName, UIImage(named: imageName) != nil {
             Image(imageName).resizable().scaledToFill()
