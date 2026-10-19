@@ -170,8 +170,10 @@ curl "http://localhost:4000/recipes/web-search?q=crepes" \
 # a clear "Server is missing ..." message otherwise, same as every other
 # optionally-configured integration here.
 
-# /restaurants/photo and /recipes/image-proxy stay unauthenticated (an
-# AsyncImage load can't attach a header) but are rate-limited by IP instead.
+# /restaurants/photo and /recipes/image-proxy also need the token (the iOS
+# app loads them with RemoteImage, which sends it):
+curl "http://localhost:4000/restaurants/photo?name=places/<id>/photos/<ref>" \
+  -H "Authorization: Bearer <token>" --output photo.jpg
 # /recipes/image-proxy fetches through lib/safeFetch.js: http/https on
 # ports 80/443 only, at most 3 redirects (each re-checked), no private,
 # loopback, link-local or other internal addresses (checked at connect
@@ -982,9 +984,9 @@ comment on the `Restaurant` model, and the iOS `HomeEatsApp.swift`'s on
 NOT bare `/restaurants`, which is already the Google-Places-proxy search
 API (`/restaurants/search`, `/restaurants/search-natural`,
 `/restaurants/photo`, `/restaurants/details`) registered directly on `app`
-in `app.js` — every one of those but `/photo` also requires auth, same as
-this router, `/photo` stays open (rate-limited by IP instead) since an
-AsyncImage load can't attach an Authorization header. No sharing/visibility
+in `app.js` — every one of those also requires auth, same as this router
+(the iOS app loads `/photo` through `RemoteImage`, which sends the token).
+No sharing/visibility
 concept at all, unlike recipe-library — every restaurant here is simply
 "the caller's own."
 
@@ -1102,6 +1104,29 @@ nothing to sync it to across devices, so a restored entry simply has no
   (seconds) with their `429`. `app.js` sets `app.set("trust proxy", 1)` so
   the per-IP limits see the real client IP through Render's reverse proxy
   rather than the proxy's own address.
+- **Request size and input limits.** JSON bodies are capped at 100 KB,
+  except `/recipes/extract` and `/recipe-library`, which carry a base64
+  photo and allow 8 MB. A larger body gets `413 { "error": "Request too
+  large." }`. The paid routes also check their input before doing anything
+  else, and return `400` with a message if it's too big:
+  - `POST /recipes/extract`: `notesText` up to 10,000 characters,
+    `imageBase64` up to 7,000,000 characters of base64, `mediaType` one of
+    `image/jpeg`, `image/png`, `image/webp`, `image/gif` (default
+    `image/jpeg`); at least one of `notesText`/`imageBase64`.
+  - `POST /recipes/recommend`: up to 40 `ingredients` (1–80 characters
+    each) and 40 `excludeTitles` (1–200 characters each).
+  - `POST /restaurants/search-natural`: `query` 1–300 characters,
+    `fallbackLocationText` up to 200, `lat` −90..90, `lng` −180..180.
+  - `GET /restaurants/search`, `/cities/search`, `/recipes/web-search`:
+    `q` 1–200 characters.
+- **Daily limits.** On top of the hourly per-user limits, each user can
+  make at most 50 recipe extractions, 50 recommendations, 100
+  natural-language restaurant searches and 1000 restaurant photo loads per
+  day (days start at midnight UTC). The three AI routes together are also
+  capped for the whole deployment at `AI_DAILY_GLOBAL_MAX` per day (default
+  2000). Over any of these, the route returns `429` with a "try again
+  tomorrow" message. The image routes (`/restaurants/photo`,
+  `/recipes/image-proxy`) require a signed-in user and are limited per user.
 - `Group.createdByUserId` is nullable (`onDelete: SetNull` on its relation
   to `User`) rather than the group cascading away when its creator's
   account is later deleted (there's no delete-account route yet, but there

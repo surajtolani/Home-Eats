@@ -54,11 +54,15 @@ const app = express();
 // one — see backend/README.md's deploy section) and nothing a client
 // supplies.
 app.set("trust proxy", 1);
-// A downsized recipe photo (see ImageResizing.swift in the iOS app - it
-// caps images at 800px on the long edge before base64-encoding) is well
-// under 1MB, but give real headroom rather than a tight limit that fails
-// on an occasional larger photo.
-app.use(express.json({ limit: "15mb" }));
+// Request bodies are small everywhere except the two routes that carry a
+// base64 photo: /recipes/extract and /recipe-library (whose 5 MB decoded
+// photo cap is about 6.7 MB as base64). Those get 8 MB; everything else
+// gets 100 KB, so an oversized body is rejected (413) before it's read
+// into memory. The large parser has to come first: express.json skips a
+// body that's already been parsed.
+const largeJson = express.json({ limit: "8mb" });
+app.use(["/recipes/extract", "/recipe-library"], largeJson);
+app.use(express.json({ limit: "100kb" }));
 
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY;
 // Google's Custom Search JSON API — a distinct product/key from Places
@@ -104,31 +108,78 @@ const recipesRecommendLimiter = createRateLimiter({ name: "recipes-recommend:use
 // user combined), well below what a per-user 120/hour limit like
 // `restaurantsSearchLimiter`'s would actually prevent.
 const recipesWebSearchLimiter = createRateLimiter({ name: "recipes-web-search:user", windowMs: 60 * 60 * 1000, max: 20 });
-// The two routes below that stay unauthenticated on purpose (AsyncImage
-// can't attach an Authorization header — see each route's own comment) are
-// rate-limited by IP instead of by user.
-const restaurantsPhotoIPLimiter = createRateLimiter({ name: "restaurants-photo:ip", windowMs: 60 * 60 * 1000, max: 600 });
-const recipeImageProxyIPLimiter = createRateLimiter({ name: "recipe-image-proxy:ip", windowMs: 60 * 60 * 1000, max: 600 });
+// The two image routes, per signed-in user (the iOS app loads them through
+// RemoteImage, which sends the token).
+const restaurantsPhotoLimiter = createRateLimiter({ name: "restaurants-photo:user", windowMs: 60 * 60 * 1000, max: 600 });
+const recipeImageProxyLimiter = createRateLimiter({ name: "recipe-image-proxy:user", windowMs: 60 * 60 * 1000, max: 600 });
+
+// Daily ceilings on the routes that cost the most, on top of the hourly
+// limits above: a per-user cap on each, and one shared cap on all three AI
+// routes together, AI_DAILY_GLOBAL_MAX (default 2000), as a circuit
+// breaker for the whole deployment's Anthropic spend.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_AI_DAILY_GLOBAL_MAX = 2000;
+function aiDailyGlobalMax() {
+  const raw = process.env.AI_DAILY_GLOBAL_MAX;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_AI_DAILY_GLOBAL_MAX;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    console.error(`AI_DAILY_GLOBAL_MAX=${JSON.stringify(raw)} is not a whole number; using ${DEFAULT_AI_DAILY_GLOBAL_MAX}`);
+    return DEFAULT_AI_DAILY_GLOBAL_MAX;
+  }
+  return parsed;
+}
+const recipesExtractDailyLimiter = createRateLimiter({ name: "recipes-extract-daily:user", windowMs: DAY_MS, max: 50 });
+const recipesRecommendDailyLimiter = createRateLimiter({ name: "recipes-recommend-daily:user", windowMs: DAY_MS, max: 50 });
+const restaurantsSearchNaturalDailyLimiter = createRateLimiter({ name: "restaurants-search-natural-daily:user", windowMs: DAY_MS, max: 100 });
+const restaurantsPhotoDailyLimiter = createRateLimiter({ name: "restaurants-photo-daily:user", windowMs: DAY_MS, max: 1000 });
+const aiGlobalDailyLimiter = createRateLimiter({ name: "ai:global", windowMs: DAY_MS, max: aiDailyGlobalMax() });
+const DAILY_LIMIT_MESSAGE = "You've reached today's limit for this feature. Please try again tomorrow.";
+const GLOBAL_AI_LIMIT_MESSAGE = "This feature has reached its limit for today. Please try again tomorrow.";
 
 // A small middleware factory wrapping lib/rateLimit.js's `check` in
 // Express's usual (req, res, next) shape — `keyFn` picks what to key the
-// limit on (req.userId once requireAuth has run, or req.ip for the two
-// routes that stay unauthenticated). None of these limiters is
-// `failClosed`, so a database error during the check lets the request
-// through (lib/rateLimit.js logs it) rather than taking these routes down.
-function rateLimited(limiter, keyFn) {
+// limit on (req.userId once requireAuth has run, or "all" for a
+// deployment-wide cap). None of these limiters is `failClosed`, so a
+// database error during the check lets the request through
+// (lib/rateLimit.js logs it) rather than taking these routes down.
+function rateLimited(limiter, keyFn, message = "Too many requests. Please try again shortly.") {
   return asyncHandler(async (req, res, next) => {
     const result = await limiter.check(keyFn(req));
     if (result.limited) {
       res.set("Retry-After", String(Math.ceil(result.retryAfterMs / 1000)));
-      return res.status(429).json({ error: "Too many requests. Please try again shortly." });
+      return res.status(429).json({ error: message });
     }
     next();
   });
 }
 
 const byUserId = (req) => req.userId;
-const byIP = (req) => req.ip;
+const forEveryone = () => "all";
+
+// Validates `req.body` or `req.query` against a Zod schema before anything
+// else on the route runs, so oversized or malformed input gets a 400 without
+// using up a rate limit or reaching a paid API. The parsed (trimmed,
+// defaulted) result is on `req.validated`.
+function validated(source, schema) {
+  return (req, res, next) => {
+    const parsed = schema.safeParse(req[source] ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid request." });
+    }
+    req.validated = parsed.data;
+    next();
+  };
+}
+
+// `q` for the three search routes that take one.
+const SearchQuerySchema = z.object({
+  q: z
+    .string("Missing required query param 'q'.")
+    .trim()
+    .min(1, "Missing required query param 'q'.")
+    .max(200, "'q' can't be longer than 200 characters."),
+});
 
 // Shared shape for one recipe, whether it came from a photo, typed notes, or
 // a recommendation — the iOS app's RecipeImportService/SchemaOrgRecipeParser
@@ -584,11 +635,13 @@ async function geocode(locationText) {
 // already behind RootView's sign-in gate, so this costs real callers
 // nothing; it just closes off the route to a scripted caller with no
 // account who found the URL.
-app.get("/restaurants/search", requireAuth, rateLimited(restaurantsSearchLimiter, byUserId), async (req, res) => {
-  const query = (req.query.q || "").toString().trim();
-  if (!query) {
-    return res.status(400).json({ error: "Missing required query param 'q'." });
-  }
+app.get(
+  "/restaurants/search",
+  requireAuth,
+  validated("query", SearchQuerySchema),
+  rateLimited(restaurantsSearchLimiter, byUserId),
+  async (req, res) => {
+  const query = req.validated.q;
   if (!GOOGLE_PLACES_API_KEY) {
     return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
   }
@@ -608,7 +661,8 @@ app.get("/restaurants/search", requireAuth, rateLimited(restaurantsSearchLimiter
     console.error("Places API request threw", error);
     res.status(502).json({ error: "Places API request failed." });
   }
-});
+  }
+);
 
 // POST /restaurants/search-natural
 // Body: { query: string, lat?: number, lng?: number } — the free-text,
@@ -643,24 +697,39 @@ const NaturalSearchQuerySchema = z.object({
   locationText: z.string().nullable(),
 });
 
+// Request body limits for the route below. Checked before anything paid runs.
+const NaturalSearchRequestSchema = z.object({
+  query: z
+    .string("Missing required field 'query'.")
+    .trim()
+    .min(1, "Missing required field 'query'.")
+    .max(300, "'query' can't be longer than 300 characters."),
+  fallbackLocationText: z
+    .string("'fallbackLocationText' must be text.")
+    .trim()
+    .max(200, "'fallbackLocationText' can't be longer than 200 characters.")
+    .nullish(),
+  lat: z.number("'lat' must be a number.").min(-90, "'lat' must be between -90 and 90.").max(90, "'lat' must be between -90 and 90.").nullish(),
+  lng: z.number("'lng' must be a number.").min(-180, "'lng' must be between -180 and 180.").max(180, "'lng' must be between -180 and 180.").nullish(),
+});
+
 app.post(
   "/restaurants/search-natural",
   requireAuth,
+  validated("body", NaturalSearchRequestSchema),
   rateLimited(restaurantsSearchNaturalLimiter, byUserId),
+  rateLimited(restaurantsSearchNaturalDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
+  rateLimited(aiGlobalDailyLimiter, forEveryone, GLOBAL_AI_LIMIT_MESSAGE),
   async (req, res) => {
-  const query = (req.body?.query || "").toString().trim();
-  if (!query) {
-    return res.status(400).json({ error: "Missing required field 'query'." });
-  }
+  const query = req.validated.query;
   if (!GOOGLE_PLACES_API_KEY) {
     return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
   }
   const client = anthropicClient(res);
   if (!client) return;
 
-  const lat = parseFloat(req.body?.lat);
-  const lng = parseFloat(req.body?.lng);
-  const hasUserLocation = Number.isFinite(lat) && Number.isFinite(lng);
+  const { lat, lng } = req.validated;
+  const hasUserLocation = typeof lat === "number" && typeof lng === "number";
 
   let interpreted;
   try {
@@ -721,7 +790,7 @@ app.post(
   // verifies the caller is signed in (requireAuth above), not that they
   // belong to any particular group, so it still can't safely look up a
   // group's own data itself.
-  const fallbackLocationText = (req.body?.fallbackLocationText || "").toString().trim() || null;
+  const fallbackLocationText = req.validated.fallbackLocationText || null;
   let usedFallbackLocation = false;
   if (!locationBias && fallbackLocationText) {
     locationBias = await geocode(fallbackLocationText);
@@ -750,8 +819,8 @@ app.post(
 // GET /restaurants/photo?name=<photo resource name>&maxWidthPx=<n>
 // Fetches an actual photo's bytes from Google using the server-side key and
 // streams them back — the app never talks to Google directly (same reason
-// as every other route here) and can just point an AsyncImage straight at
-// this URL. `name` is one of the stable "places/ID/photos/REF" strings
+// as every other route here). Requires a signed-in user like every other
+// billed route; the app loads it through RemoteImage, which sends the token. `name` is one of the stable "places/ID/photos/REF" strings
 // returned in `photoNames` from /restaurants/search (or saved on a
 // Restaurant) — call this once per photo, not all at once.
 // `name` gets spliced directly into the outbound URL's *path* below, so a
@@ -764,7 +833,12 @@ app.post(
 // match this shape is rejected outright rather than passed through.
 const PHOTO_NAME_PATTERN = /^places\/[^/?#&]+\/photos\/[^/?#&]+$/;
 
-app.get("/restaurants/photo", rateLimited(restaurantsPhotoIPLimiter, byIP), async (req, res) => {
+app.get(
+  "/restaurants/photo",
+  requireAuth,
+  rateLimited(restaurantsPhotoLimiter, byUserId),
+  rateLimited(restaurantsPhotoDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
+  async (req, res) => {
   const name = (req.query.name || "").toString().trim();
   if (!name) {
     return res.status(400).json({ error: "Missing required query param 'name'." });
@@ -792,14 +866,17 @@ app.get("/restaurants/photo", rateLimited(restaurantsPhotoIPLimiter, byIP), asyn
     const buffer = Buffer.from(await photoResponse.arrayBuffer());
     res.set("Content-Type", contentType);
     // Photos for a given place don't change often — safe to cache for a day
-    // rather than re-fetching (and re-billing) on every view.
-    res.set("Cache-Control", "public, max-age=86400");
+    // rather than re-fetching (and re-billing) on every view. `private`:
+    // the response now belongs to an authenticated request, so only the
+    // user's own device may cache it, not a shared cache.
+    res.set("Cache-Control", "private, max-age=86400");
     res.send(buffer);
   } catch (error) {
     console.error("Places photo media request threw", error);
     res.status(502).json({ error: "Couldn't fetch that photo." });
   }
-});
+  }
+);
 
 // GET /restaurants/details?placeId=<Google place id>
 // Powers the restaurant detail page's hours/phone/reviews — pulled only
@@ -910,11 +987,13 @@ const CITY_DETAILS_FIELD_MASK = "addressComponents";
 // /auth/verify-code` has already succeeded and saved a token (see
 // AccountSession.completeSignIn), so a valid Bearer token is always
 // available by the time this can be reached.
-app.get("/cities/search", requireAuth, rateLimited(citiesSearchLimiter, byUserId), async (req, res) => {
-  const query = (req.query.q || "").toString().trim();
-  if (!query) {
-    return res.status(400).json({ error: "Missing required query param 'q'." });
-  }
+app.get(
+  "/cities/search",
+  requireAuth,
+  validated("query", SearchQuerySchema),
+  rateLimited(citiesSearchLimiter, byUserId),
+  async (req, res) => {
+  const query = req.validated.q;
   if (!GOOGLE_PLACES_API_KEY) {
     return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY." });
   }
@@ -1023,14 +1102,36 @@ app.get("/cities/:placeID", requireAuth, rateLimited(citiesDetailsLimiter, byUse
 // imageBase64 or notesText required. Powers "add a recipe from a photo or
 // notes" instead of typing it all in by hand: a photo of a recipe card / a
 // screenshot / a handwritten note, plain typed notes, or both together.
-app.post("/recipes/extract", requireAuth, rateLimited(recipesExtractLimiter, byUserId), async (req, res) => {
+const EXTRACT_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const ExtractRequestSchema = z
+  .object({
+    notesText: z
+      .string("'notesText' must be text.")
+      .max(10000, "'notesText' can't be longer than 10,000 characters.")
+      .nullish(),
+    imageBase64: z
+      .string("'imageBase64' must be text.")
+      .max(7000000, "That photo is too large.")
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/, "'imageBase64' must be valid base64.")
+      .nullish(),
+    mediaType: z.enum(EXTRACT_MEDIA_TYPES, `'mediaType' must be one of ${EXTRACT_MEDIA_TYPES.join(", ")}.`).nullish(),
+  })
+  .refine((body) => Boolean(body.imageBase64) || Boolean(body.notesText && body.notesText.trim()), {
+    message: "Provide imageBase64 and/or notesText.",
+  });
+
+app.post(
+  "/recipes/extract",
+  requireAuth,
+  validated("body", ExtractRequestSchema),
+  rateLimited(recipesExtractLimiter, byUserId),
+  rateLimited(recipesExtractDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
+  rateLimited(aiGlobalDailyLimiter, forEveryone, GLOBAL_AI_LIMIT_MESSAGE),
+  async (req, res) => {
   const client = anthropicClient(res);
   if (!client) return;
 
-  const { imageBase64, mediaType, notesText } = req.body || {};
-  if (!imageBase64 && !notesText) {
-    return res.status(400).json({ error: "Provide imageBase64 and/or notesText." });
-  }
+  const { imageBase64, mediaType, notesText } = req.validated;
 
   const content = [];
   if (imageBase64) {
@@ -1066,7 +1167,8 @@ app.post("/recipes/extract", requireAuth, rateLimited(recipesExtractLimiter, byU
     console.error("Recipe extraction failed", error);
     res.status(502).json({ error: "Recipe extraction failed." });
   }
-});
+  }
+);
 
 // POST /recipes/recommend
 // Body: { ingredients: string[], excludeTitles?: string[] } — "what can I
@@ -1076,14 +1178,45 @@ app.post("/recipes/extract", requireAuth, rateLimited(recipesExtractLimiter, byU
 // "Show More Ideas" button (RecommendMealView) re-calling this with the
 // titles already shown, so a second batch is genuinely new suggestions
 // rather than Claude just repeating (or trivially rewording) the first one.
-app.post("/recipes/recommend", requireAuth, rateLimited(recipesRecommendLimiter, byUserId), async (req, res) => {
+const RecommendRequestSchema = z.object({
+  ingredients: z
+    .array(
+      z
+        .string("Each ingredient must be text.")
+        .trim()
+        .min(1, "Ingredients can't be empty.")
+        .max(80, "Each ingredient can be at most 80 characters."),
+      "'ingredients' must be a list."
+    )
+    .max(40, "List at most 40 ingredients.")
+    .optional()
+    .default([]),
+  excludeTitles: z
+    .array(
+      z
+        .string("Each title must be text.")
+        .trim()
+        .min(1, "Titles can't be empty.")
+        .max(200, "Each title can be at most 200 characters."),
+      "'excludeTitles' must be a list."
+    )
+    .max(40, "Send at most 40 titles to exclude.")
+    .optional()
+    .default([]),
+});
+
+app.post(
+  "/recipes/recommend",
+  requireAuth,
+  validated("body", RecommendRequestSchema),
+  rateLimited(recipesRecommendLimiter, byUserId),
+  rateLimited(recipesRecommendDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
+  rateLimited(aiGlobalDailyLimiter, forEveryone, GLOBAL_AI_LIMIT_MESSAGE),
+  async (req, res) => {
   const client = anthropicClient(res);
   if (!client) return;
 
-  const ingredients = Array.isArray(req.body?.ingredients) ? req.body.ingredients : [];
-  const excludeTitles = Array.isArray(req.body?.excludeTitles)
-    ? req.body.excludeTitles.filter((title) => typeof title === "string" && title.trim())
-    : [];
+  const { ingredients, excludeTitles } = req.validated;
 
   let prompt = ingredients.length
     ? `Suggest 4 recipes a home cook could make using mainly these ingredients (they can assume basic pantry staples like salt, oil, and water in addition): ${ingredients.join(", ")}.`
@@ -1111,7 +1244,8 @@ app.post("/recipes/recommend", requireAuth, rateLimited(recipesRecommendLimiter,
     console.error("Recipe recommendation failed", error);
     res.status(502).json({ error: "Recipe recommendation failed." });
   }
-});
+  }
+);
 
 // GET /recipes/web-search?q=<free text>
 // Real web results, not an AI-generated suggestion (`/recipes/recommend`
@@ -1137,11 +1271,13 @@ app.post("/recipes/recommend", requireAuth, rateLimited(recipesRecommendLimiter,
 // specific cooking sites: biases results toward actual recipes without
 // hard-coding (and constantly maintaining) a list of "real" recipe
 // domains, which would also shut out perfectly good ones not on it.
-app.get("/recipes/web-search", requireAuth, rateLimited(recipesWebSearchLimiter, byUserId), async (req, res) => {
-  const query = (req.query.q || "").toString().trim();
-  if (!query) {
-    return res.status(400).json({ error: "Missing required query param 'q'." });
-  }
+app.get(
+  "/recipes/web-search",
+  requireAuth,
+  validated("query", SearchQuerySchema),
+  rateLimited(recipesWebSearchLimiter, byUserId),
+  async (req, res) => {
+  const query = req.validated.q;
   if (!GOOGLE_CUSTOM_SEARCH_API_KEY) {
     return res.status(500).json({ error: "Server is missing GOOGLE_CUSTOM_SEARCH_API_KEY." });
   }
@@ -1197,10 +1333,9 @@ app.get("/recipes/web-search", requireAuth, rateLimited(recipesWebSearchLimiter,
 // recipe view. Proxying through here means the app only ever talks to
 // this server for images, same as `/restaurants/photo` above.
 //
-// Deliberately unauthenticated, same reasoning as `/restaurants/photo`:
-// AsyncImage has no way to attach an Authorization header to an image
-// load, so an endpoint it points at can't require one — rate-limited by
-// IP instead. `safeFetchImage` (lib/safeFetch.js) stops this route being
+// Requires a signed-in user and is rate-limited per user, same as
+// `/restaurants/photo`; the app loads it through RemoteImage, which sends
+// the token. `safeFetchImage` (lib/safeFetch.js) stops this route being
 // used to make *this server* fetch an internal target on an attacker's
 // behalf, since `url` here — unlike every other proxied request in this
 // file — can name literally any host, not just Google's. It checks every
@@ -1216,7 +1351,7 @@ const IMAGE_PROXY_ERROR_RESPONSES = {
   upstream: [502, "Couldn't fetch that image."],
 };
 
-app.get("/recipes/image-proxy", rateLimited(recipeImageProxyIPLimiter, byIP), async (req, res) => {
+app.get("/recipes/image-proxy", requireAuth, rateLimited(recipeImageProxyLimiter, byUserId), async (req, res) => {
   const rawURL = (req.query.url || "").toString().trim();
   if (!rawURL) {
     return res.status(400).json({ error: "Missing required query param 'url'." });
@@ -1243,8 +1378,9 @@ app.get("/recipes/image-proxy", rateLimited(recipeImageProxyIPLimiter, byIP), as
     // second-guessing it and treating the bytes as something else.
     res.set("X-Content-Type-Options", "nosniff");
     // A recipe's own imported photo essentially never changes once
-    // imported — same day-long cache as /restaurants/photo above.
-    res.set("Cache-Control", "public, max-age=86400");
+    // imported — same day-long, device-only (`private`) cache as
+    // /restaurants/photo above.
+    res.set("Cache-Control", "private, max-age=86400");
     res.send(buffer);
   } catch (error) {
     const kind = error instanceof ProxyError ? error.kind : "upstream";
@@ -1266,6 +1402,12 @@ app.get("/recipes/image-proxy", rateLimited(recipeImageProxyIPLimiter, byIP), as
 // other app.use/app.get/etc. call above.
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
+  // From express.json when a body is over its route's limit (see the
+  // largeJson/100kb setup near the top of this file).
+  if (err && err.type === "entity.too.large") {
+    if (res.headersSent) return;
+    return res.status(413).json({ error: "Request too large." });
+  }
   console.error("Unhandled error in request handler:", err);
   if (res.headersSent) return;
   res.status(500).json({ error: "Internal server error." });
