@@ -12,7 +12,7 @@ const { prisma } = require("../lib/prisma");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { sendPush } = require("../lib/apns");
-const { sendInviteSMS, inviteSMSBody } = require("../lib/twilio");
+const { trySendInviteSMS } = require("../lib/twilio");
 
 const router = express.Router();
 
@@ -280,11 +280,15 @@ router.post("/request", asyncHandler(async (req, res) => {
   }
   // Mirrors the push above for the "no account yet" branch — same
   // fire-and-forget, post-commit reasoning, just texted instead of pushed
-  // since there's no device to push to.
+  // since there's no device to push to. A fixed template with only the
+  // sanitized display name, subject to per-sender, per-recipient and
+  // global caps (see lib/twilio.js's trySendInviteSMS).
   if (result.smsInvitePhoneNumber) {
-    await sendInviteSMS({
+    await trySendInviteSMS({
+      senderUserId: req.userId,
+      senderName: me.displayName,
       to: result.smsInvitePhoneNumber,
-      body: inviteSMSBody(`${me.displayName || me.phoneNumber} wants to be friends on Home Eats.`),
+      kind: "friend",
     });
   }
 }));
