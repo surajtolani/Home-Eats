@@ -70,7 +70,8 @@ test("sanitizeNameForSMS never splits a character when cutting to 30", () => {
   const result = sanitizeNameForSMS("a".repeat(29) + "\u{20000}\u{20000}");
   assert.equal(Array.from(result).length, 30);
   assert.equal(result, "a".repeat(29) + "\u{20000}");
-  assert.ok(result.isWellFormed ? result.isWellFormed() : !/[\uD800-\uDFFF](?![\uDC00-\uDFFF])/.test(result));
+  // A lone surrogate wouldn't survive a UTF-8 round trip (it becomes U+FFFD).
+  assert.equal(Buffer.from(result, "utf8").toString("utf8"), result);
 });
 
 test("sanitizeNameForSMS output is at most 30 characters", () => {
