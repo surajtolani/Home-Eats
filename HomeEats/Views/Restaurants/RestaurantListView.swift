@@ -577,12 +577,10 @@ struct RestaurantThumbnail: View {
     var body: some View {
         Group {
             if let googlePhotoName, let url = GooglePlacesService.photoURL(for: googlePhotoName, maxWidthPx: Int(size) * 2) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        placeholder
-                    }
+                RemoteImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    placeholder
                 }
             } else {
                 placeholder

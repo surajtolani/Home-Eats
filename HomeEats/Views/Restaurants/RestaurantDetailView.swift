@@ -435,12 +435,10 @@ private struct PhotoCarousel: View {
         TabView {
             ForEach(photoNames, id: \.self) { photoName in
                 if let url = GooglePlacesService.photoURL(for: photoName, maxWidthPx: 900) {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFill()
-                        } else {
-                            Color.secondary.opacity(0.12)
-                        }
+                    RemoteImage(url: url) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Color.secondary.opacity(0.12)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
