@@ -10,7 +10,7 @@ test("billing safeguards", async (t) => {
   // No paid API is configured in tests, so a request that got past input
   // validation would reach the route and fail with a "Server is missing ..."
   // 500. A 400 therefore proves validation ran first.
-  for (const name of ["ANTHROPIC_API_KEY", "GOOGLE_PLACES_API_KEY", "GOOGLE_CUSTOM_SEARCH_API_KEY", "GOOGLE_CUSTOM_SEARCH_CX", "AI_DAILY_GLOBAL_MAX"]) {
+  for (const name of ["ANTHROPIC_API_KEY", "GOOGLE_PLACES_API_KEY", "GOOGLE_CUSTOM_SEARCH_API_KEY", "GOOGLE_CUSTOM_SEARCH_CX", "AI_DAILY_USER_MAX"]) {
     delete process.env[name];
   }
   const server = await startTestServer();
@@ -163,42 +163,62 @@ test("billing safeguards", async (t) => {
     assert.equal(valid.status, 500); // reached the route: not rate-limited
   });
 
-  await t.test("per-user daily caps return 429 with a 'tomorrow' message", async () => {
+  const AI_REQUESTS = [
+    ["/recipes/extract", { notesText: "eggs" }],
+    ["/recipes/recommend", {}],
+    ["/restaurants/search-natural", { query: "pizza" }],
+  ];
+  const AI_DAILY_MESSAGE = "You've reached today's limit for AI features. Please try again tomorrow.";
+
+  await t.test("each user gets 40 AI requests per day, shared across the three AI routes", async () => {
     await resetDatabase();
-    const message = "You've reached today's limit for this feature. Please try again tomorrow.";
-    for (const [limiterName, max, method, path, body] of [
-      ["recipes-extract-daily:user", 50, "POST", "/recipes/extract", { notesText: "eggs" }],
-      ["recipes-recommend-daily:user", 50, "POST", "/recipes/recommend", {}],
-      ["restaurants-search-natural-daily:user", 100, "POST", "/restaurants/search-natural", { query: "pizza" }],
-      ["restaurants-photo-daily:user", 1000, "GET", "/restaurants/photo?name=places/a/photos/b", undefined],
-    ]) {
+    // Days are UTC calendar days; don't straddle midnight.
+    const msToMidnight = DAY_MS - (Date.now() % DAY_MS);
+    if (msToMidnight < 30_000) await new Promise((resolve) => setTimeout(resolve, msToMidnight + 100));
+    const { headers } = await newAuth();
+    // 40 requests rotating through the three routes (14/13/13, each under
+    // its own hourly limit). Each reaches the route, which then fails on
+    // the missing API key.
+    for (let i = 0; i < 40; i += 1) {
+      const [path, body] = AI_REQUESTS[i % 3];
       // eslint-disable-next-line no-await-in-loop
-      const { user, headers } = await newAuth();
+      const res = await call("POST", path, { headers, body });
+      assert.equal(res.status, 500, `request ${i + 1} (${path})`);
+    }
+    // The 41st, on any of the three routes, is over the shared allowance.
+    for (const [path, body] of AI_REQUESTS) {
       // eslint-disable-next-line no-await-in-loop
-      await seedBucket(`${limiterName}:${user.id}`, max);
+      const res = await call("POST", path, { headers, body });
+      assert.deepEqual(res, { status: 429, json: { error: AI_DAILY_MESSAGE } }, path);
+    }
+    // Non-AI paid routes don't count toward it.
+    const search = await call("GET", "/restaurants/search?q=pizza", { headers });
+    assert.equal(search.status, 500);
+  });
+
+  await t.test("one user's AI usage never blocks another user (no deployment-wide cap)", async () => {
+    await resetDatabase();
+    const heavy = await newAuth();
+    await seedBucket(`ai-daily:user:${heavy.user.id}`, 40);
+    const blocked = await call("POST", "/recipes/recommend", { headers: heavy.headers, body: {} });
+    assert.equal(blocked.status, 429);
+    const other = await newAuth();
+    for (const [path, body] of AI_REQUESTS) {
       // eslint-disable-next-line no-await-in-loop
-      const res = await call(method, path, { headers, body });
-      assert.deepEqual(res, { status: 429, json: { error: message } }, path);
+      const res = await call("POST", path, { headers: other.headers, body });
+      assert.equal(res.status, 500, path);
     }
   });
 
-  await t.test("the deployment-wide AI cap (default 2000/day) covers all three AI routes", async () => {
+  await t.test("each user gets 1000 restaurant photos per day", async () => {
     await resetDatabase();
-    await seedBucket("ai:global:all", 2000);
-    const { headers } = await newAuth();
-    const message = "This feature has reached its limit for today. Please try again tomorrow.";
-    for (const [path, body] of [
-      ["/recipes/extract", { notesText: "eggs" }],
-      ["/recipes/recommend", {}],
-      ["/restaurants/search-natural", { query: "pizza" }],
-    ]) {
-      // eslint-disable-next-line no-await-in-loop
-      const res = await call("POST", path, { headers, body });
-      assert.deepEqual(res, { status: 429, json: { error: message } }, path);
-    }
-    // Non-AI paid routes aren't covered by it.
-    const search = await call("GET", "/restaurants/search?q=pizza", { headers });
-    assert.equal(search.status, 500);
+    const { user, headers } = await newAuth();
+    await seedBucket(`restaurants-photo-daily:user:${user.id}`, 1000);
+    const res = await call("GET", "/restaurants/photo?name=places/a/photos/b", { headers });
+    assert.deepEqual(res, {
+      status: 429,
+      json: { error: "You've reached today's limit for this feature. Please try again tomorrow." },
+    });
   });
 
   await t.test("body size limits: 100 KB by default, 8 MB for photo routes", async () => {

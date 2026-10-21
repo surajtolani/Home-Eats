@@ -1120,12 +1120,13 @@ nothing to sync it to across devices, so a restored entry simply has no
   - `GET /restaurants/search`, `/cities/search`, `/recipes/web-search`:
     `q` 1–200 characters.
 - **Daily limits.** On top of the hourly per-user limits, each user can
-  make at most 50 recipe extractions, 50 recommendations, 100
-  natural-language restaurant searches and 1000 restaurant photo loads per
-  day (days start at midnight UTC). The three AI routes together are also
-  capped for the whole deployment at `AI_DAILY_GLOBAL_MAX` per day (default
-  2000). Over any of these, the route returns `429` with a "try again
-  tomorrow" message. The image routes (`/restaurants/photo`,
+  make at most `AI_DAILY_USER_MAX` (default 40) AI requests per day in
+  total across `/recipes/extract`, `/recipes/recommend` and
+  `/restaurants/search-natural`, and 1000 restaurant photo loads per day
+  (days start at midnight UTC). Over either, the route returns `429` with a
+  "try again tomorrow" message. There's no deployment-wide AI cap, so one
+  heavy user can't block everyone else; set a spend limit in the Anthropic
+  Console as the overall backstop. The image routes (`/restaurants/photo`,
   `/recipes/image-proxy`) require a signed-in user and are limited per user.
 - `Group.createdByUserId` is nullable (`onDelete: SetNull` on its relation
   to `User`) rather than the group cascading away when its creator's

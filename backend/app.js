@@ -114,33 +114,33 @@ const restaurantsPhotoLimiter = createRateLimiter({ name: "restaurants-photo:use
 const recipeImageProxyLimiter = createRateLimiter({ name: "recipe-image-proxy:user", windowMs: 60 * 60 * 1000, max: 600 });
 
 // Daily ceilings on the routes that cost the most, on top of the hourly
-// limits above: a per-user cap on each, and one shared cap on all three AI
-// routes together, AI_DAILY_GLOBAL_MAX (default 2000), as a circuit
-// breaker for the whole deployment's Anthropic spend.
+// limits above. The three AI routes (recipe extract, recipe recommend and
+// natural-language restaurant search) share one allowance per user per day,
+// AI_DAILY_USER_MAX (default 40). There's deliberately no deployment-wide
+// cap, so one heavy user can't block AI features for everyone; the spend
+// limit set in the Anthropic Console is the overall backstop. Days start at
+// midnight UTC.
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_AI_DAILY_GLOBAL_MAX = 2000;
-function aiDailyGlobalMax() {
-  const raw = process.env.AI_DAILY_GLOBAL_MAX;
-  if (raw === undefined || raw.trim() === "") return DEFAULT_AI_DAILY_GLOBAL_MAX;
+const DEFAULT_AI_DAILY_USER_MAX = 40;
+function aiDailyUserMax() {
+  const raw = process.env.AI_DAILY_USER_MAX;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_AI_DAILY_USER_MAX;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 0) {
-    console.error(`AI_DAILY_GLOBAL_MAX=${JSON.stringify(raw)} is not a whole number; using ${DEFAULT_AI_DAILY_GLOBAL_MAX}`);
-    return DEFAULT_AI_DAILY_GLOBAL_MAX;
+    console.error(`AI_DAILY_USER_MAX=${JSON.stringify(raw)} is not a whole number; using ${DEFAULT_AI_DAILY_USER_MAX}`);
+    return DEFAULT_AI_DAILY_USER_MAX;
   }
   return parsed;
 }
-const recipesExtractDailyLimiter = createRateLimiter({ name: "recipes-extract-daily:user", windowMs: DAY_MS, max: 50 });
-const recipesRecommendDailyLimiter = createRateLimiter({ name: "recipes-recommend-daily:user", windowMs: DAY_MS, max: 50 });
-const restaurantsSearchNaturalDailyLimiter = createRateLimiter({ name: "restaurants-search-natural-daily:user", windowMs: DAY_MS, max: 100 });
+const aiDailyUserLimiter = createRateLimiter({ name: "ai-daily:user", windowMs: DAY_MS, max: aiDailyUserMax() });
 const restaurantsPhotoDailyLimiter = createRateLimiter({ name: "restaurants-photo-daily:user", windowMs: DAY_MS, max: 1000 });
-const aiGlobalDailyLimiter = createRateLimiter({ name: "ai:global", windowMs: DAY_MS, max: aiDailyGlobalMax() });
+const AI_DAILY_LIMIT_MESSAGE = "You've reached today's limit for AI features. Please try again tomorrow.";
 const DAILY_LIMIT_MESSAGE = "You've reached today's limit for this feature. Please try again tomorrow.";
-const GLOBAL_AI_LIMIT_MESSAGE = "This feature has reached its limit for today. Please try again tomorrow.";
 
 // A small middleware factory wrapping lib/rateLimit.js's `check` in
 // Express's usual (req, res, next) shape — `keyFn` picks what to key the
-// limit on (req.userId once requireAuth has run, or "all" for a
-// deployment-wide cap). None of these limiters is `failClosed`, so a
+// limit on (req.userId once requireAuth has run). None of these limiters
+// is `failClosed`, so a
 // database error during the check lets the request through
 // (lib/rateLimit.js logs it) rather than taking these routes down.
 function rateLimited(limiter, keyFn, message = "Too many requests. Please try again shortly.") {
@@ -155,7 +155,6 @@ function rateLimited(limiter, keyFn, message = "Too many requests. Please try ag
 }
 
 const byUserId = (req) => req.userId;
-const forEveryone = () => "all";
 
 // Validates `req.body` or `req.query` against a Zod schema before anything
 // else on the route runs, so oversized or malformed input gets a 400 without
@@ -718,8 +717,7 @@ app.post(
   requireAuth,
   validated("body", NaturalSearchRequestSchema),
   rateLimited(restaurantsSearchNaturalLimiter, byUserId),
-  rateLimited(restaurantsSearchNaturalDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
-  rateLimited(aiGlobalDailyLimiter, forEveryone, GLOBAL_AI_LIMIT_MESSAGE),
+  rateLimited(aiDailyUserLimiter, byUserId, AI_DAILY_LIMIT_MESSAGE),
   async (req, res) => {
   const query = req.validated.query;
   if (!GOOGLE_PLACES_API_KEY) {
@@ -1127,8 +1125,7 @@ app.post(
   requireAuth,
   validated("body", ExtractRequestSchema),
   rateLimited(recipesExtractLimiter, byUserId),
-  rateLimited(recipesExtractDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
-  rateLimited(aiGlobalDailyLimiter, forEveryone, GLOBAL_AI_LIMIT_MESSAGE),
+  rateLimited(aiDailyUserLimiter, byUserId, AI_DAILY_LIMIT_MESSAGE),
   async (req, res) => {
   const client = anthropicClient(res);
   if (!client) return;
@@ -1216,8 +1213,7 @@ app.post(
   requireAuth,
   validated("body", RecommendRequestSchema),
   rateLimited(recipesRecommendLimiter, byUserId),
-  rateLimited(recipesRecommendDailyLimiter, byUserId, DAILY_LIMIT_MESSAGE),
-  rateLimited(aiGlobalDailyLimiter, forEveryone, GLOBAL_AI_LIMIT_MESSAGE),
+  rateLimited(aiDailyUserLimiter, byUserId, AI_DAILY_LIMIT_MESSAGE),
   async (req, res) => {
   const client = anthropicClient(res);
   if (!client) return;
