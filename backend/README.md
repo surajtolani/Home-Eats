@@ -1104,6 +1104,16 @@ nothing to sync it to across devices, so a restored entry simply has no
   (seconds) with their `429`. `app.js` sets `app.set("trust proxy", 1)` so
   the per-IP limits see the real client IP through Render's reverse proxy
   rather than the proxy's own address.
+- **Phone numbers in logs.** Server logs never contain a full phone
+  number. The `[request-code]` sign-in log and the `[invite-sms]` log show
+  it redacted (`+1•••••1234`: country code and last 4 digits) plus a
+  12-character keyed hash (`phoneKey`/`toKey`, an HMAC with
+  `LOG_HASH_SECRET`, falling back to `JWT_SECRET`), so repeated hits on one
+  number can still be matched up. Error logs from Twilio, Prisma and the
+  catch-all error handler have phone numbers masked. Rate-limit keys that
+  involve a phone number store the same hash, not the number. Push and SMS
+  text never falls back to someone's phone number when they have no
+  display name ("Someone" instead). See `lib/redact.js`.
 - **Request size and input limits.** JSON bodies are capped at 100 KB,
   except `/recipes/extract` and `/recipe-library`, which carry a base64
   photo and allow 8 MB. A larger body gets `413 { "error": "Request too

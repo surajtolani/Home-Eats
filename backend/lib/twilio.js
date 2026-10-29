@@ -6,6 +6,7 @@
 
 const twilio = require("twilio");
 const { reserveQuotas } = require("./rateLimit");
+const { redactPhone, phoneLogKey, describeError } = require("./redact");
 
 // Set only by tests (see `__setClientForTests` below) so invite SMS can be
 // captured without real Twilio credentials.
@@ -50,7 +51,9 @@ async function sendInviteSMS({ to, body }) {
     await client.messages.create({ to, from: fromNumber, body });
     return true;
   } catch (error) {
-    console.error("Invite SMS send failed", error);
+    // describeError, not the error object: Twilio's error can echo the
+    // number the text was sent to.
+    console.error("Invite SMS send failed", describeError(error));
     return false;
   }
 }
@@ -153,9 +156,10 @@ function inviteSMSAllowedCountryCodes() {
   return codes;
 }
 
-// Only the last 4 digits ever reach the logs.
+// How a recipient appears in the logs: redacted (country code and last 4
+// digits) plus the same keyed hash used in sign-in logs, never in full.
 function maskPhoneForLog(phoneNumber) {
-  return `***${String(phoneNumber).slice(-4)}`;
+  return `${redactPhone(phoneNumber)} toKey=${phoneLogKey(phoneNumber)}`;
 }
 
 // Sends one invite SMS if every safeguard allows it, otherwise skips it.
@@ -183,7 +187,8 @@ async function trySendInviteSMS({ senderUserId, senderName, to, kind }) {
     let reservation;
     try {
       reservation = await reserveQuotas([
-        { reason: "recipient-limit", key: `invite-sms:recipient:${to}`, windowMs: 7 * DAY_MS, max: 1 },
+        // Keyed by a hash of the number, so the table never stores it.
+        { reason: "recipient-limit", key: `invite-sms:recipient:${phoneLogKey(to)}`, windowMs: 7 * DAY_MS, max: 1 },
         {
           reason: "sender-day-limit",
           key: `invite-sms:sender-day:${senderUserId}`,
@@ -204,7 +209,7 @@ async function trySendInviteSMS({ senderUserId, senderName, to, kind }) {
         },
       ]);
     } catch (error) {
-      console.error("[invite-sms] cap check failed", error);
+      console.error("[invite-sms] cap check failed", describeError(error));
       return logSkip("cap-check-failed", console.error);
     }
     if (!reservation.allowed) {
@@ -222,7 +227,7 @@ async function trySendInviteSMS({ senderUserId, senderName, to, kind }) {
       console.error(`[invite-sms] failed reason=twilio-error kind=${kind} sender=${senderUserId} to=${maskPhoneForLog(to)}`);
     }
   } catch (error) {
-    console.error("[invite-sms] unexpected error", error);
+    console.error("[invite-sms] unexpected error", describeError(error));
   }
 }
 

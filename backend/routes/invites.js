@@ -198,7 +198,7 @@ router.post("/:inviteId/accept", asyncHandler(async (req, res) => {
   await sendPush({
     deviceTokens: deviceTokens.map((row) => row.token),
     title: "Group Invite Accepted",
-    body: `${me?.displayName || me?.phoneNumber || "Someone"} joined "${group?.name || "your group"}" on Home Eats.`,
+    body: `${me?.displayName || "Someone"} joined "${group?.name || "your group"}" on Home Eats.`,
     payload: { type: "groupInviteAccepted", groupId: invite.groupId },
   });
 }));

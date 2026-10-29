@@ -21,6 +21,7 @@ const { requireAuth } = require("./middleware/requireAuth");
 const { createRateLimiter } = require("./lib/rateLimit");
 const { asyncHandler } = require("./lib/asyncHandler");
 const { safeFetchImage, ProxyError } = require("./lib/safeFetch");
+const { redactPhonesInText } = require("./lib/redact");
 const authRouter = require("./routes/auth");
 const meRouter = require("./routes/me");
 const friendsRouter = require("./routes/friends");
@@ -1416,7 +1417,9 @@ app.use((err, req, res, next) => {
     if (res.headersSent) return;
     return res.status(err.status).json({ error: "Invalid request body." });
   }
-  console.error("Unhandled error in request handler:", err);
+  // The stack (which starts with the message) with any phone numbers
+  // masked: a Prisma error can quote the arguments it was called with.
+  console.error("Unhandled error in request handler:", redactPhonesInText(err?.stack || err));
   if (res.headersSent) return;
   res.status(500).json({ error: "Internal server error." });
 });

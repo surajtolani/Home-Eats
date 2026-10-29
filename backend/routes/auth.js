@@ -17,6 +17,7 @@ const { twilioClient } = require("../lib/twilio");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { createRateLimiter } = require("../lib/rateLimit");
+const { redactPhone, phoneLogKey, describeError } = require("../lib/redact");
 // Reuses routes/me.js's own `selfProfile` (attached to its exported router
 // — see that file's doc comment) so this response and GET/PATCH /me's
 // response can never drift apart on shape.
@@ -137,8 +138,8 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // should still find the hourly limit accurately reflects how many
   // actually went through.
   const [burst, phone, ip] = await Promise.all([
-    requestCodePhoneBurstLimiter.check(phoneNumber),
-    requestCodePhoneLimiter.check(phoneNumber),
+    requestCodePhoneBurstLimiter.check(phoneLogKey(phoneNumber)),
+    requestCodePhoneLimiter.check(phoneLogKey(phoneNumber)),
     requestCodeIPLimiter.check(req.ip),
   ]);
   const burstLimited = burst.limited;
@@ -148,18 +149,20 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // that this server has no other way to investigate (Render's own log
   // retention is the only record of this route being hit at all — there's
   // no separate audit table). Logs to stdout/Render's log stream only,
-  // never returned in any API response to any caller — the phone number
-  // here is already this account owner's own number by definition (it's
-  // what request-code was called with), and req.ip is the actual source of
-  // the request, which is exactly what's needed to tell "the owner's own
-  // device" apart from anything else. Intentionally logs every request,
-  // limited or not, so a blocked burst still shows up here.
+  // never returned in any API response to any caller. The phone number is
+  // never logged in full: `phone` is redacted (country code and last 4
+  // digits) and `phoneKey` is a keyed hash (lib/redact.js), which is enough
+  // to see repeated hits on one number without storing the number. req.ip
+  // is the actual source of the request, which is exactly what's needed to
+  // tell "the owner's own device" apart from anything else. Intentionally
+  // logs every request, limited or not, so a blocked burst still shows up
+  // here.
   // `ua` added after a repeat report with no resolution from ip alone: the
   // User-Agent tells the iOS app (CFNetwork/Darwin) apart from curl, a
   // script, or another client sharing these Twilio credentials, which is
   // exactly the question the ip by itself couldn't settle.
   console.log(
-    `[request-code] phone=${phoneNumber} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
+    `[request-code] phone=${redactPhone(phoneNumber)} phoneKey=${phoneLogKey(phoneNumber)} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
   );
   if ([burst, phone, ip].some((r) => r.limited && r.error)) {
     return res.status(503).json({ error: RATE_LIMIT_UNAVAILABLE_ERROR });
@@ -184,7 +187,7 @@ router.post("/request-code", asyncHandler(async (req, res) => {
     // Twilio errors here cover things like an unreachable/invalid number,
     // or Verify's own rate-limiting kicking in — all of which are "this
     // request didn't work", not a bug in this server.
-    console.error("Twilio Verify send failed", error);
+    console.error("Twilio Verify send failed", describeError(error));
     res.status(502).json({ error: "Couldn't send a verification code. Check the number and try again." });
   }
 }));
@@ -215,7 +218,7 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
   // Checked (and counted) after body validation, before the billed Twilio
   // call — same ordering reasoning as /request-code's own limiters above.
   const [phone, ip] = await Promise.all([
-    verifyCodePhoneLimiter.check(phoneNumber),
+    verifyCodePhoneLimiter.check(phoneLogKey(phoneNumber)),
     verifyCodeIPLimiter.check(req.ip),
   ]);
   if ([phone, ip].some((r) => r.limited && r.error)) {
@@ -247,7 +250,7 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
     // several invalid-input cases, e.g. no pending verification exists for
     // this number at all — treat that the same as a wrong/expired code
     // rather than surfacing it as a server error.
-    console.error("Twilio Verify check failed", error);
+    console.error("Twilio Verify check failed", describeError(error));
     return res.status(400).json({ error: "Invalid or expired code." });
   }
 
@@ -329,7 +332,8 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
       user: meRouter.selfProfile(user),
     });
   } catch (error) {
-    console.error("Signup/verify transaction failed", error);
+    // describeError: a Prisma error message can quote the phone number.
+    console.error("Signup/verify transaction failed", describeError(error));
     res.status(500).json({ error: "Couldn't complete sign-in." });
   }
 }));

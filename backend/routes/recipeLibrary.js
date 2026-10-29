@@ -593,7 +593,7 @@ router.post("/:recipeId/share", asyncHandler(async (req, res) => {
   // suggestion queue and every other group-wide notice in this app already
   // uses.
   const me = await prisma.user.findUnique({ where: { id: req.userId } });
-  const sharerName = me?.displayName || me?.phoneNumber || "Someone";
+  const sharerName = me?.displayName || "Someone";
   if (userId) {
     const deviceTokens = (await prisma.deviceToken.findMany({
       where: { userId },
