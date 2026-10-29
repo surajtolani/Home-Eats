@@ -8,7 +8,7 @@
 //
 // Same "lazily constructed, returns null instead of throwing when
 // credentials are missing" shape as `twilioClient()`
-// (backend/lib/twilio.js) and `anthropicClient()` (backend/index.js) — a
+// (backend/lib/twilio.js) and `anthropicClient()` (backend/app.js) — a
 // push send is best-effort background work triggered as a side effect of
 // something else (creating a friend request, a group invite), never
 // something a request is waiting on, so a missing/misconfigured deployment

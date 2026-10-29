@@ -18,7 +18,7 @@
 // "become my friend" Invite (`groupId` null) is deliberately out of scope
 // here and unaffected by any of this file.
 //
-// Mounted at /invites in index.js, behind requireAuth like every other
+// Mounted at /invites in app.js, behind requireAuth like every other
 // authenticated route in this app.
 "use strict";
 
@@ -198,7 +198,7 @@ router.post("/:inviteId/accept", asyncHandler(async (req, res) => {
   await sendPush({
     deviceTokens: deviceTokens.map((row) => row.token),
     title: "Group Invite Accepted",
-    body: `${me?.displayName || me?.phoneNumber || "Someone"} joined "${group?.name || "your group"}" on Home Eats.`,
+    body: `${me?.displayName || "Someone"} joined "${group?.name || "your group"}" on Home Eats.`,
     payload: { type: "groupInviteAccepted", groupId: invite.groupId },
   });
 }));

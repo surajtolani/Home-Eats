@@ -1,6 +1,6 @@
 // Recipe sharing (Phase 2a) — recipes moving from purely on-device storage
 // to something that can be shared between people, on top of the friends/
-// groups layer built in Phase 1. Mounted at `/recipe-library` in index.js
+// groups layer built in Phase 1. Mounted at `/recipe-library` in app.js
 // (deliberately NOT under `/recipes/*`, even though nothing here collides
 // method+path with the existing `/recipes/extract`/`/recipes/recommend` —
 // those are unrelated, Claude-powered routes registered directly on `app`
@@ -8,7 +8,7 @@
 // router), and keeping this feature's CRUD+sharing API under its own
 // distinct prefix avoids any risk of the two ever being confused with each
 // other, in code or in the README). Every route here requires auth
-// (mounted behind requireAuth in index.js), same as friends/groups.
+// (mounted behind requireAuth in app.js), same as friends/groups.
 "use strict";
 
 const express = require("express");
@@ -133,8 +133,9 @@ const MAX_INSTRUCTIONS = 200;
 // for upload — see `RecipeSharePickerSheet`/`RecipeEditorView` — typically
 // well under 500KB) while still bounding how much a single misbehaving or
 // malicious request can bloat this table: a 5MB decoded photo is ~6.7MB of
-// base64 JSON, comfortably inside the global 15mb `express.json` body limit
-// (see index.js) with room for the rest of the request body around it.
+// base64 JSON, inside the 8 MB `express.json` body limit app.js gives
+// /recipe-library (every other route gets 100 KB), with room for the rest
+// of the request body around it.
 const MAX_PHOTO_BYTES_DECODED = 5 * 1024 * 1024; // 5MB
 
 // `Buffer.byteLength(str, "base64")` computes the decoded size directly
@@ -592,7 +593,7 @@ router.post("/:recipeId/share", asyncHandler(async (req, res) => {
   // suggestion queue and every other group-wide notice in this app already
   // uses.
   const me = await prisma.user.findUnique({ where: { id: req.userId } });
-  const sharerName = me?.displayName || me?.phoneNumber || "Someone";
+  const sharerName = me?.displayName || "Someone";
   if (userId) {
     const deviceTokens = (await prisma.deviceToken.findMany({
       where: { userId },

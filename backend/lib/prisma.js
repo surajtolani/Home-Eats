@@ -1,6 +1,6 @@
 // A single shared PrismaClient instance, reused across every request and
 // route file. Same reasoning as the `const anthropic = new Anthropic();`
-// line in index.js — Prisma is designed to be instantiated once per process
+// line in app.js — Prisma is designed to be instantiated once per process
 // (it manages its own connection pool internally) rather than constructed
 // per-request, which would open a fresh pool on every call.
 //

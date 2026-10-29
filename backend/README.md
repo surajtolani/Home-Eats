@@ -166,12 +166,19 @@ curl -X POST "http://localhost:4000/recipes/recommend" \
 curl "http://localhost:4000/recipes/web-search?q=crepes" \
   -H "Authorization: Bearer <token>"
 # ^ needs GOOGLE_CUSTOM_SEARCH_API_KEY + GOOGLE_CUSTOM_SEARCH_CX set (see
-# that route's own doc comment in index.js for how to get them) — 500s with
+# that route's own doc comment in app.js for how to get them) — 500s with
 # a clear "Server is missing ..." message otherwise, same as every other
 # optionally-configured integration here.
 
-# /restaurants/photo and /recipes/image-proxy stay unauthenticated (an
-# AsyncImage load can't attach a header) but are rate-limited by IP instead.
+# /restaurants/photo and /recipes/image-proxy also need the token (the iOS
+# app loads them with RemoteImage, which sends it):
+curl "http://localhost:4000/restaurants/photo?name=places/<id>/photos/<ref>" \
+  -H "Authorization: Bearer <token>" --output photo.jpg
+# /recipes/image-proxy fetches through lib/safeFetch.js: http/https on
+# ports 80/443 only, at most 3 redirects (each re-checked), no private,
+# loopback, link-local or other internal addresses (checked at connect
+# time), image/* only (not SVG), 8 MB max, 10 s overall. Anything else is
+# a fixed 400/413/502 with no detail from the upstream server.
 
 # Recipe sharing: create a recipe, then list "my recipes"
 curl -X POST "http://localhost:4000/recipe-library" \
@@ -179,6 +186,43 @@ curl -X POST "http://localhost:4000/recipe-library" \
   -d '{"title": "Weeknight Chili", "ingredients": [{"name": "ground beef", "quantity": 1, "unit": "lb"}], "instructions": ["Brown the beef.", "Add spices and simmer."]}'
 curl "http://localhost:4000/recipe-library/mine" -H "Authorization: Bearer <token>"
 ```
+
+### Running tests
+
+Tests use Node's built-in test runner (`node:test`); there's nothing extra
+to install. The Express app lives in `app.js` and `index.js` only connects
+to Postgres and starts listening, so tests can load the app without a real
+server.
+
+**Unit tests only** (no database needed). Integration tests show as
+skipped:
+
+```bash
+cd backend
+npm test
+```
+
+**Unit and integration tests.** Integration tests make real HTTP requests
+to the app against a throwaway Postgres that you name with
+`TEST_DATABASE_URL`. They **empty every table** in that database before
+running, so never point it at a database whose data you care about.
+
+```bash
+# Start a disposable Postgres on port 5433
+docker run --rm -d --name home-eats-test-db -e POSTGRES_PASSWORD=pw -p 5433:5432 postgres:16
+
+cd backend
+DATABASE_URL=postgresql://postgres:pw@localhost:5433/postgres npx prisma migrate deploy
+TEST_DATABASE_URL=postgresql://postgres:pw@localhost:5433/postgres npm test
+
+# Stop it when you're done (--rm deletes it)
+docker stop home-eats-test-db
+```
+
+Run `npx prisma migrate deploy` against the test database again after
+pulling a change that adds a migration. `npm test` runs test files one at a
+time (`--test-concurrency=1`) because they share that one database and some
+of them empty it.
 
 ## 3. Deploy it (Render, same as the pattern used elsewhere)
 
@@ -224,7 +268,7 @@ curl "http://localhost:4000/recipe-library/mine" -H "Authorization: Bearer <toke
       `GOOGLE_CUSTOM_SEARCH_API_KEY`.
    3. Free tier is 100 queries/day across this whole deployment, then
       billed per 1,000 queries — see that page's own pricing section.
-      `recipesWebSearchLimiter` in index.js caps this per signed-in user
+      `recipesWebSearchLimiter` in app.js caps this per signed-in user
       to blunt runaway usage, not to reflect real expected traffic.
 6. Deploy. Render gives you a URL like `https://home-eats-backend.onrender.com`.
 
@@ -476,8 +520,10 @@ response has the shape `{ "error": "..." }`.
 
 | Method | Path | Auth | Body | Notes |
 |---|---|---|---|---|
-| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). Rate-limited (see "Rate limiting" below); `429` if exceeded. |
-| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code; finds-or-creates the `User`, turns any pending `Invite`s for that number into ordinary `PENDING` friend requests (see "Invites and consent" above — this does **not** auto-accept a friendship or auto-join a group), and returns `{ token, user }`. |
+| POST | `/auth/request-code` | none | `{ phoneNumber }` | Sends an SMS code via Twilio Verify. `phoneNumber` must be E.164 (e.g. `+14155551234`). Rate-limited (see "Rate limiting" below); `429` if exceeded, `503` if the rate-limit check itself can't reach the database. |
+| POST | `/auth/verify-code` | none | `{ phoneNumber, code }` | Checks the code; finds-or-creates the `User`, turns any pending `Invite`s for that number into ordinary `PENDING` friend requests (see "Invites and consent" above — this does **not** auto-accept a friendship or auto-join a group), and returns `{ token, user }`. Rate-limited (see "Rate limiting" below); `429` if exceeded, `503` if the rate-limit check itself can't reach the database. |
+| POST | `/auth/sign-out` | required | `{ deviceToken? }` | Removes this device's push registration (the `DeviceToken` row matching both `deviceToken` and the caller), so it stops getting the account's notifications. Only ever deletes the caller's own row. `204` whether or not anything matched. The iOS app calls it on an explicit Sign Out, before forgetting its token. Doesn't revoke the token itself. |
+| POST | `/auth/sign-out-all` | required | — | "Sign out of all devices": in one transaction, increments `User.tokenVersion` (every token issued so far now gets `401`) and deletes all of the caller's `DeviceToken` rows. `204`. |
 | GET | `/me` | required | — | Returns `{ user: { id, phoneNumber, displayName, firstName, lastName, city, state, country, createdAt, profileComplete } }` for the caller. `profileComplete` is a derived boolean (`true` once `firstName`/`lastName`/`city`/`state`/`country` are all non-empty) — the client-side app treats those five fields as mandatory before letting someone past onboarding (see the iOS `RootView`'s completion gate), but that's an application-level rule, not a database constraint: all five columns stay nullable so an account that predates this requirement (or one instantiated via `POST /auth/verify-code` a moment ago, before it has filled anything in) still loads without error, just with `profileComplete: false`. |
 | PATCH | `/me` | required | `{ displayName?, firstName?, lastName?, city?, state?, country? }` | Partial update — any subset of these fields, all independently optional; omitted keys are left alone. Each provided field must be non-empty (`400` otherwise — none of these are meant to be clearable back to `null` once set). `400` if the body has none of these keys at all. Returns the updated `{ user }` in the same shape as `GET /me`. Note that this endpoint's own optionality is unrelated to `profileComplete` above — a client is expected to call this once per field while onboarding (or edit one field at a time later from Settings), not send all five at once. |
 | POST | `/friends/request` | required | `{ phoneNumber }` | Sends a friend request. If that number belongs to an existing user with no prior relationship, creates a `PENDING` `Friendship`; if a request in the other direction was already pending, this accepts it instead (`200`, `{ friendship, autoAccepted: true }`). If the number isn't a user yet, creates an `Invite` (no group). The first two of those report back identically — `201`, `{ "status": "requested" }` — see "Phone-number privacy" above. `409` if already friends, already pending, or already invited. |
@@ -887,6 +933,47 @@ if this is unset). Same silent-no-op shape as `sendPush` above: without
 normally once that person signs up, there's just no text sent in the
 meantime.
 
+**Invite text safeguards** (`trySendInviteSMS` in `lib/twilio.js`). An
+invite text can't carry anything the sender writes, and its volume is
+capped, so the invite routes can't be used to send spam or phishing from
+this app's number:
+
+- **Fixed wording.** Only two messages are ever sent: "[Name] invited you
+  to Home Eats, a family meal-planning app." (friend invite) and "[Name]
+  invited you to plan meals together on Home Eats." (group invite), each
+  followed by the download link (if `APP_DOWNLOAD_URL` is set) and "Reply
+  STOP to opt out." The group name is never included. [Name] is the
+  sender's display name, sanitized: only letters, spaces, `'`, `-` and `.`
+  are kept, any `.` right before a letter is dropped (so `evil.com`
+  becomes `evilcom`), and it's cut to 30 characters. A name with no
+  letters left becomes "A friend".
+- **Caps** (rolling windows, checked all at once; a skipped text uses up
+  none of them):
+  - each phone number gets at most 1 invite text per 7 days, across all
+    senders;
+  - each sender can trigger at most `INVITE_SMS_SENDER_DAILY_MAX`
+    (default 75) invite texts per 24 hours and
+    `INVITE_SMS_SENDER_MONTHLY_MAX` (default 300) per 30 days. These are
+    deliberately generous so people can invite their whole family while
+    the app grows;
+  - the whole deployment sends at most `INVITE_SMS_DAILY_GLOBAL_MAX`
+    (default 500) per UTC day. Hitting this logs an error. This is the
+    real ceiling on invite-text spend, so set it to your budget.
+- **Countries.** `INVITE_SMS_ALLOWED_COUNTRY_CODES` is `*` (every country)
+  by default, because users invite family abroad. Which countries can
+  actually receive texts is controlled in Twilio's **Messaging Geo
+  permissions**: enable only the countries you serve, because texts to
+  some international destinations cost much more and are a common target
+  for SMS fraud. To restrict in the app as well, set comma-separated
+  calling codes, e.g. `1,44,91` (`1` is the whole North American
+  Numbering Plan: the US, Canada and several Caribbean countries).
+- If a cap blocks the text, or the cap check can't reach the database,
+  the text is skipped but the Invite row is still created and the API
+  response is exactly the same, so a caller can't tell whether a text was
+  sent. Every attempt is logged as `[invite-sms] sent`, `skipped
+  reason=...` or `failed reason=twilio-error`, with only the last 4 digits
+  of the recipient's number.
+
 ## 10. Personal restaurant library
 
 A signed-in user's own saved restaurants — added so this survives a
@@ -899,9 +986,9 @@ comment on the `Restaurant` model, and the iOS `HomeEatsApp.swift`'s on
 NOT bare `/restaurants`, which is already the Google-Places-proxy search
 API (`/restaurants/search`, `/restaurants/search-natural`,
 `/restaurants/photo`, `/restaurants/details`) registered directly on `app`
-in `index.js` — every one of those but `/photo` also requires auth, same as
-this router, `/photo` stays open (rate-limited by IP instead) since an
-AsyncImage load can't attach an Authorization header. No sharing/visibility
+in `app.js` — every one of those also requires auth, same as this router
+(the iOS app loads `/photo` through `RemoteImage`, which sends the token).
+No sharing/visibility
 concept at all, unlike recipe-library — every restaurant here is simply
 "the caller's own."
 
@@ -951,7 +1038,7 @@ nothing to sync it to across devices, so a restored entry simply has no
 
 - New routes here (`/recipe-library`) are mounted separately from the
   pre-existing `/recipes/extract` and `/recipes/recommend` routes in
-  `index.js` (Claude-powered recipe extraction/recommendation — both also
+  `app.js` (Claude-powered recipe extraction/recommendation — both also
   behind requireAuth, just registered directly on `app` rather than through
   this router) — different prefix entirely, so there's no risk of the two
   ever colliding or being confused with each other, even though nothing
@@ -993,7 +1080,7 @@ nothing to sync it to across devices, so a restored entry simply has no
   household/friend-group scale, worth knowing before wiring this up to
   something high-traffic.
 - **Rate limiting**: `POST /auth/request-code` is throttled by three
-  stacked small in-memory limiters (`lib/rateLimit.js`) — 1 request per
+  stacked limiters (`lib/rateLimit.js`) — 1 request per
   phone number per 60 seconds, 3 per phone number per hour, and 20 per IP
   per hour — on top of Twilio Verify's own Fraud Guard/rate-limiting, since
   this route fires a billed Twilio call before Twilio ever gets a say. The
@@ -1003,13 +1090,56 @@ nothing to sync it to across devices, so a restored entry simply has no
   phone number via the friends/groups API before that leak was fixed (see
   `publicUser(...)`'s own doc comment in routes/friends.js) — the old
   5/hour limit alone did nothing to stop a tight burst like that. `429`
-  with `{ "error": "..." }` when any of the three is exceeded. Each
-  limiter's state is per-process (fine for this app's single Render
-  instance — see the deploy section above — but it resets on every
-  deploy/restart and wouldn't be shared across instances if this ever
-  scales past one); `index.js` sets `app.set("trust proxy", true)` so the
-  per-IP half of this actually sees the real client IP through Render's
-  reverse proxy rather than the proxy's own address.
+  with `{ "error": "..." }` when any of the three is exceeded.
+  `POST /auth/verify-code` has its own two limiters: 10 attempts per phone
+  number per hour and 30 per IP per hour.
+
+  The counters are stored in Postgres (the `RateLimitBucket` table), not
+  in memory, so they survive deploys and restarts and would be shared if
+  this ever ran as more than one instance. Each check is a single atomic
+  SQL statement, and blocked attempts count too. Windows are fixed and
+  aligned to the clock (an hourly limit resets on the hour). Old rows are
+  deleted by a sweep every 10 minutes. If the database can't be reached
+  during a check, both sign-in routes **fail closed** and return `503`;
+  the Places/Claude proxy routes **fail open** (they log the error and let
+  the request through). Proxy routes also send a `Retry-After` header
+  (seconds) with their `429`. `app.js` sets `app.set("trust proxy", 1)` so
+  the per-IP limits see the real client IP through Render's reverse proxy
+  rather than the proxy's own address.
+- **Phone numbers in logs.** Server logs never contain a full phone
+  number. The `[request-code]` sign-in log and the `[invite-sms]` log show
+  it redacted (`+1•••••1234`: country code and last 4 digits) plus a
+  12-character keyed hash (`phoneKey`/`toKey`, an HMAC with
+  `LOG_HASH_SECRET`, falling back to `JWT_SECRET`), so repeated hits on one
+  number can still be matched up. Error logs from Twilio, Prisma and the
+  catch-all error handler have phone numbers masked. Rate-limit keys that
+  involve a phone number store the same hash, not the number. Push and SMS
+  text never falls back to someone's phone number when they have no
+  display name ("Someone" instead). See `lib/redact.js`.
+- **Request size and input limits.** JSON bodies are capped at 100 KB,
+  except `/recipes/extract` and `/recipe-library`, which carry a base64
+  photo and allow 8 MB. A larger body gets `413 { "error": "Request too
+  large." }`. The paid routes also check their input before doing anything
+  else, and return `400` with a message if it's too big:
+  - `POST /recipes/extract`: `notesText` up to 10,000 characters,
+    `imageBase64` up to 7,000,000 characters of base64, `mediaType` one of
+    `image/jpeg`, `image/png`, `image/webp`, `image/gif` (default
+    `image/jpeg`); at least one of `notesText`/`imageBase64`.
+  - `POST /recipes/recommend`: up to 40 `ingredients` (1–80 characters
+    each) and 40 `excludeTitles` (1–200 characters each).
+  - `POST /restaurants/search-natural`: `query` 1–300 characters,
+    `fallbackLocationText` up to 200, `lat` −90..90, `lng` −180..180.
+  - `GET /restaurants/search`, `/cities/search`, `/recipes/web-search`:
+    `q` 1–200 characters.
+- **Daily limits.** On top of the hourly per-user limits, each user can
+  make at most `AI_DAILY_USER_MAX` (default 40) AI requests per day in
+  total across `/recipes/extract`, `/recipes/recommend` and
+  `/restaurants/search-natural`, and 1000 restaurant photo loads per day
+  (days start at midnight UTC). Over either, the route returns `429` with a
+  "try again tomorrow" message. There's no deployment-wide AI cap, so one
+  heavy user can't block everyone else; set a spend limit in the Anthropic
+  Console as the overall backstop. The image routes (`/restaurants/photo`,
+  `/recipes/image-proxy`) require a signed-in user and are limited per user.
 - `Group.createdByUserId` is nullable (`onDelete: SetNull` on its relation
   to `User`) rather than the group cascading away when its creator's
   account is later deleted (there's no delete-account route yet, but there

@@ -1,7 +1,7 @@
 // Personal meal history — the backend counterpart of the iOS
 // `MealHistoryEntry` SwiftData model. Mounted at `/meal-history`, its own
 // distinct prefix same as `/recipe-library`/`/restaurants/library`. Every
-// route here requires auth (mounted behind requireAuth in index.js).
+// route here requires auth (mounted behind requireAuth in app.js).
 //
 // Same "purely mine, no sharing/visibility concept" shape as
 // routes/restaurants.js, and this file deliberately mirrors that one

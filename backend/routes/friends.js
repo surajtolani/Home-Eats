@@ -2,7 +2,7 @@
 // routes/groups.js: adding someone to a group requires them to already be
 // an accepted friend). Modeled after Splitwise: a friend request is a
 // directional Friendship row that becomes mutual once accepted; every route
-// here requires auth (mounted behind requireAuth in index.js).
+// here requires auth (mounted behind requireAuth in app.js).
 "use strict";
 
 const express = require("express");
@@ -12,7 +12,7 @@ const { prisma } = require("../lib/prisma");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { sendPush } = require("../lib/apns");
-const { sendInviteSMS, inviteSMSBody } = require("../lib/twilio");
+const { trySendInviteSMS } = require("../lib/twilio");
 
 const router = express.Router();
 
@@ -274,17 +274,21 @@ router.post("/request", asyncHandler(async (req, res) => {
     await sendPush({
       deviceTokens,
       title: "New Friend Request",
-      body: `${me.displayName || me.phoneNumber} wants to be friends on Home Eats.`,
+      body: `${me.displayName || "Someone"} wants to be friends on Home Eats.`,
       payload: { type: "friendRequest" },
     });
   }
   // Mirrors the push above for the "no account yet" branch — same
   // fire-and-forget, post-commit reasoning, just texted instead of pushed
-  // since there's no device to push to.
+  // since there's no device to push to. A fixed template with only the
+  // sanitized display name, subject to per-sender, per-recipient and
+  // global caps (see lib/twilio.js's trySendInviteSMS).
   if (result.smsInvitePhoneNumber) {
-    await sendInviteSMS({
+    await trySendInviteSMS({
+      senderUserId: req.userId,
+      senderName: me.displayName,
       to: result.smsInvitePhoneNumber,
-      body: inviteSMSBody(`${me.displayName || me.phoneNumber} wants to be friends on Home Eats.`),
+      kind: "friend",
     });
   }
 }));
@@ -342,7 +346,7 @@ router.post("/:friendshipId/accept", asyncHandler(async (req, res) => {
   await sendPush({
     deviceTokens,
     title: "Friend Request Accepted",
-    body: `${me?.displayName || me?.phoneNumber || "Someone"} accepted your friend request.`,
+    body: `${me?.displayName || "Someone"} accepted your friend request.`,
     payload: { type: "friendRequestAccepted" },
   });
 }));
@@ -447,6 +451,6 @@ module.exports = router;
 // Attached directly to the already-exported router object (rather than
 // switching this file's export to `{ router, loadFriendshipsFor }`, which
 // would ripple into every existing `require("./routes/friends")` call site,
-// starting with index.js's `app.use("/friends", requireAuth, friendsRouter)`)
+// starting with app.js's `app.use("/friends", requireAuth, friendsRouter)`)
 // — see routes/notifications.js for the one other place this is called.
 module.exports.loadFriendshipsFor = loadFriendshipsFor;

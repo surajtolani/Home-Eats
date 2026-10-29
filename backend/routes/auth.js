@@ -4,9 +4,9 @@
 // same on iOS and (eventually) Android, and it's what friend-matching
 // against a phone contacts list will key off of later.
 //
-// Neither route here requires a Bearer token (see index.js — this router is
-// mounted before requireAuth would ever apply to it); everything under
-// /me, /friends, /groups does.
+// request-code and verify-code don't require a Bearer token (this router is
+// mounted without requireAuth in app.js); sign-out and sign-out-all add
+// requireAuth per route, since they act on the signed-in account.
 "use strict";
 
 const express = require("express");
@@ -17,6 +17,8 @@ const { twilioClient } = require("../lib/twilio");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { createRateLimiter } = require("../lib/rateLimit");
+const { requireAuth } = require("../middleware/requireAuth");
+const { redactPhone, phoneLogKey, describeError } = require("../lib/redact");
 // Reuses routes/me.js's own `selfProfile` (attached to its exported router
 // — see that file's doc comment) so this response and GET/PATCH /me's
 // response can never drift apart on shape.
@@ -45,14 +47,29 @@ const PhoneSchema = z.object({
 //   if each individual request is more than 60s apart.
 // Per IP (20/hour) stays as its own separate limit, looser since a shared
 // household/office IP can plausibly have several people signing in
-// independently, but still caps one IP cycling through many numbers. See
-// `lib/rateLimit.js`'s own doc comment on why a small in-memory limiter is
-// enough here (single Render instance, not a hard security boundary — and
-// its state resets on every deploy, so this alone is a mitigation, not a
-// complete fix; the real fix is not leaking phone numbers to begin with).
-const requestCodePhoneBurstLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 1 });
-const requestCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 3 });
-const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20 });
+// independently, but still caps one IP cycling through many numbers. The
+// counters live in Postgres (see lib/rateLimit.js), so they survive deploys
+// and restarts. Every limiter in this file is `failClosed`: if the database
+// can't be reached, sign-in is refused with a 503 rather than letting
+// unthrottled requests reach Twilio.
+const requestCodePhoneBurstLimiter = createRateLimiter({
+  name: "request-code:phone-burst",
+  windowMs: 60 * 1000,
+  max: 1,
+  failClosed: true,
+});
+const requestCodePhoneLimiter = createRateLimiter({
+  name: "request-code:phone",
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  failClosed: true,
+});
+const requestCodeIPLimiter = createRateLimiter({
+  name: "request-code:ip",
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  failClosed: true,
+});
 
 // POST /verify-code had no rate limiting of its own at all — unlike
 // /request-code right above it, which stacks three limiters specifically
@@ -66,8 +83,23 @@ const requestCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 
 // 10/hour per phone number is generous for a real user who mistypes a code
 // a few times; 30/hour per IP is the same "shared household/office IP"
 // looseness `requestCodeIPLimiter` above uses.
-const verifyCodePhoneLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10 });
-const verifyCodeIPLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 30 });
+const verifyCodePhoneLimiter = createRateLimiter({
+  name: "verify-code:phone",
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  failClosed: true,
+});
+const verifyCodeIPLimiter = createRateLimiter({
+  name: "verify-code:ip",
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  failClosed: true,
+});
+
+// Sent when a fail-closed limiter couldn't reach the database (its result
+// is `limited` and `error`), so the request was refused without knowing
+// whether it was over the limit.
+const RATE_LIMIT_UNAVAILABLE_ERROR = "Sign-in is temporarily unavailable. Please try again in a minute.";
 
 function firstIssue(error, fallback) {
   return error.issues[0]?.message || fallback;
@@ -106,26 +138,36 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // caller retrying every few seconds right up against the burst limit
   // should still find the hourly limit accurately reflects how many
   // actually went through.
-  const burstLimited = requestCodePhoneBurstLimiter.check(phoneNumber).limited;
-  const phoneLimited = requestCodePhoneLimiter.check(phoneNumber).limited;
-  const ipLimited = requestCodeIPLimiter.check(req.ip).limited;
+  const [burst, phone, ip] = await Promise.all([
+    requestCodePhoneBurstLimiter.check(phoneLogKey(phoneNumber)),
+    requestCodePhoneLimiter.check(phoneLogKey(phoneNumber)),
+    requestCodeIPLimiter.check(req.ip),
+  ]);
+  const burstLimited = burst.limited;
+  const phoneLimited = phone.limited;
+  const ipLimited = ip.limited;
   // Forensic logging, added after a confirmed report of unprompted codes
   // that this server has no other way to investigate (Render's own log
   // retention is the only record of this route being hit at all — there's
   // no separate audit table). Logs to stdout/Render's log stream only,
-  // never returned in any API response to any caller — the phone number
-  // here is already this account owner's own number by definition (it's
-  // what request-code was called with), and req.ip is the actual source of
-  // the request, which is exactly what's needed to tell "the owner's own
-  // device" apart from anything else. Intentionally logs every request,
-  // limited or not, so a blocked burst still shows up here.
+  // never returned in any API response to any caller. The phone number is
+  // never logged in full: `phone` is redacted (country code and last 4
+  // digits) and `phoneKey` is a keyed hash (lib/redact.js), which is enough
+  // to see repeated hits on one number without storing the number. req.ip
+  // is the actual source of the request, which is exactly what's needed to
+  // tell "the owner's own device" apart from anything else. Intentionally
+  // logs every request, limited or not, so a blocked burst still shows up
+  // here.
   // `ua` added after a repeat report with no resolution from ip alone: the
   // User-Agent tells the iOS app (CFNetwork/Darwin) apart from curl, a
   // script, or another client sharing these Twilio credentials, which is
   // exactly the question the ip by itself couldn't settle.
   console.log(
-    `[request-code] phone=${phoneNumber} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
+    `[request-code] phone=${redactPhone(phoneNumber)} phoneKey=${phoneLogKey(phoneNumber)} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
   );
+  if ([burst, phone, ip].some((r) => r.limited && r.error)) {
+    return res.status(503).json({ error: RATE_LIMIT_UNAVAILABLE_ERROR });
+  }
   if (burstLimited || phoneLimited || ipLimited) {
     return res.status(429).json({ error: "Too many verification code requests. Please wait a bit and try again." });
   }
@@ -146,7 +188,7 @@ router.post("/request-code", asyncHandler(async (req, res) => {
     // Twilio errors here cover things like an unreachable/invalid number,
     // or Verify's own rate-limiting kicking in — all of which are "this
     // request didn't work", not a bug in this server.
-    console.error("Twilio Verify send failed", error);
+    console.error("Twilio Verify send failed", describeError(error));
     res.status(502).json({ error: "Couldn't send a verification code. Check the number and try again." });
   }
 }));
@@ -176,9 +218,14 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
 
   // Checked (and counted) after body validation, before the billed Twilio
   // call — same ordering reasoning as /request-code's own limiters above.
-  const phoneLimited = verifyCodePhoneLimiter.check(phoneNumber).limited;
-  const ipLimited = verifyCodeIPLimiter.check(req.ip).limited;
-  if (phoneLimited || ipLimited) {
+  const [phone, ip] = await Promise.all([
+    verifyCodePhoneLimiter.check(phoneLogKey(phoneNumber)),
+    verifyCodeIPLimiter.check(req.ip),
+  ]);
+  if ([phone, ip].some((r) => r.limited && r.error)) {
+    return res.status(503).json({ error: RATE_LIMIT_UNAVAILABLE_ERROR });
+  }
+  if (phone.limited || ip.limited) {
     return res.status(429).json({ error: "Too many attempts. Please wait a bit and try again." });
   }
 
@@ -204,7 +251,7 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
     // several invalid-input cases, e.g. no pending verification exists for
     // this number at all — treat that the same as a wrong/expired code
     // rather than surfacing it as a server error.
-    console.error("Twilio Verify check failed", error);
+    console.error("Twilio Verify check failed", describeError(error));
     return res.status(400).json({ error: "Invalid or expired code." });
   }
 
@@ -286,9 +333,51 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
       user: meRouter.selfProfile(user),
     });
   } catch (error) {
-    console.error("Signup/verify transaction failed", error);
+    // describeError: a Prisma error message can quote the phone number.
+    console.error("Signup/verify transaction failed", describeError(error));
     res.status(500).json({ error: "Couldn't complete sign-in." });
   }
+}));
+
+// POST /auth/sign-out
+// Body: { deviceToken?: string }. Called by the iOS app's explicit "Sign
+// Out" before it forgets its token: stops this device getting the signed-out
+// account's push notifications. Deletes only a DeviceToken row that belongs
+// to the caller, so nobody can unregister someone else's device. 204 whether
+// or not anything matched.
+const SignOutSchema = z.object({
+  deviceToken: z
+    .string("deviceToken must be text.")
+    .trim()
+    .min(1, "deviceToken can't be empty.")
+    .max(500, "deviceToken can't be longer than 500 characters.")
+    .optional(),
+});
+
+router.post("/sign-out", requireAuth, asyncHandler(async (req, res) => {
+  const parsed = SignOutSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: firstIssue(parsed.error, "Invalid request.") });
+  }
+  const { deviceToken } = parsed.data;
+  if (deviceToken) {
+    await prisma.deviceToken.deleteMany({ where: { token: deviceToken, userId: req.userId } });
+  }
+  res.status(204).end();
+}));
+
+// POST /auth/sign-out-all
+// "Sign out of all devices": bumps the account's tokenVersion, which makes
+// every token issued so far fail requireAuth (see middleware/requireAuth.js),
+// and removes every device registered for push. Both happen in one
+// transaction, so there's never a moment where tokens are revoked but
+// devices still get pushes, or the reverse.
+router.post("/sign-out-all", requireAuth, asyncHandler(async (req, res) => {
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: req.userId }, data: { tokenVersion: { increment: 1 } } }),
+    prisma.deviceToken.deleteMany({ where: { userId: req.userId } }),
+  ]);
+  res.status(204).end();
 }));
 
 module.exports = router;
