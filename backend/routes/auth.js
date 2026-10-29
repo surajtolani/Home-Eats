@@ -4,9 +4,9 @@
 // same on iOS and (eventually) Android, and it's what friend-matching
 // against a phone contacts list will key off of later.
 //
-// Neither route here requires a Bearer token (see app.js — this router is
-// mounted before requireAuth would ever apply to it); everything under
-// /me, /friends, /groups does.
+// request-code and verify-code don't require a Bearer token (this router is
+// mounted without requireAuth in app.js); sign-out and sign-out-all add
+// requireAuth per route, since they act on the signed-in account.
 "use strict";
 
 const express = require("express");
@@ -17,6 +17,7 @@ const { twilioClient } = require("../lib/twilio");
 const { phoneNumberField, PHONE_ERROR } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { createRateLimiter } = require("../lib/rateLimit");
+const { requireAuth } = require("../middleware/requireAuth");
 // Reuses routes/me.js's own `selfProfile` (attached to its exported router
 // — see that file's doc comment) so this response and GET/PATCH /me's
 // response can never drift apart on shape.
@@ -332,6 +333,47 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
     console.error("Signup/verify transaction failed", error);
     res.status(500).json({ error: "Couldn't complete sign-in." });
   }
+}));
+
+// POST /auth/sign-out
+// Body: { deviceToken?: string }. Called by the iOS app's explicit "Sign
+// Out" before it forgets its token: stops this device getting the signed-out
+// account's push notifications. Deletes only a DeviceToken row that belongs
+// to the caller, so nobody can unregister someone else's device. 204 whether
+// or not anything matched.
+const SignOutSchema = z.object({
+  deviceToken: z
+    .string("deviceToken must be text.")
+    .trim()
+    .min(1, "deviceToken can't be empty.")
+    .max(500, "deviceToken can't be longer than 500 characters.")
+    .optional(),
+});
+
+router.post("/sign-out", requireAuth, asyncHandler(async (req, res) => {
+  const parsed = SignOutSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ error: firstIssue(parsed.error, "Invalid request.") });
+  }
+  const { deviceToken } = parsed.data;
+  if (deviceToken) {
+    await prisma.deviceToken.deleteMany({ where: { token: deviceToken, userId: req.userId } });
+  }
+  res.status(204).end();
+}));
+
+// POST /auth/sign-out-all
+// "Sign out of all devices": bumps the account's tokenVersion, which makes
+// every token issued so far fail requireAuth (see middleware/requireAuth.js),
+// and removes every device registered for push. Both happen in one
+// transaction, so there's never a moment where tokens are revoked but
+// devices still get pushes, or the reverse.
+router.post("/sign-out-all", requireAuth, asyncHandler(async (req, res) => {
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: req.userId }, data: { tokenVersion: { increment: 1 } } }),
+    prisma.deviceToken.deleteMany({ where: { userId: req.userId } }),
+  ]);
+  res.status(204).end();
 }));
 
 module.exports = router;
