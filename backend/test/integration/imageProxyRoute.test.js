@@ -1,25 +1,24 @@
-// GET /recipes/image-proxy through the real app. No database needed: the
-// route's rate limiter fails open when the database is unreachable.
+// GET /recipes/image-proxy through the real app, as a signed-in user.
 "use strict";
-
-process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:1/unreachable";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
-const { app } = require("../../app");
-const { prisma } = require("../../lib/prisma");
+const { startTestServer, signTestToken, createTestUser, resetDatabase } = require("../helpers/server");
 
 let appServer;
 let appURL;
+let authHeaders;
 let target;
 let targetHits = 0;
 
 test.before(async () => {
-  appServer = await new Promise((resolve) => {
-    const s = app.listen(0, "127.0.0.1", () => resolve(s));
-  });
-  appURL = `http://127.0.0.1:${appServer.address().port}`;
+  appServer = await startTestServer();
+  if (!appServer) return;
+  appURL = appServer.baseURL;
+  await resetDatabase();
+  const user = await createTestUser();
+  authHeaders = { Authorization: `Bearer ${signTestToken(user.id, user.tokenVersion)}` };
   target = http.createServer((req, res) => {
     targetHits += 1;
     res.writeHead(200, { "content-type": "image/png", "x-internal-secret": "do-not-leak" });
@@ -29,17 +28,24 @@ test.before(async () => {
 });
 
 test.after(async () => {
-  await new Promise((resolve) => appServer.close(resolve));
+  if (!appServer) return;
+  await appServer.close();
   await new Promise((resolve) => target.close(resolve));
-  await prisma.$disconnect();
 });
 
+function skipWithoutDatabase(t) {
+  if (appServer) return false;
+  t.skip("TEST_DATABASE_URL is not set");
+  return true;
+}
+
 async function proxy(url) {
-  const res = await fetch(`${appURL}/recipes/image-proxy?url=${encodeURIComponent(url)}`);
+  const res = await fetch(`${appURL}/recipes/image-proxy?url=${encodeURIComponent(url)}`, { headers: authHeaders });
   return { status: res.status, headers: res.headers, body: await res.json() };
 }
 
 test("internal targets get a fixed 400 and are never contacted", async (t) => {
+  if (skipWithoutDatabase(t)) return;
   t.mock.method(console, "error", () => {});
   targetHits = 0;
   const port = target.address().port;
@@ -64,6 +70,7 @@ test("internal targets get a fixed 400 and are never contacted", async (t) => {
 });
 
 test("a hostname that doesn't exist is a 400", async (t) => {
+  if (skipWithoutDatabase(t)) return;
   t.mock.method(console, "error", () => {});
   const res = await proxy("http://does-not-exist.invalid/x.png");
   assert.equal(res.status, 400);
@@ -71,7 +78,8 @@ test("a hostname that doesn't exist is a 400", async (t) => {
 });
 
 test("a missing url is still a 400", async (t) => {
+  if (skipWithoutDatabase(t)) return;
   t.mock.method(console, "error", () => {});
-  const res = await fetch(`${appURL}/recipes/image-proxy`);
+  const res = await fetch(`${appURL}/recipes/image-proxy`, { headers: authHeaders });
   assert.equal(res.status, 400);
 });

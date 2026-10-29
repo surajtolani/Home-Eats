@@ -4,6 +4,7 @@
 "use strict";
 
 process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:1/unreachable";
+process.env.JWT_SECRET = "rate-limit-routes-test-secret";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -48,9 +49,20 @@ test("POST /auth/verify-code returns 503 (fails closed)", async (t) => {
 
 test("GET /recipes/image-proxy is let through (fails open)", async (t) => {
   t.mock.method(console, "error", () => {});
+  // The route requires sign-in, which also reads the database. Stub just
+  // that lookup so the request reaches the (still unreachable) limiter.
+  // (Assigned rather than t.mock.method: Prisma's model methods aren't
+  // ordinary own properties, which t.mock.method requires.)
+  const originalFindUnique = prisma.user.findUnique;
+  prisma.user.findUnique = async () => ({ tokenVersion: 0 });
+  t.after(() => {
+    prisma.user.findUnique = originalFindUnique;
+  });
+  const jwt = require("jsonwebtoken");
+  const token = jwt.sign({ userId: "test-user", tokenVersion: 0 }, process.env.JWT_SECRET, { expiresIn: "1h" });
   // No `url` query parameter, so once past the limiter the route itself
   // rejects the request with 400. A 503 or 429 here would mean the
   // limiter blocked it.
-  const res = await fetch(`${baseURL}/recipes/image-proxy`);
+  const res = await fetch(`${baseURL}/recipes/image-proxy`, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(res.status, 400);
 });
