@@ -534,7 +534,7 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
     await sendPush({
       deviceTokens: deviceTokens.map((row) => row.token),
       title: "Group Invite",
-      body: `${me?.displayName || me?.phoneNumber || "Someone"} invited you to join "${group.name}" on Home Eats.`,
+      body: `${me?.displayName || "Someone"} invited you to join "${group.name}" on Home Eats.`,
       payload: { type: "groupInvite", groupId: req.params.groupId },
     });
   } else {

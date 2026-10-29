@@ -274,7 +274,7 @@ router.post("/request", asyncHandler(async (req, res) => {
     await sendPush({
       deviceTokens,
       title: "New Friend Request",
-      body: `${me.displayName || me.phoneNumber} wants to be friends on Home Eats.`,
+      body: `${me.displayName || "Someone"} wants to be friends on Home Eats.`,
       payload: { type: "friendRequest" },
     });
   }
@@ -346,7 +346,7 @@ router.post("/:friendshipId/accept", asyncHandler(async (req, res) => {
   await sendPush({
     deviceTokens,
     title: "Friend Request Accepted",
-    body: `${me?.displayName || me?.phoneNumber || "Someone"} accepted your friend request.`,
+    body: `${me?.displayName || "Someone"} accepted your friend request.`,
     payload: { type: "friendRequestAccepted" },
   });
 }));

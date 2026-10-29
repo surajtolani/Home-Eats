@@ -21,6 +21,7 @@ test("invite SMS safeguards", async (t) => {
   // Loaded after startTestServer so these share the app's module instances.
   const twilio = require("../../lib/twilio");
   const { reserveQuotas } = require("../../lib/rateLimit");
+  const { phoneLogKey } = require("../../lib/redact");
   const { prisma } = require("../../lib/prisma");
 
   const sent = [];
@@ -302,7 +303,7 @@ test("invite SMS safeguards", async (t) => {
       // eslint-disable-next-line no-await-in-loop
       await prisma.rateLimitBucket.create({
         data: {
-          key: `invite-sms:recipient:${to}`,
+          key: `invite-sms:recipient:${phoneLogKey(to)}`,
           windowStart: new Date(now - daysAgo * DAY_MS),
           count: 1,
           expiresAt: new Date(now + DAY_MS),
@@ -340,14 +341,14 @@ test("invite SMS safeguards", async (t) => {
     assert.equal(sent[5].to, to);
   });
 
-  await t.test("logs show only the last 4 digits of the recipient", async () => {
+  await t.test("logs show the recipient only redacted", async () => {
     await freshState();
     const { auth } = await newUser();
     const to = newUSNumber();
     await post("/friends/request", auth, { phoneNumber: to });
     await waitForAttempts(1);
     assert.ok(!inviteLog[0].line.includes(to.slice(1, 8)), inviteLog[0].line);
-    assert.ok(inviteLog[0].line.includes(`to=***${to.slice(-4)}`), inviteLog[0].line);
+    assert.ok(inviteLog[0].line.includes(`to=+1•••••${to.slice(-4)} toKey=`), inviteLog[0].line);
   });
 
   await t.test("a message Twilio rejects is logged as a failure, not as sent", async () => {
