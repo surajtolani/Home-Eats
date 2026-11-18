@@ -38,7 +38,11 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14 was retired by GitHub on 2026-11-02; jobs asking for it are
+    # cancelled at once ("The configuration 'macos-14-arm64-us-default' is
+    # not supported"). macos-26 carries Xcode 26, the same SDK generation
+    # the app is archived with for TestFlight.
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
