@@ -2,7 +2,7 @@
 // "our Peru trip"): built from a user's friends list, and a user can belong
 // to many groups at once. Nothing here (or in prisma/schema.prisma's
 // GroupMembership model) assumes a user has only one group. Every route
-// requires auth (mounted behind requireAuth in index.js).
+// requires auth (mounted behind requireAuth in app.js).
 //
 // Roles (Phase 3, extended Phase 5): every GroupMembership carries a
 // `role` — MANAGER or PARTICIPANT (see the GroupRole/GroupMembership doc
@@ -40,7 +40,7 @@ const { prisma } = require("../lib/prisma");
 const { phoneNumberField } = require("../lib/phone");
 const { asyncHandler } = require("../lib/asyncHandler");
 const { sendPush } = require("../lib/apns");
-const { sendInviteSMS, inviteSMSBody } = require("../lib/twilio");
+const { trySendInviteSMS } = require("../lib/twilio");
 
 const router = express.Router();
 
@@ -534,16 +534,21 @@ router.post("/:groupId/invite", asyncHandler(async (req, res) => {
     await sendPush({
       deviceTokens: deviceTokens.map((row) => row.token),
       title: "Group Invite",
-      body: `${me?.displayName || me?.phoneNumber || "Someone"} invited you to join "${group.name}" on Home Eats.`,
+      body: `${me?.displayName || "Someone"} invited you to join "${group.name}" on Home Eats.`,
       payload: { type: "groupInvite", groupId: req.params.groupId },
     });
   } else {
     // No account yet — nothing to push to, so text them instead. Direct
     // fix for a real gap: this phone number's Invite used to just sit
     // PENDING with no notice of any kind until they happened to sign up.
-    await sendInviteSMS({
+    // The text never includes the group name (the sender controls it), and
+    // is capped per sender, per recipient and globally (see lib/twilio.js's
+    // trySendInviteSMS).
+    await trySendInviteSMS({
+      senderUserId: req.userId,
+      senderName: me?.displayName,
       to: phoneNumber,
-      body: inviteSMSBody(`${me?.displayName || me?.phoneNumber || "Someone"} invited you to join "${group.name}" on Home Eats.`),
+      kind: "group",
     });
   }
 }));

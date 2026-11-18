@@ -34,6 +34,9 @@ struct SettingsView: View {
     ) ?? .now
     @State private var showSignIn = false
     @State private var showUnsyncedSignOutWarning = false
+    @State private var showSignOutAllConfirmation = false
+    @State private var isSigningOutAllDevices = false
+    @State private var signOutAllErrorMessage: String?
 
     /// Whether any group-sync row is still waiting to reach the server —
     /// used only to decide whether signing out needs a confirmation first;
@@ -111,6 +114,29 @@ struct SettingsView: View {
                         } else {
                             accountSession.signOut()
                         }
+                    }
+                    .disabled(accountSession.isSigningOut || isSigningOutAllDevices)
+                    // Revokes every token this account has, so a lost phone
+                    // or a stolen login stops working everywhere at once.
+                    Button("Sign Out of All Devices", role: .destructive) {
+                        showSignOutAllConfirmation = true
+                    }
+                    .disabled(accountSession.isSigningOut || isSigningOutAllDevices)
+                    .confirmationDialog(
+                        "Sign out of all devices?",
+                        isPresented: $showSignOutAllConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Sign Out of All Devices", role: .destructive) {
+                            Task { await signOutAllDevices() }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text(
+                            hasUnsyncedGroupChanges
+                                ? "This signs you out everywhere, including this phone. Some group meal-plan or grocery-list changes haven't synced yet and will be lost."
+                                : "This signs you out everywhere, including this phone."
+                        )
                     }
                 } else if accountSession.isSignedIn {
                     // A token is stored but GET /me hasn't resolved yet
@@ -226,6 +252,17 @@ struct SettingsView: View {
         .sheet(isPresented: $showSignIn) {
             AccountSignInView()
         }
+        .alert(
+            "Couldn't sign out of all devices",
+            isPresented: Binding(
+                get: { signOutAllErrorMessage != nil },
+                set: { if !$0 { signOutAllErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(signOutAllErrorMessage ?? "")
+        }
         .confirmationDialog(
             "You have unsynced changes",
             isPresented: $showUnsyncedSignOutWarning,
@@ -237,6 +274,25 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Some group meal-plan or grocery-list changes haven't synced yet. Signing out now will lose them.")
+        }
+    }
+
+    /// Calls `POST /auth/sign-out-all`, then signs out locally. If the
+    /// server call fails, this phone stays signed in (nothing was revoked)
+    /// and an alert explains why. A 401 means the token was already
+    /// revoked, and `AccountsAPIClient` has already signed this phone out,
+    /// so there's nothing to report.
+    @MainActor
+    private func signOutAllDevices() async {
+        isSigningOutAllDevices = true
+        defer { isSigningOutAllDevices = false }
+        do {
+            try await AccountsAPIClient.signOutAllDevices()
+            accountSession.clearLocalSession()
+        } catch AccountsAPIError.unauthorized {
+            return
+        } catch {
+            signOutAllErrorMessage = error.localizedDescription
         }
     }
 

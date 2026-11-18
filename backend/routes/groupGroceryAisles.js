@@ -6,7 +6,7 @@
 // default-seeding behavior below) and backend/README.md's "Group grocery
 // list" section for the documented contract.
 //
-// Mounted at /groups/:groupId/grocery/aisles in index.js, behind
+// Mounted at /groups/:groupId/grocery/aisles in app.js, behind
 // requireAuth, BEFORE the more general /groups/:groupId/grocery mount —
 // same "specific prefix before general prefix" mount order as every other
 // nested group router in this file's family, and every route here

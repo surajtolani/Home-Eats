@@ -38,13 +38,17 @@ final class AccountSession: ObservableObject {
     /// because `currentUser` hadn't loaded yet — exactly the kind of flash
     /// that doc comment on `ActiveGroupSession.hasLoadedOnce` calls out.
     @Published private(set) var hasLoadedProfileOnce = false
+    /// True while an explicit sign-out is telling the server (see
+    /// `signOut()`), so the Sign Out buttons can't be tapped twice.
+    @Published private(set) var isSigningOut = false
 
     init() {
         // A stored token means "signed in" optimistically, before this app
         // has even confirmed with the backend that the token still works —
         // `refreshCurrentUser()` below fills in `currentUser` moments
         // later, and if the token turns out to be expired/invalid,
-        // `AccountsAPIClient`'s 401 handling calls `signOut()` right back.
+        // `AccountsAPIClient`'s 401 handling calls `clearLocalSession()`
+        // right back.
         // The alternative (waiting on that network round-trip before ever
         // showing "signed in") would mean every launch briefly flashes a
         // signed-out "Sign In" row before flipping to the real state, which
@@ -68,7 +72,8 @@ final class AccountSession: ObservableObject {
 
     /// Fills in `currentUser` from `GET /me` — called once at launch (see
     /// `init`) and again after sign-in completes. A failure here (including
-    /// a 401, which separately triggers `signOut()` via `AccountsAPIClient`)
+    /// a 401, which separately triggers `clearLocalSession()` via
+    /// `AccountsAPIClient`)
     /// just leaves `currentUser` as whatever it already was; there's no
     /// dedicated error UI for this specific background refresh, since
     /// nothing the user directly tapped triggered it — the next screen that
@@ -118,12 +123,30 @@ final class AccountSession: ObservableObject {
         currentUser = user
     }
 
-    /// Clears the stored token and every published field. Called both from
-    /// an explicit "Sign Out" tap (`SettingsView`) and automatically by
-    /// `AccountsAPIClient` the moment any authenticated call comes back
-    /// `401` — either way the end state is identical, so both paths share
-    /// this one method rather than duplicating the reset logic.
+    /// The user tapped Sign Out. First tells the server to stop sending this
+    /// device the account's push notifications (`POST /auth/sign-out`, while
+    /// the token still exists to authenticate it), then clears the local
+    /// session. Best-effort: if that call fails or times out (5 s), the user
+    /// is still signed out locally. Doesn't touch the OS-level push
+    /// registration; the next sign-in re-registers this device's token for
+    /// whoever signs in.
     func signOut() {
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        let deviceToken = PushNotificationService.deviceToken
+        Task {
+            try? await AccountsAPIClient.signOut(deviceToken: deviceToken)
+            clearLocalSession()
+            isSigningOut = false
+        }
+    }
+
+    /// Clears the stored token and every published field, without calling
+    /// the server. Used after an explicit sign-out (`signOut()`), after
+    /// "Sign Out of All Devices", and automatically by `AccountsAPIClient`
+    /// the moment any authenticated call comes back `401` (the token is
+    /// already invalid then, so there's no one to tell).
+    func clearLocalSession() {
         KeychainTokenStore.deleteToken()
         currentUser = nil
         isSignedIn = false

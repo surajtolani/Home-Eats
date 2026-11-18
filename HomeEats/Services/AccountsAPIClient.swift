@@ -12,7 +12,7 @@ enum AccountsAPIError: LocalizedError {
     /// `requireAuth` — see backend/middleware/requireAuth.js, which
     /// doesn't distinguish those cases for the caller either). By the time
     /// this is thrown, the stored token has already been cleared and
-    /// `AccountSession.signOut()` already called (see
+    /// `AccountSession.clearLocalSession()` already called (see
     /// `AccountsAPIClient.sendRaw`) — this case exists so the call site
     /// that triggered it can still show a sensible inline message rather
     /// than a generic one.
@@ -67,7 +67,7 @@ enum AccountsAPIClient {
     /// ...) — centralizing "a 401 means sign the user out everywhere" in
     /// this one place means every call site just needs to catch and
     /// display `AccountsAPIError`, not *also* remember to call
-    /// `accountSession.signOut()` itself. `weak` because this is a
+    /// `accountSession.clearLocalSession()` itself. `weak` because this is a
     /// convenience back-channel, not an ownership relationship — the
     /// session object's lifetime is owned by `HomeEatsApp`, not by this
     /// enum.
@@ -155,22 +155,29 @@ enum AccountsAPIClient {
         _ method: String,
         path: String,
         body: [String: Any]? = nil,
-        authenticated: Bool = true
+        authenticated: Bool = true,
+        timeout: TimeInterval? = nil
     ) async throws {
-        _ = try await sendRaw(method, path: path, body: body, authenticated: authenticated)
+        _ = try await sendRaw(method, path: path, body: body, authenticated: authenticated, timeout: timeout)
     }
 
+    /// `timeout`, when set, replaces `URLRequest`'s default 60-second
+    /// timeout for this one request.
     private static func sendRaw(
         _ method: String,
         path: String,
         body: [String: Any]?,
-        authenticated: Bool
+        authenticated: Bool,
+        timeout: TimeInterval? = nil
     ) async throws -> Data {
         guard isConfigured, let base = URL(string: baseURLString) else {
             throw AccountsAPIError.notConfigured
         }
         var request = URLRequest(url: base.appendingPathComponent(path))
         request.httpMethod = method
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -203,8 +210,10 @@ enum AccountsAPIClient {
             // app's signed-in state everywhere at once via the `session`
             // back-reference (see its own doc comment above for why this
             // lives here instead of at every individual call site).
+            // `clearLocalSession`, not `signOut`: the token is already
+            // invalid, so there's no point telling the server.
             KeychainTokenStore.deleteToken()
-            await session?.signOut()
+            await session?.clearLocalSession()
             throw AccountsAPIError.unauthorized
         }
 
@@ -247,6 +256,24 @@ extension AccountsAPIClient {
             authenticated: false
         )
         return (response.token, response.user)
+    }
+
+    /// `POST /auth/sign-out`: stops `deviceToken` getting this account's
+    /// push notifications. Called by `AccountSession.signOut()` before it
+    /// forgets the stored token. A short timeout, because sign-out
+    /// shouldn't hang on a slow network; the caller treats failure as
+    /// non-fatal.
+    static func signOut(deviceToken: String?) async throws {
+        var body: [String: Any] = [:]
+        if let deviceToken { body["deviceToken"] = deviceToken }
+        try await sendNoContent("POST", path: "auth/sign-out", body: body, timeout: 5)
+    }
+
+    /// `POST /auth/sign-out-all`: invalidates every token this account has
+    /// (on every device, this one included) and removes every device's
+    /// push registration.
+    static func signOutAllDevices() async throws {
+        try await sendNoContent("POST", path: "auth/sign-out-all")
     }
 }
 

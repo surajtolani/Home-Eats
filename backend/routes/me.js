@@ -1,5 +1,5 @@
 // GET /me and PATCH /me — the caller's own profile. Both require auth (see
-// index.js, which applies requireAuth before mounting this router).
+// app.js, which applies requireAuth before mounting this router).
 "use strict";
 
 const express = require("express");
@@ -147,7 +147,7 @@ router.post("/device-token", asyncHandler(async (req, res) => {
 
 // `selfProfile` is attached to the exported router (an Express `Router()`
 // is itself just a function, so it can carry extra properties fine) rather
-// than exported as a second top-level value, so `index.js`'s existing
+// than exported as a second top-level value, so `app.js`'s existing
 // `const meRouter = require("./routes/me")` — used directly as
 // middleware — keeps working unchanged. routes/auth.js's verify-code
 // response reuses this exact function for its own `user` field: that

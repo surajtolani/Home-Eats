@@ -1261,12 +1261,10 @@ private struct WebResultThumbnail: View {
 
     var body: some View {
         if let urlString, let url = RecipeImageProxy.url(for: urlString) {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    placeholder
-                }
+            RemoteImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                placeholder
             }
         } else {
             placeholder
