@@ -229,30 +229,75 @@ enum AccountsAPIClient {
 
 // MARK: - Auth (POST /auth/request-code, POST /auth/verify-code)
 
+/// Which screen a code is for: Sign In (the number must already have an
+/// account) or Create Account (it mustn't). See backend/routes/auth.js.
+enum SignInIntent: String {
+    case signIn
+    case signUp
+}
+
+/// What Create Account collects before the code is sent. City, state and
+/// country come after verification, on the profile screen, because the
+/// city lookup is only available to signed-in users.
+struct SignupProfile {
+    let firstName: String
+    let lastName: String
+    let email: String
+}
+
 extension AccountsAPIClient {
-    /// Starts a Twilio Verify SMS to `phoneNumber` (already normalized to
-    /// E.164 — see `PhoneNumberFormatting`). Unauthenticated: this is how a
-    /// signed-out user gets a token in the first place.
-    static func requestCode(phoneNumber: String) async throws {
-        try await sendNoContent(
+    /// Starts a Twilio Verify SMS to `phoneNumber` (E.164 — see
+    /// `PhoneNumberFormatting`). Unauthenticated: this is how a signed-out
+    /// user gets a token in the first place. Returns the number in the
+    /// server's canonical form, which is what the code was actually sent to
+    /// (see backend/lib/phone.js), or `nil` from a server too old to say.
+    ///
+    /// `intent` decides which numbers get a code: `.signIn` only one that
+    /// already has an account, `.signUp` only one that doesn't. Otherwise
+    /// the server answers with a message meant for the user ("couldn't sign
+    /// you in... tap Create Account", or "already has an account"), thrown
+    /// as `AccountsAPIError.server`.
+    @discardableResult
+    static func requestCode(phoneNumber: String, intent: SignInIntent) async throws -> String? {
+        struct Response: Decodable {
+            let phoneNumber: String?
+        }
+        let response: Response = try await send(
             "POST", path: "auth/request-code",
-            body: ["phoneNumber": phoneNumber],
+            body: ["phoneNumber": phoneNumber, "intent": intent.rawValue],
             authenticated: false
         )
+        return response.phoneNumber
     }
 
     /// Checks the code Twilio just sent and returns a Bearer token plus the
     /// signed-in `AccountUser` — `AccountSignInView` hands both straight to
     /// `AccountSession.completeSignIn`. Unauthenticated, same reasoning as
     /// `requestCode`.
-    static func verifyCode(phoneNumber: String, code: String) async throws -> (token: String, user: AccountUser) {
+    ///
+    /// For `.signUp`, `profile` is saved on the new account in the same step
+    /// that creates it, so nothing is created until the number is verified.
+    static func verifyCode(
+        phoneNumber: String,
+        code: String,
+        intent: SignInIntent,
+        profile: SignupProfile? = nil
+    ) async throws -> (token: String, user: AccountUser) {
         struct Response: Decodable {
             let token: String
             let user: AccountUser
         }
+        var body: [String: Any] = ["phoneNumber": phoneNumber, "code": code, "intent": intent.rawValue]
+        if let profile {
+            body["profile"] = [
+                "firstName": profile.firstName,
+                "lastName": profile.lastName,
+                "email": profile.email,
+            ]
+        }
         let response: Response = try await send(
             "POST", path: "auth/verify-code",
-            body: ["phoneNumber": phoneNumber, "code": code],
+            body: body,
             authenticated: false
         )
         return (response.token, response.user)
@@ -307,7 +352,8 @@ extension AccountsAPIClient {
         lastName: String? = nil,
         city: String? = nil,
         state: String? = nil,
-        country: String? = nil
+        country: String? = nil,
+        email: String? = nil
     ) async throws -> AccountUser {
         struct Response: Decodable { let user: AccountUser }
         var body: [String: Any] = [:]
@@ -317,6 +363,7 @@ extension AccountsAPIClient {
         if let city { body["city"] = city }
         if let state { body["state"] = state }
         if let country { body["country"] = country }
+        if let email { body["email"] = email }
         let response: Response = try await send("PATCH", path: "me", body: body)
         return response.user
     }

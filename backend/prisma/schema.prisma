@@ -61,6 +61,12 @@ model User {
   city        String?
   state       String?
   country     String?
+  // Asked for on the app's Create Account screen (required there, checked
+  // only for shape; no confirmation email is sent). Null for accounts made
+  // before that screen existed, and not part of `profileComplete`, so those
+  // accounts aren't sent back to the profile screen for it. Only ever
+  // returned to the account's own owner (routes/me.js's selfProfile).
+  email       String?
   createdAt   DateTime @default(now())
   // A bearer JWT (see routes/auth.js's `signToken`) is stateless and valid
   // for a full 30 days with no way to cancel one early — a real gap for an

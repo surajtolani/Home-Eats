@@ -113,12 +113,23 @@ struct RootView: View {
             } else if !accountSession.hasLoadedProfileOnce {
                 ProgressView("Loading your profile…")
             } else if accountSession.currentUser?.profileComplete == false {
+                // Back and "Use a Different Number" sign out, which returns
+                // to the sign-in screen above. Without them, an account
+                // created by mistake (a mistyped number) had no way out of
+                // this screen, even after quitting the app, because the
+                // sign-in token stays in the Keychain.
                 NavigationStack {
                     Form {
-                        ProfileCompletionStepView()
+                        ProfileCompletionStepView(onUseDifferentNumber: { accountSession.signOut() })
                     }
                     .navigationTitle("Complete Your Profile")
                     .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            BackToolbarButton { accountSession.signOut() }
+                                .disabled(accountSession.isSigningOut)
+                        }
+                    }
                 }
             } else if !activeGroupSession.hasLoadedOnce {
                 ProgressView("Loading your groups…")

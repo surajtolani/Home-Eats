@@ -23,6 +23,10 @@ struct EditProfileView: View {
     @State private var cityInput = ""
     @State private var stateInput = ""
     @State private var countryInput = ""
+    /// Optional here: accounts made before Create Account asked for an
+    /// email don't have one, and aren't made to add one. Left blank, it
+    /// isn't sent, so an address already on file stays as it is.
+    @State private var emailInput = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
 
@@ -47,6 +51,13 @@ struct EditProfileView: View {
                     .textContentType(.givenName)
                 TextField("Last name", text: $lastNameInput)
                     .textContentType(.familyName)
+                TextField("Email", text: $emailInput)
+                    .keyboardType(.emailAddress)
+                    .textContentType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } footer: {
+                Text("Your email isn't shown to anyone.")
             }
             Section {
                 // Search-as-you-type, backed by Google Places (see
@@ -129,6 +140,7 @@ struct EditProfileView: View {
         cityInput = user.city ?? ""
         stateInput = user.state ?? ""
         countryInput = user.country ?? ""
+        emailInput = user.email ?? ""
     }
 
     private func save() async {
@@ -140,6 +152,7 @@ struct EditProfileView: View {
         let city = cityInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let state = stateInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let country = countryInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let email = emailInput.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             // Every field is sent unconditionally here (never `nil` for an
             // empty one) — unlike the old city/country-optional version of
@@ -152,7 +165,9 @@ struct EditProfileView: View {
                 lastName: lastName,
                 city: city,
                 state: state,
-                country: country
+                country: country,
+                // The server checks the address and explains what's wrong.
+                email: email.isEmpty ? nil : email
             )
             accountSession.updateCurrentUser(updated)
             dismiss()

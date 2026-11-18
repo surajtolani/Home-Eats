@@ -46,6 +46,7 @@ function selfProfile(user) {
     city: user.city,
     state: user.state,
     country: user.country,
+    email: user.email,
     createdAt: user.createdAt,
     profileComplete: computeProfileComplete(user),
   };
@@ -81,14 +82,25 @@ router.get("/", asyncHandler(async (req, res) => {
 // every other field it doesn't have yet. "Required" is entirely a
 // client-side gate on top of this same endpoint, not a change to what this
 // endpoint itself accepts.
+function profileTextField(name) {
+  return z.string(`${name} is required.`).trim().min(1, `${name} can't be empty.`).max(100);
+}
+// Checked for shape only; nothing confirms the address is the user's.
+const emailField = z
+  .string("email is required.")
+  .trim()
+  .max(254, "email is too long.")
+  .pipe(z.email("Enter a valid email address."));
+
 const UpdateMeSchema = z
   .object({
-    displayName: z.string().trim().min(1, "displayName can't be empty.").max(100).optional(),
-    firstName: z.string().trim().min(1, "firstName can't be empty.").max(100).optional(),
-    lastName: z.string().trim().min(1, "lastName can't be empty.").max(100).optional(),
-    city: z.string().trim().min(1, "city can't be empty.").max(100).optional(),
-    state: z.string().trim().min(1, "state can't be empty.").max(100).optional(),
-    country: z.string().trim().min(1, "country can't be empty.").max(100).optional(),
+    displayName: profileTextField("displayName").optional(),
+    firstName: profileTextField("firstName").optional(),
+    lastName: profileTextField("lastName").optional(),
+    city: profileTextField("city").optional(),
+    state: profileTextField("state").optional(),
+    country: profileTextField("country").optional(),
+    email: emailField.optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: "Provide at least one field to update.",
@@ -157,5 +169,21 @@ router.post("/device-token", asyncHandler(async (req, res) => {
 // exactly the kind of copy that quietly drifts the moment a sixth profile
 // field is added here later.
 router.selfProfile = selfProfile;
+// Also for routes/auth.js: Create Account sends this with verify-code, so
+// the account is created with it only once the number is verified. Name
+// and email are required. City, state and country are optional because
+// the app picks the city with a lookup (routes /cities/*) that only
+// signed-in users may call, so it asks for them right after verification
+// instead (the profile screen); the account isn't `profileComplete` until
+// then.
+router.computeProfileComplete = computeProfileComplete;
+router.SignupProfileSchema = z.object({
+  firstName: profileTextField("firstName"),
+  lastName: profileTextField("lastName"),
+  email: emailField,
+  city: profileTextField("city").optional(),
+  state: profileTextField("state").optional(),
+  country: profileTextField("country").optional(),
+});
 
 module.exports = router;

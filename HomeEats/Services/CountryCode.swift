@@ -80,4 +80,18 @@ struct CountryCode: Identifiable, Hashable {
     ]
 
     static let `default` = all[0] // United States
+
+    /// The +1 zone (the US, Canada and some Caribbean countries), where
+    /// every national number is 10 digits (area code included), sometimes
+    /// written with a leading "1". Jamaica is listed with its area code as
+    /// part of its dial code ("+1876").
+    var isNANP: Bool { dialCode.hasPrefix("+1") }
+
+    /// The phone's own region from Settings, if it's in `all`, else
+    /// `default`. The best guess for a number with no country code that
+    /// came from somewhere without a picker, such as Contacts.
+    static var deviceRegion: CountryCode {
+        guard let region = Locale.current.region?.identifier else { return .default }
+        return all.first(where: { $0.isoCode == region }) ?? .default
+    }
 }

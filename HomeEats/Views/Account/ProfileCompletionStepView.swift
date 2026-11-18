@@ -42,6 +42,12 @@ struct ProfileCompletionStepView: View {
     /// already relies on (see `RootView`'s doc comment).
     var onSaved: (() -> Void)?
 
+    /// When set, the form starts with the number this account signed in
+    /// with and a "Use a Different Number" button that calls this. Both
+    /// call sites set it to sign out and go back to phone entry, so someone
+    /// who mistyped their number is never stuck filling in a profile for it.
+    var onUseDifferentNumber: (() -> Void)?
+
     @State private var firstNameInput = ""
     @State private var lastNameInput = ""
     @State private var cityInput = ""
@@ -62,6 +68,16 @@ struct ProfileCompletionStepView: View {
 
     var body: some View {
         Group {
+            if let onUseDifferentNumber, let phoneNumber = accountSession.currentUser?.phoneNumber {
+                Section {
+                    LabeledContent("Signed in as", value: phoneNumber)
+                    Button("Use a Different Number", action: onUseDifferentNumber)
+                        .disabled(isLoading || accountSession.isSigningOut)
+                } footer: {
+                    Text("Not your number? Go back and enter the right one.")
+                }
+            }
+
             Section {
                 TextField("First name", text: $firstNameInput)
                     .textContentType(.givenName)
