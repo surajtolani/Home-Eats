@@ -42,6 +42,9 @@ struct AccountUser: Codable, Identifiable, Equatable {
     let city: String?
     let state: String?
     let country: String?
+    /// Asked for on Create Account; `nil` for accounts made before that, or
+    /// from a server too old to send it. Not part of `profileComplete`.
+    let email: String?
     let createdAt: Date
     /// The backend's own derived "all five mandatory fields are non-empty"
     /// check (see routes/me.js's `computeProfileComplete`) — decoded

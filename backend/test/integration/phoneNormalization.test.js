@@ -104,6 +104,137 @@ test("phone numbers are normalized on every route", async (t) => {
     assert.deepEqual(verifyChecks, []);
   });
 
+  const PROFILE = {
+    firstName: "Asha",
+    lastName: "Rao",
+    city: "Boston",
+    state: "Massachusetts",
+    country: "United States",
+    email: "asha@example.com",
+  };
+
+  await t.test("Sign In with a number that has no account: no text, no account", async () => {
+    await resetDatabase();
+    verifySends.length = 0;
+    verifyChecks.length = 0;
+    const send = await post("/auth/request-code", { phoneNumber: "+117813633306", intent: "signIn" });
+    assert.equal(send.status, 404);
+    assert.match(send.body.error, /couldn't sign you in.*Create Account/);
+    assert.deepEqual(verifySends, []);
+    // Even with a valid code, verify-code won't create the account.
+    const check = await post("/auth/verify-code", { phoneNumber: "+17813633306", code: "123456", intent: "signIn" });
+    assert.equal(check.status, 404);
+    assert.equal(await prisma.user.count(), 0);
+  });
+
+  await t.test("Sign In with an existing number sends the code and signs in", async () => {
+    await resetDatabase();
+    verifySends.length = 0;
+    const existing = await createTestUser({ phoneNumber: "+17813633306" });
+    const send = await post("/auth/request-code", { phoneNumber: "+1 781 363 3306", intent: "signIn" });
+    assert.deepEqual(send, { status: 200, body: { ok: true, phoneNumber: "+17813633306" } });
+    assert.equal(verifySends.length, 1);
+    const check = await post("/auth/verify-code", { phoneNumber: "+17813633306", code: "123456", intent: "signIn" });
+    assert.equal(check.status, 200, JSON.stringify(check.body));
+    assert.equal(check.body.user.id, existing.id);
+  });
+
+  await t.test("a no-account answer doesn't use up the text limits", async () => {
+    await resetDatabase();
+    verifySends.length = 0;
+    const phoneNumber = "+447911123456";
+    const signIn = await post("/auth/request-code", { phoneNumber, intent: "signIn" });
+    assert.equal(signIn.status, 404);
+    // Straight away, as someone tapping Create Account would. The text
+    // limit is 1 per minute per number.
+    const signUp = await post("/auth/request-code", { phoneNumber, intent: "signUp" });
+    assert.deepEqual(signUp, { status: 200, body: { ok: true, phoneNumber } });
+    assert.equal(verifySends.length, 1);
+  });
+
+  await t.test("Create Account makes a complete account in one step", async () => {
+    await resetDatabase();
+    const res = await post("/auth/verify-code", {
+      phoneNumber: "+91 98765 43210",
+      code: "123456",
+      intent: "signUp",
+      profile: { ...PROFILE, email: "  asha@example.com " },
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.user.profileComplete, true);
+    assert.equal(res.body.user.email, "asha@example.com");
+    const user = await prisma.user.findUnique({ where: { phoneNumber: "+919876543210" } });
+    assert.equal(user.displayName, "Asha Rao");
+    assert.equal(user.email, "asha@example.com");
+  });
+
+  await t.test("Create Account refuses a number that already has a complete account", async () => {
+    await resetDatabase();
+    verifySends.length = 0;
+    const existing = await createTestUser({ phoneNumber: "+17813633306", ...PROFILE, email: null });
+    const send = await post("/auth/request-code", { phoneNumber: "+17813633306", intent: "signUp" });
+    assert.deepEqual(send, { status: 409, body: { error: "This number already has an account. Go back and sign in instead." } });
+    assert.deepEqual(verifySends, []);
+    const check = await post("/auth/verify-code", {
+      phoneNumber: "+17813633306", code: "123456", intent: "signUp", profile: { ...PROFILE, firstName: "Someone" },
+    });
+    assert.equal(check.status, 409);
+    const after = await prisma.user.findUnique({ where: { id: existing.id } });
+    assert.equal(after.firstName, "Asha");
+  });
+
+  await t.test("Create Account finishes an account that never got a profile", async () => {
+    await resetDatabase();
+    const stray = await createTestUser({ phoneNumber: "+17813633306" });
+    const send = await post("/auth/request-code", { phoneNumber: "+17813633306", intent: "signUp" });
+    assert.equal(send.status, 200);
+    const check = await post("/auth/verify-code", { phoneNumber: "+17813633306", code: "123456", intent: "signUp", profile: PROFILE });
+    assert.equal(check.status, 200, JSON.stringify(check.body));
+    assert.equal(check.body.user.id, stray.id);
+    assert.equal(check.body.user.profileComplete, true);
+    assert.equal(await prisma.user.count(), 1);
+  });
+
+  await t.test("Create Account with name and email only: saved, city still to pick", async () => {
+    await resetDatabase();
+    const { city, state, country, ...nameAndEmail } = PROFILE;
+    const res = await post("/auth/verify-code", { phoneNumber: "+17813633306", code: "123456", intent: "signUp", profile: nameAndEmail });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.user.profileComplete, false);
+    assert.equal(res.body.user.firstName, "Asha");
+    assert.equal(res.body.user.email, "asha@example.com");
+    assert.equal(res.body.user.city, null);
+  });
+
+  await t.test("Create Account needs a name and a valid email", async () => {
+    await resetDatabase();
+    const base = { phoneNumber: "+17813633306", code: "123456", intent: "signUp" };
+    assert.equal((await post("/auth/verify-code", base)).status, 400);
+    const { email, ...noEmail } = PROFILE;
+    assert.deepEqual(await post("/auth/verify-code", { ...base, profile: noEmail }), {
+      status: 400, body: { error: "email is required." },
+    });
+    assert.deepEqual(await post("/auth/verify-code", { ...base, profile: { ...PROFILE, email: "asha@" } }), {
+      status: 400, body: { error: "Enter a valid email address." },
+    });
+    assert.deepEqual(await post("/auth/verify-code", { ...base, profile: { ...PROFILE, lastName: "  " } }), {
+      status: 400, body: { error: "lastName can't be empty." },
+    });
+    assert.deepEqual(await post("/auth/verify-code", { ...base, profile: { ...PROFILE, city: "  " } }), {
+      status: 400, body: { error: "city can't be empty." },
+    });
+    assert.equal(await prisma.user.count(), 0);
+  });
+
+  await t.test("requests without intent (older app builds) behave as before", async () => {
+    await resetDatabase();
+    const res = await post("/auth/verify-code", { phoneNumber: "+17813633306", code: "123456" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.user.profileComplete, false);
+    assert.equal(await prisma.user.count(), 1);
+    assert.equal((await post("/auth/request-code", { phoneNumber: "+61412345678", intent: "other" })).status, 400);
+  });
+
   await t.test("friend requests match an existing user however the number is written", async () => {
     await resetDatabase();
     const me = await createTestUser({ displayName: "Me" });

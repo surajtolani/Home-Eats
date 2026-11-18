@@ -96,6 +96,36 @@ const verifyCodeIPLimiter = createRateLimiter({
   failClosed: true,
 });
 
+// Sign In and Create Account are separate in the app: Sign In only texts a
+// code to a number that already has an account, and Create Account only to
+// one that doesn't (or whose account never finished its profile). The app
+// says which with `intent` on both request-code and verify-code. Requests
+// without `intent` (app builds from before the split) keep the old
+// behavior: text any number, and create the account on verify.
+//
+// Answering "no account" or "already has an account" tells the caller
+// whether a number is registered. The owner accepted that so a mistyped
+// number can't create a stray account, with softened wording and these
+// limits on the check itself. They are separate from the text-message
+// limits above, which are only used when a text is actually sent: trying
+// Sign In, being told there's no account, then tapping Create Account
+// must not run into the 1-per-minute text limit.
+const accountLookupPhoneLimiter = createRateLimiter({
+  name: "request-code:lookup-phone",
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  failClosed: true,
+});
+const accountLookupIPLimiter = createRateLimiter({
+  name: "request-code:lookup-ip",
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  failClosed: true,
+});
+const NO_ACCOUNT_ERROR = "We couldn't sign you in with this number. New here? Tap Create Account.";
+const ACCOUNT_EXISTS_ERROR = "This number already has an account. Go back and sign in instead.";
+const IntentField = z.enum(["signIn", "signUp"]).optional();
+
 // Sent when a fail-closed limiter couldn't reach the database (its result
 // is `limited` and `error`), so the request was refused without knowing
 // whether it was over the limit.
@@ -118,17 +148,48 @@ function signToken(userId, tokenVersion) {
 }
 
 // POST /auth/request-code
-// Body: { phoneNumber }. Starts a Twilio Verify SMS verification. Verify
+// Body: { phoneNumber, intent? }. Starts a Twilio Verify SMS verification. Verify
 // itself owns code generation, expiry, and rate-limiting/attempt-limits, so
 // this route deliberately doesn't add another layer of throttling on top —
 // just the cheap format check above, so a garbage input doesn't burn an
 // API call.
+const RequestCodeSchema = PhoneSchema.extend({ intent: IntentField });
+
 router.post("/request-code", asyncHandler(async (req, res) => {
-  const parsed = PhoneSchema.safeParse(req.body);
+  const parsed = RequestCodeSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: firstIssue(parsed.error, PHONE_ERROR) });
   }
-  const { phoneNumber } = parsed.data;
+  const { phoneNumber, intent } = parsed.data;
+
+  if (intent) {
+    // See NO_ACCOUNT_ERROR above. Checked before any text-message limit
+    // or Twilio call, so a refused request costs nothing.
+    const [lookupPhone, lookupIP] = await Promise.all([
+      accountLookupPhoneLimiter.check(phoneLogKey(phoneNumber)),
+      accountLookupIPLimiter.check(req.ip),
+    ]);
+    const logLookup = (result) =>
+      console.log(
+        `[request-code] phone=${redactPhone(phoneNumber)} phoneKey=${phoneLogKey(phoneNumber)} ip=${req.ip} intent=${intent} result=${result} at=${new Date().toISOString()}`
+      );
+    if ([lookupPhone, lookupIP].some((r) => r.limited && r.error)) {
+      return res.status(503).json({ error: RATE_LIMIT_UNAVAILABLE_ERROR });
+    }
+    if (lookupPhone.limited || lookupIP.limited) {
+      logLookup("lookup-limited");
+      return res.status(429).json({ error: "Too many attempts. Please wait a bit and try again." });
+    }
+    const existing = await prisma.user.findUnique({ where: { phoneNumber } });
+    if (intent === "signIn" && !existing) {
+      logLookup("no-account");
+      return res.status(404).json({ error: NO_ACCOUNT_ERROR });
+    }
+    if (intent === "signUp" && existing && meRouter.computeProfileComplete(existing)) {
+      logLookup("account-exists");
+      return res.status(409).json({ error: ACCOUNT_EXISTS_ERROR });
+    }
+  }
 
   // Checked (and counted) after body validation, so a malformed request
   // doesn't burn either quota, same reasoning as the pre-existing "cheap
@@ -163,7 +224,7 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   // script, or another client sharing these Twilio credentials, which is
   // exactly the question the ip by itself couldn't settle.
   console.log(
-    `[request-code] phone=${redactPhone(phoneNumber)} phoneKey=${phoneLogKey(phoneNumber)} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} at=${new Date().toISOString()}`
+    `[request-code] phone=${redactPhone(phoneNumber)} phoneKey=${phoneLogKey(phoneNumber)} ip=${req.ip} ua=${JSON.stringify(req.get("user-agent") || "")} burstLimited=${burstLimited} phoneLimited=${phoneLimited} ipLimited=${ipLimited} intent=${intent || "none"} at=${new Date().toISOString()}`
   );
   if ([burst, phone, ip].some((r) => r.limited && r.error)) {
     return res.status(503).json({ error: RATE_LIMIT_UNAVAILABLE_ERROR });
@@ -196,7 +257,7 @@ router.post("/request-code", asyncHandler(async (req, res) => {
 }));
 
 // POST /auth/verify-code
-// Body: { phoneNumber, code }. Checks the code with Twilio Verify; on
+// Body: { phoneNumber, code, intent?, profile? }. Checks the code with Twilio Verify; on
 // success, finds-or-creates the User by phone number and turns any pending
 // Invites addressed to that number into ordinary PENDING friend requests
 // (see the Invite model's doc comment in prisma/schema.prisma — this
@@ -205,10 +266,19 @@ router.post("/request-code", asyncHandler(async (req, res) => {
 // accepts the resulting request), all inside one transaction so a signup
 // either fully succeeds — user row plus any invite-derived friend requests
 // — or fully fails, never half-applied. Returns a JWT.
+// `intent` and `profile`: see NO_ACCOUNT_ERROR above. Create Account
+// ("signUp") sends the profile here (at least name and email; see
+// routes/me.js's SignupProfileSchema), saved in the same transaction that
+// creates the account, only once the number is verified.
 const VerifySchema = PhoneSchema.extend({
   // Twilio Verify codes are typically 4-10 digits depending on channel/
   // configuration; validated loosely here and authoritatively by Twilio.
   code: z.string().min(4).max(10),
+  intent: IntentField,
+  profile: meRouter.SignupProfileSchema.optional(),
+}).refine((data) => data.intent !== "signUp" || data.profile, {
+  message: "Fill in your profile to create an account.",
+  path: ["profile"],
 });
 
 router.post("/verify-code", asyncHandler(async (req, res) => {
@@ -216,7 +286,7 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: firstIssue(parsed.error, "Invalid phoneNumber or code.") });
   }
-  const { phoneNumber, code } = parsed.data;
+  const { phoneNumber, code, intent, profile } = parsed.data;
 
   // Checked (and counted) after body validation, before the billed Twilio
   // call — same ordering reasoning as /request-code's own limiters above.
@@ -262,13 +332,26 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
   }
 
   try {
-    const user = await prisma.$transaction(async (tx) => {
+    const profileData = profile ? { ...profile, displayName: `${profile.firstName} ${profile.lastName}` } : {};
+    const result = await prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findUnique({ where: { phoneNumber } });
       if (existingUser) {
-        return existingUser;
+        if (intent === "signUp") {
+          // request-code already refused a complete account; this catches
+          // one completed in between. An account that never finished its
+          // profile is completed here instead.
+          if (meRouter.computeProfileComplete(existingUser)) {
+            return { status: 409, error: ACCOUNT_EXISTS_ERROR };
+          }
+          return { user: await tx.user.update({ where: { id: existingUser.id }, data: profileData }) };
+        }
+        return { user: existingUser };
+      }
+      if (intent === "signIn") {
+        return { status: 404, error: NO_ACCOUNT_ERROR };
       }
 
-      const newUser = await tx.user.create({ data: { phoneNumber } });
+      const newUser = await tx.user.create({ data: { phoneNumber, ...profileData } });
 
       // Turn every pending invite addressed to this phone number into an
       // ordinary incoming friend request — NOT an instantly-accepted
@@ -317,8 +400,12 @@ router.post("/verify-code", asyncHandler(async (req, res) => {
       // `resolveInvitesForAcceptedFriendship`/
       // `cancelInvitesForDeclinedFriendship` in routes/friends.js.
 
-      return newUser;
+      return { user: newUser };
     });
+    if (result.error) {
+      return res.status(result.status).json({ error: result.error });
+    }
+    const { user } = result;
 
     const token = signToken(user.id, user.tokenVersion);
     res.json({
