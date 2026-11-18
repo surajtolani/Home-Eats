@@ -7,7 +7,7 @@
 // crash the server for every user, not just fail the one request. Wrapping
 // each handler with this turns any thrown/rejected error into a normal
 // `next(error)` call, caught by the generic error-handling middleware in
-// index.js instead.
+// app.js instead.
 "use strict";
 
 function asyncHandler(fn) {

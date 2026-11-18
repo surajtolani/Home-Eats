@@ -5,9 +5,10 @@ import Foundation
 /// from wherever that page happens to host it — same "the app never talks
 /// to a third party directly" reasoning `GooglePlacesService.photoURL(for:)`
 /// already documents, just for an arbitrary imported URL instead of a
-/// Google Places one. See that route's own doc comment in backend/index.js
+/// Google Places one. See that route's own doc comment in backend/app.js
 /// for why this exists (a real, confirmed IP-logging/tracking-beacon
-/// finding in a plain AsyncImage load).
+/// finding in a plain AsyncImage load). The route requires a signed-in
+/// user, so load these URLs with `RemoteImage`, not `AsyncImage`.
 enum RecipeImageProxy {
     private static let baseURLString = "https://home-eats-uqbp.onrender.com"
 

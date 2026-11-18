@@ -25,7 +25,7 @@
 // POST /invites/:inviteId/accept|decline) — this endpoint exists purely to
 // answer "what's pending" in one request instead of two.
 //
-// Mounted at /notifications in index.js, behind requireAuth like every
+// Mounted at /notifications in app.js, behind requireAuth like every
 // other authenticated route in this app.
 "use strict";
 

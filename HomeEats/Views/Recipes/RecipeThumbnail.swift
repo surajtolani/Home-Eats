@@ -15,12 +15,10 @@ struct RecipeThumbnail: View {
                     .resizable()
                     .scaledToFill()
             } else if let imageName = recipe.imageName, let url = remoteURL(imageName) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        placeholder
-                    }
+                RemoteImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    placeholder
                 }
             } else if let imageName = recipe.imageName, UIImage(named: imageName) != nil {
                 Image(imageName)

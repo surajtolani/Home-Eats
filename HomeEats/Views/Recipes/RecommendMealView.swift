@@ -165,9 +165,11 @@ struct RecommendMealView: View {
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
+            // The server accepts at most 40 titles to exclude, so after many
+            // rounds only the most recent 40 are sent.
             let more = try await ClaudeRecipeService.recommendMeals(
                 ingredients: currentIngredients,
-                excludeTitles: suggestions.map(\.title)
+                excludeTitles: Array(suggestions.map(\.title).suffix(40))
             )
             let existingTitles = Set(suggestions.map(\.title))
             suggestions.append(contentsOf: more.filter { !existingTitles.contains($0.title) })
@@ -179,7 +181,7 @@ struct RecommendMealView: View {
     private var currentIngredients: [String] {
         ingredientsText
             .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
 
