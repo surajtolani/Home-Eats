@@ -230,15 +230,22 @@ enum AccountsAPIClient {
 // MARK: - Auth (POST /auth/request-code, POST /auth/verify-code)
 
 extension AccountsAPIClient {
-    /// Starts a Twilio Verify SMS to `phoneNumber` (already normalized to
-    /// E.164 — see `PhoneNumberFormatting`). Unauthenticated: this is how a
-    /// signed-out user gets a token in the first place.
-    static func requestCode(phoneNumber: String) async throws {
-        try await sendNoContent(
+    /// Starts a Twilio Verify SMS to `phoneNumber` (E.164 — see
+    /// `PhoneNumberFormatting`). Unauthenticated: this is how a signed-out
+    /// user gets a token in the first place. Returns the number in the
+    /// server's canonical form, which is what the code was actually sent to
+    /// (see backend/lib/phone.js), or `nil` from a server too old to say.
+    @discardableResult
+    static func requestCode(phoneNumber: String) async throws -> String? {
+        struct Response: Decodable {
+            let phoneNumber: String?
+        }
+        let response: Response = try await send(
             "POST", path: "auth/request-code",
             body: ["phoneNumber": phoneNumber],
             authenticated: false
         )
+        return response.phoneNumber
     }
 
     /// Checks the code Twilio just sent and returns a Bearer token plus the

@@ -16,6 +16,7 @@
     "@prisma/client": "6.19.3",
     "express": "^4.22.2",
     "jsonwebtoken": "^9.0.3",
+    "libphonenumber-js": "1.13.15",
     "twilio": "^6.1.1",
     "zod": "^4.5.4"
   },

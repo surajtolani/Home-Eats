@@ -183,7 +183,9 @@ router.post("/request-code", asyncHandler(async (req, res) => {
       to: phoneNumber,
       channel: "sms",
     });
-    res.json({ ok: true });
+    // The canonical form (lib/phone.js) the code was actually sent to. The
+    // iOS app shows it ("Sent to ...") and sends it back to verify-code.
+    res.json({ ok: true, phoneNumber });
   } catch (error) {
     // Twilio errors here cover things like an unreachable/invalid number,
     // or Verify's own rate-limiting kicking in — all of which are "this

@@ -81,8 +81,10 @@ struct ContactOrPhoneNumberPickerView: View {
         ContactSearch.filter(contactsService.contacts, matching: searchText)
     }
 
+    /// Same rule as `AccountSignInView.enteredE164`: the picked country,
+    /// unless the field already has its own "+" country code.
     private var manualE164: String? {
-        PhoneNumberFormatting.e164(from: selectedCountry.dialCode + manualDigits.filter(\.isNumber))
+        PhoneNumberFormatting.e164(from: manualDigits, defaultCountry: selectedCountry)
     }
 
     var body: some View {
@@ -113,9 +115,18 @@ struct ContactOrPhoneNumberPickerView: View {
                         Divider().frame(height: 20)
 
                         TextField("Phone number", text: $manualDigits)
-                            .keyboardType(.numberPad)
+                            .keyboardType(.phonePad)
                             .textContentType(.telephoneNumber)
                             .padding(.leading, 10)
+                            .onChange(of: manualDigits) { _, newValue in
+                                // A pasted or autofilled "+44 7911 123456":
+                                // move its country code into the picker. See
+                                // `PhoneNumberFormatting.splitInternational`.
+                                if let split = PhoneNumberFormatting.splitInternational(newValue, current: selectedCountry) {
+                                    selectedCountry = split.country
+                                    manualDigits = split.nationalDigits
+                                }
+                            }
                     }
                     Button("Add") {
                         guard let e164 = manualE164 else { return }
@@ -244,7 +255,9 @@ struct ContactOrPhoneNumberPickerView: View {
 
     private func pick(contact: DeviceContact, rawNumber: String) {
         contactNumberChoice = nil
-        guard let e164 = PhoneNumberFormatting.e164(from: rawNumber) else {
+        // A number saved without a country code ("07911 123456") is taken to
+        // be from the phone's own region, the way the Phone app dials it.
+        guard let e164 = PhoneNumberFormatting.e164(from: rawNumber, defaultCountry: .deviceRegion) else {
             // Rare for this app's audience (mobile numbers), but a stored
             // number that doesn't shape-check shouldn't just do nothing —
             // see this property's own doc comment.

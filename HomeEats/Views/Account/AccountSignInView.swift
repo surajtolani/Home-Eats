@@ -33,16 +33,13 @@ struct AccountSignInView: View {
     /// (not presented as a sheet) with nothing behind it to "cancel" back
     /// to — so the phone/code steps hide the Cancel button entirely.
     ///
-    /// The name/profile step has no Skip/Cancel action at all, regardless
-    /// of `allowsCancel` — unlike the old two-field name step, these five
-    /// fields are genuinely mandatory now (see `RootView`'s completion
-    /// gate), so a Skip button here would either do nothing useful (in the
-    /// `allowsCancel: false` mandatory-gate context, `RootView`'s own
-    /// completion gate would just show this exact same form again the
-    /// instant it dismissed — see that view's doc comment) or leave a
-    /// signed-in account walking around with an incomplete profile (in the
-    /// dismissible-sheet context) for no reason. Neither is worth a button
-    /// that exists only to bounce right back.
+    /// Cancel only ever appears on the phone step. The code and profile
+    /// steps have a Back button instead, whatever `allowsCancel` says: Back
+    /// from the code step returns to the phone step, and Back from the
+    /// profile step signs out of the account that was just verified and
+    /// returns to the phone step, so a mistyped number never forces anyone
+    /// to fill in a profile. There is still no Skip on the profile step:
+    /// all five fields are mandatory (see `RootView`'s completion gate).
     var allowsCancel: Bool = true
 
     private enum Step {
@@ -52,13 +49,12 @@ struct AccountSignInView: View {
     @State private var step: Step = .phone
     @State private var selectedCountry: CountryCode = .default
     @State private var showCountryPicker = false
-    /// Just the local digits someone types — the country's dial code
-    /// (`selectedCountry.dialCode`) is prepended separately when actually
-    /// sending, not typed inline. Keeps the text field itself simple (a
-    /// plain number pad, nothing to parse a leading "+" or country code out
-    /// of) now that the picker is what decides the country instead of
-    /// `PhoneNumberFormatting.e164`'s old "guess US if it's 10 digits"
-    /// fallback.
+    /// What's in the phone field: normally the national number, with the
+    /// country coming from the picker. When autofill or a paste puts a full
+    /// international number here ("+1 (781) 363-3306"), the `.onChange`
+    /// on the field moves its country code into the picker and leaves only
+    /// the national part. If the code isn't one the picker lists, the "+"
+    /// number stays here and is used as is.
     @State private var phoneInput = ""
     @State private var codeInput = ""
     @State private var isLoading = false
@@ -70,12 +66,12 @@ struct AccountSignInView: View {
     /// meantime.
     @State private var confirmedPhoneNumber: String?
 
-    /// Combines the picked country's dial code with whatever digits are
-    /// typed — routed through `PhoneNumberFormatting.e164` regardless (it
-    /// takes a leading-"+" string as-is, just re-validating its shape)
-    /// rather than duplicating that regex here.
+    /// The field's number in E.164 form, using the picked country unless
+    /// the field already has its own "+" country code. It used to always put
+    /// the picker's code in front of the field's digits, so an autofilled
+    /// "+1 (781) 363-3306" became "+117813633306".
     private var enteredE164: String? {
-        PhoneNumberFormatting.e164(from: selectedCountry.dialCode + phoneInput.filter(\.isNumber))
+        PhoneNumberFormatting.e164(from: phoneInput, defaultCountry: selectedCountry)
     }
     private var canSendCode: Bool {
         enteredE164 != nil
@@ -94,7 +90,11 @@ struct AccountSignInView: View {
                 switch step {
                 case .phone: phoneStep
                 case .code: codeStep
-                case .name: ProfileCompletionStepView(onSaved: { dismiss() })
+                case .name:
+                    ProfileCompletionStepView(
+                        onSaved: { dismiss() },
+                        onUseDifferentNumber: signOutAndUseDifferentNumber
+                    )
                 }
                 if let errorMessage {
                     Section {
@@ -105,15 +105,22 @@ struct AccountSignInView: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // No toolbar action at all on the name/profile step — see
-                // `allowsCancel`'s own doc comment for why a Skip button
-                // has no useful job here anymore now that all five fields
-                // are mandatory. The phone/code steps are the actual "back
-                // out of signing in" point, so those still honor
-                // `allowsCancel` exactly as before.
-                if step != .name, allowsCancel {
+                // See `allowsCancel`'s doc comment.
+                if step == .phone, allowsCancel {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
+                    }
+                }
+                if step == .code {
+                    ToolbarItem(placement: .cancellationAction) {
+                        BackToolbarButton(action: useDifferentNumber)
+                            .disabled(isLoading)
+                    }
+                }
+                if step == .name {
+                    ToolbarItem(placement: .cancellationAction) {
+                        BackToolbarButton(action: signOutAndUseDifferentNumber)
+                            .disabled(accountSession.isSigningOut)
                     }
                 }
             }
@@ -173,9 +180,17 @@ struct AccountSignInView: View {
                     Divider().frame(height: 20)
 
                     TextField("Phone number", text: $phoneInput)
-                        .keyboardType(.numberPad)
+                        // Phone pad rather than number pad so a "+" can be
+                        // typed for a country the picker doesn't list.
+                        .keyboardType(.phonePad)
                         .textContentType(.telephoneNumber)
                         .padding(.leading, 10)
+                        .onChange(of: phoneInput) { _, newValue in
+                            if let split = PhoneNumberFormatting.splitInternational(newValue, current: selectedCountry) {
+                                selectedCountry = split.country
+                                phoneInput = split.nationalDigits
+                            }
+                        }
                 }
             } footer: {
                 Text("We'll text you a one-time code — no password to remember.")
@@ -219,6 +234,9 @@ struct AccountSignInView: View {
                 }
                 TextField("Code", text: $codeInput)
                     .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+            } footer: {
+                Text("Wrong number? Tap Back or Use a Different Number to fix it.")
             }
             .disabled(isLoading)
 
@@ -242,12 +260,8 @@ struct AccountSignInView: View {
                     .controlSize(.large)
                     .disabled(!canVerify)
 
-                    Button("Use a Different Number") {
-                        step = .phone
-                        codeInput = ""
-                        errorMessage = nil
-                    }
-                    .frame(maxWidth: .infinity)
+                    Button("Use a Different Number", action: useDifferentNumber)
+                        .frame(maxWidth: .infinity)
                 }
             }
             .listRowBackground(Color.clear)
@@ -273,12 +287,33 @@ struct AccountSignInView: View {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            try await AccountsAPIClient.requestCode(phoneNumber: e164)
-            confirmedPhoneNumber = e164
+            // The server answers with the number in its canonical form
+            // (backend/lib/phone.js), which is what the code was really sent
+            // to, so that's what "Sent to" shows and verify-code sends. An
+            // older server doesn't include it.
+            let canonical = try await AccountsAPIClient.requestCode(phoneNumber: e164)
+            confirmedPhoneNumber = canonical ?? e164
             step = .code
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Code step -> phone step, keeping what's in the phone field so a typo
+    /// can be fixed rather than retyped.
+    private func useDifferentNumber() {
+        step = .phone
+        codeInput = ""
+        errorMessage = nil
+    }
+
+    /// Profile step -> phone step. The number has already been verified and
+    /// signed in by this point, so this signs out of that account first.
+    /// The account itself stays on the server, with no profile.
+    private func signOutAndUseDifferentNumber() {
+        accountSession.signOut()
+        confirmedPhoneNumber = nil
+        useDifferentNumber()
     }
 
     private func verify() async {
@@ -324,3 +359,21 @@ struct AccountSignInView: View {
 // rather than private) so `ContactOrPhoneNumberPickerView`'s manual
 // phone-entry path can reuse the exact same picker. See that file's doc
 // comment for the full reasoning.
+
+/// A toolbar "< Back" button: the chevron and the word, like the system's
+/// own back button, for screens that aren't pushed on a navigation stack and
+/// so don't get one.
+struct BackToolbarButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.left")
+                    .fontWeight(.semibold)
+                Text("Back")
+            }
+        }
+        .accessibilityLabel("Back")
+    }
+}
