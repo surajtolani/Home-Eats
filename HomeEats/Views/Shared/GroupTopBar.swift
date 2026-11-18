@@ -60,18 +60,54 @@ struct GroupTopBar: ToolbarContent {
             NotificationBellButton()
         }
         ToolbarItem(placement: .topBarTrailing) {
-            // A shortcut straight to "My Account" (`SettingsView`) — per the
-            // same user request, an account icon belongs right here so
-            // reaching it doesn't require going through the "More" tab,
-            // which is where `MoreView`'s own identical `NavigationLink` to
-            // `SettingsView` still lives too (this is a second, faster path
-            // to the same screen, not a replacement for that one).
-            NavigationLink {
-                SettingsView()
-            } label: {
-                Image(systemName: "person.crop.circle")
-            }
-            .accessibilityLabel("My Account")
+            AccountButton()
+        }
+    }
+}
+
+extension View {
+    /// Shared look for everything the three top-bar icons open (group
+    /// switcher, notifications, My Account): a popover that grows out of its
+    /// icon, not a bottom sheet or a push from the right. Direct user
+    /// request — those three each animated in from a different edge.
+    /// `.presentationCompactAdaptation(.popover)` is what stops iPhone from
+    /// turning a popover back into a sheet.
+    func topBarPopoverStyle() -> some View {
+        frame(minWidth: 320, idealWidth: 340, minHeight: 420, idealHeight: 520)
+            .presentationCompactAdaptation(.popover)
+    }
+}
+
+/// A popover has no navigation bar of its own, so each screen it hosts gets
+/// its own `NavigationStack` (for its title and any pushes, e.g. My Account
+/// -> Edit Profile).
+private struct TopBarPopover<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        NavigationStack {
+            content()
+                .navigationBarTitleDisplayMode(.inline)
+        }
+        .topBarPopoverStyle()
+    }
+}
+
+/// A shortcut straight to "My Account" (`SettingsView`), per the same user
+/// request that added this bar: reaching it shouldn't require the Settings
+/// tab, which still has its own identical link to the same screen.
+private struct AccountButton: View {
+    @State private var showAccount = false
+
+    var body: some View {
+        Button {
+            showAccount = true
+        } label: {
+            Image(systemName: "person.crop.circle")
+        }
+        .accessibilityLabel("My Account")
+        .popover(isPresented: $showAccount) {
+            TopBarPopover { SettingsView() }
         }
     }
 }
@@ -88,13 +124,14 @@ struct GroupTopBar: ToolbarContent {
 /// `GroupSharedMealPlanView`'s pattern verbatim), there would be two such
 /// loops running concurrently the whole time the app is open, each polling
 /// `GET /notifications` independently for no benefit over one. Tapping it
-/// pushes `NotificationsView`.
+/// opens `NotificationsView` in a popover.
 private struct NotificationBellButton: View {
     @EnvironmentObject private var notificationsSession: NotificationsSession
+    @State private var showNotifications = false
 
     var body: some View {
-        NavigationLink {
-            NotificationsView()
+        Button {
+            showNotifications = true
         } label: {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "bell")
@@ -120,6 +157,9 @@ private struct NotificationBellButton: View {
             }
         }
         .accessibilityLabel("Notifications, \(notificationsSession.count) pending")
+        .popover(isPresented: $showNotifications) {
+            TopBarPopover { NotificationsView() }
+        }
     }
 
     private var badgeText: String {

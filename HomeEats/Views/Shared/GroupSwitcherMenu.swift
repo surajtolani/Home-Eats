@@ -84,7 +84,7 @@ struct GroupSwitcherMenu: View {
             }
         }
         .accessibilityLabel("Switch active group, currently \(activeGroupSession.activeGroup?.name ?? "none selected")")
-        .sheet(isPresented: $showSwitcher) {
+        .popover(isPresented: $showSwitcher) {
             GroupSwitcherSheet(onCreateNewGroup: {
                 showCreateGroup = true
             })
@@ -121,8 +121,8 @@ struct GroupSwitcherMenu: View {
 ///
 /// **Compact sizing, not a full-height sheet** — direct user feedback that
 /// the sheet felt "massive and misized" next to the compact `Menu` this
-/// replaced. `.presentationDetents([.medium])` caps it at roughly half the
-/// screen instead of the default near-full-height sheet, and every row uses
+/// replaced. It now opens as a popover from the icon (`topBarPopoverStyle()`,
+/// shared with the notification and account icons), and every row uses
 /// `.subheadline`/`.footnote` rather than a `List` row's default `.body`
 /// text, closer to the original `Menu`'s own compact row size.
 private struct GroupSwitcherSheet: View {
@@ -178,8 +178,7 @@ private struct GroupSwitcherSheet: View {
                 GroupDetailView(groupID: group.id, groupName: group.name)
             }
         }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
+        .topBarPopoverStyle()
     }
 
     private func groupRow(_ group: GroupSummary) -> some View {
