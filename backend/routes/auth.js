@@ -240,10 +240,18 @@ router.post("/request-code", asyncHandler(async (req, res) => {
   }
 
   try {
-    await client.verify.v2.services(verifyServiceSid).verifications.create({
+    const verification = await client.verify.v2.services(verifyServiceSid).verifications.create({
       to: phoneNumber,
       channel: "sms",
     });
+    // Twilio's own id for this send, so one Render log line can be matched
+    // one-to-one against Twilio's Verify logs when someone reports codes
+    // they didn't ask for: more lines here than texts expected means this
+    // endpoint was called more than once; fewer means the duplication
+    // happened on Twilio's side.
+    console.log(
+      `[request-code] sent phoneKey=${phoneLogKey(phoneNumber)} verificationSid=${verification?.sid ?? "unknown"} at=${new Date().toISOString()}`
+    );
     // The canonical form (lib/phone.js) the code was actually sent to. The
     // iOS app shows it ("Sent to ...") and sends it back to verify-code.
     res.json({ ok: true, phoneNumber });
